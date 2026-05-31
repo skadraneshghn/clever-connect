@@ -41,15 +41,15 @@ RUN go mod download
 # ==========================================
 # PHASE 2: CACHE CLIENT NODE DEPENDENCIES
 # ==========================================
-# Copy package.json / bun.lockb for client
-COPY web/client/package.json web/client/bun.lockb ./web/client/
+# Copy package.json / bun.lock for client
+COPY web/client/package.json web/client/bun.lock ./web/client/
 RUN cd web/client && bun install
 
 # ==========================================
 # PHASE 3: CACHE SERVER NODE DEPENDENCIES
 # ==========================================
-# Copy package.json / bun.lockb for server
-COPY web/server/package.json web/server/bun.lockb ./web/server/
+# Copy package.json / bun.lock for server
+COPY web/server/package.json web/server/bun.lock ./web/server/
 RUN cd web/server && bun install
 
 # ==========================================
