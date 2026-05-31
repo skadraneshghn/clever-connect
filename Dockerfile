@@ -31,14 +31,38 @@ ENV PATH=$PATH:/root/.bun/bin
 # Set workspace directory
 WORKDIR /app
 
-# Copy codebase
+# ==========================================
+# PHASE 1: CACHE GO DEPENDENCIES
+# ==========================================
+# Copy go.mod and go.sum first to cache dependency download layer
+COPY go.mod go.sum ./
+RUN go mod download
+
+# ==========================================
+# PHASE 2: CACHE CLIENT NODE DEPENDENCIES
+# ==========================================
+# Copy package.json / bun.lockb for client
+COPY web/client/package.json web/client/bun.lockb ./web/client/
+RUN cd web/client && bun install
+
+# ==========================================
+# PHASE 3: CACHE SERVER NODE DEPENDENCIES
+# ==========================================
+# Copy package.json / bun.lockb for server
+COPY web/server/package.json web/server/bun.lockb ./web/server/
+RUN cd web/server && bun install
+
+# ==========================================
+# PHASE 4: COPY CODEBASE & COMPILE
+# ==========================================
+# Now copy the actual source code (which changes often)
 COPY . .
 
 # Compile Client SPA Frontend
-RUN cd web/client && bun install && bun run build
+RUN cd web/client && bun run build
 
 # Compile Server SPA Frontend
-RUN cd web/server && bun install && bun run build
+RUN cd web/server && bun run build
 
 # Compile Go backend binary with embedded distributions
 RUN go build -o bin/clever-connect main.go
