@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -59,7 +60,7 @@ func LoadConfig() *Config {
 		}
 	}
 
-	return &Config{
+	cfg := &Config{
 		AppMode:             appMode,
 		Port:                port,
 		JWTSecret:           []byte(jwtSecret),
@@ -73,6 +74,47 @@ func LoadConfig() *Config {
 		AdminUsername:       getEnv("ADMIN_USERNAME", "salman"),
 		AdminPassword:       getEnv("ADMIN_PASSWORD", "136517"),
 	}
+
+	// Automatic parsing of database URIs (e.g. from Clever Cloud MySQL addon)
+	mysqlURI := os.Getenv("MYSQL_ADDON_URI")
+	if mysqlURI == "" {
+		mysqlURI = os.Getenv("DATABASE_URL")
+	}
+	if mysqlURI != "" && strings.HasPrefix(mysqlURI, "mysql://") {
+		uri := strings.TrimPrefix(mysqlURI, "mysql://")
+		parts := strings.SplitN(uri, "@", 2)
+		if len(parts) == 2 {
+			userPass := parts[0]
+			hostPortDb := parts[1]
+
+			up := strings.SplitN(userPass, ":", 2)
+			if len(up) == 2 {
+				cfg.MySQLUser = up[0]
+				cfg.MySQLPassword = up[1]
+			}
+
+			hpdb := strings.SplitN(hostPortDb, "/", 2)
+			if len(hpdb) == 2 {
+				hostPort := hpdb[0]
+				cfg.MySQLDBName = hpdb[1]
+
+				if idx := strings.Index(cfg.MySQLDBName, "?"); idx > 0 {
+					cfg.MySQLDBName = cfg.MySQLDBName[:idx]
+				}
+
+				hp := strings.SplitN(hostPort, ":", 2)
+				if len(hp) == 2 {
+					cfg.MySQLHost = hp[0]
+					cfg.MySQLPort = hp[1]
+				} else {
+					cfg.MySQLHost = hostPort
+					cfg.MySQLPort = "3306"
+				}
+			}
+		}
+	}
+
+	return cfg
 }
 
 func getEnv(key, defaultVal string) string {
