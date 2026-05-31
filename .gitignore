@@ -26,6 +26,9 @@ clever-connect-server
 *.sqlite3
 data/
 
+# Application Logs
+logs/
+
 # Node.js
 node_modules/
 dist/

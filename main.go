@@ -3,14 +3,13 @@ package main
 import (
 	"embed"
 	"io/fs"
-	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
 	"clever-connect/internal/handlers"
+	"clever-connect/internal/logger"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,27 +21,31 @@ var clientDist embed.FS
 var serverDist embed.FS
 
 func main() {
-	log.Println("[Core] Starting CleverConnect VPN Orchestrator...")
-
-	// Load configuration
+	// Load configuration first (before logger, since we need AppMode)
 	cfg := config.LoadConfig()
-	log.Printf("[Core] Application Mode: %s", strings.ToUpper(cfg.AppMode))
+
+	// Initialize the async structured logging system
+	logger.Init("logs", cfg.AppMode)
+	defer logger.Shutdown()
+
+	logger.Info("Core", "Starting CleverConnect VPN Orchestrator",
+		"mode", strings.ToUpper(cfg.AppMode),
+		"port", cfg.Port,
+	)
 
 	// Initialize Database
 	database := db.InitDB(cfg)
 	_ = database // keep reference
 
-	// Setup Gin Router
+	// Setup Gin Router in release mode
 	gin.SetMode(gin.ReleaseMode)
+	gin.DefaultWriter = logger.GinWriter()
+	gin.DefaultErrorWriter = logger.GinWriter()
 	router := gin.New()
-	router.Use(gin.Recovery())
 
-	// Logging Middleware
-	router.Use(func(c *gin.Context) {
-		start := time.Now()
-		c.Next()
-		log.Printf("[HTTP] %s %s | Status: %d | Latency: %v", c.Request.Method, c.Request.URL.Path, c.Writer.Status(), time.Since(start))
-	})
+	// Use our structured logging middleware instead of gin.Logger()
+	router.Use(logger.GinRecoveryMiddleware())
+	router.Use(logger.GinMiddleware())
 
 	// Setup API Route Handlers
 	authHandler := handlers.NewAuthHandler(cfg)
@@ -59,13 +62,17 @@ func main() {
 		{
 			protected.POST("/clients/disconnect/:id", func(c *gin.Context) {
 				id := c.Param("id")
+				logger.Info("API", "Client disconnect requested", "clientId", id, "ip", c.ClientIP())
 				c.JSON(http.StatusOK, gin.H{"status": "disconnected", "id": id})
 			})
+
+			protected.GET("/logs/download", handlers.DownloadTodayLog)
 		}
 	}
 
-	// Real-time WebSocket endpoint (protected via token query param handled in middleware)
+	// Real-time WebSocket endpoints (protected via token query param handled in middleware)
 	router.GET("/ws", handlers.AuthMiddleware(cfg.JWTSecret), wsHandler.ServeWS)
+	router.GET("/ws/logs", handlers.AuthMiddleware(cfg.JWTSecret), handlers.ServeLogWS)
 
 	// Static Assets & SPA Fallback Serving
 	var embedFS fs.FS
@@ -74,23 +81,23 @@ func main() {
 	if cfg.AppMode == "server" {
 		embedFS, err = fs.Sub(serverDist, "web/server/dist")
 		if err != nil {
-			log.Fatalf("[Static] Failed to sub server embed FS: %v", err)
+			logger.Fatal("Static", "Failed to sub server embed FS", "error", err)
 		}
-		log.Println("[Static] Serving CleverConnect Server Panel UI...")
+		logger.Info("Static", "Serving CleverConnect Server Panel UI")
 	} else {
 		embedFS, err = fs.Sub(clientDist, "web/client/dist")
 		if err != nil {
-			log.Fatalf("[Static] Failed to sub client embed FS: %v", err)
+			logger.Fatal("Static", "Failed to sub client embed FS", "error", err)
 		}
-		log.Println("[Static] Serving CleverConnect Client Panel UI...")
+		logger.Info("Static", "Serving CleverConnect Client Panel UI")
 	}
 
 	router.Use(serveEmbeddedSPA(embedFS))
 
 	// Start Gin Server
-	log.Printf("[Core] Orchestrator listening on http://127.0.0.1:%s", cfg.Port)
+	logger.Info("Core", "Orchestrator listening", "addr", "http://127.0.0.1:"+cfg.Port)
 	if err := router.Run(":" + cfg.Port); err != nil {
-		log.Fatalf("[Core] Failed to run server: %v", err)
+		logger.Fatal("Core", "Failed to run server", "error", err)
 	}
 }
 

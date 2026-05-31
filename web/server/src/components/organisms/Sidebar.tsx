@@ -57,8 +57,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isCol
         {navItems.map((item) => (
           <React.Fragment key={item.id}>
             <div
-              className={`sidebar__item ${activeTab === item.id ? 'sidebar__item--active' : ''}`}
-              onClick={() => setActiveTab(item.id)}
+              className={`sidebar__item ${activeTab === item.id || (item.children && item.children.some(c => c.id === activeTab)) ? 'sidebar__item--active' : ''}`}
+              onClick={() => {
+                if (item.children && item.children.length > 0) {
+                  // Navigate to the first child by default on click
+                  setActiveTab(item.children[0].id);
+                } else {
+                  setActiveTab(item.id);
+                }
+              }}
               title={isCollapsed ? item.label : undefined}
             >
               <item.icon className="nav-icon" />

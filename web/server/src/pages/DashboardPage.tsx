@@ -4,6 +4,7 @@ import { GoalCard } from '../components/molecules/GoalCard';
 import { SplineChart } from '../components/atoms/SplineChart';
 import { FiUsers, FiCpu, FiShield, FiTerminal } from 'react-icons/fi';
 import { Card } from '../components/molecules/Card';
+import { LogConsoleCard } from '../components/molecules/LogConsoleCard';
 
 export const DashboardPage: React.FC = () => {
   const { cpu, memory, disk, activeConnectionsCount, clients, bandwidthHistory, totalBandwidth, logs, initWebSocket, disconnectClient, blockClient } = useServerStore();
@@ -156,15 +157,8 @@ export const DashboardPage: React.FC = () => {
             </table>
           </div>
 
-          {/* Logs */}
-          <div className="g-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
-              <FiTerminal style={{ color: 'var(--color-brand)' }} /> Engine Logs
-            </div>
-            <div style={{ background: 'var(--color-brand-bg)', border: '1px solid var(--color-brand-border)', borderRadius: 8, padding: 12, fontFamily: 'monospace', fontSize: 10, color: 'var(--color-brand-heading)', maxHeight: 100, overflowY: 'auto' }}>
-              {logs.map((l, i) => <div key={i}>{l}</div>)}
-            </div>
-          </div>
+          {/* Real-time System Log Preview Monitor */}
+          <LogConsoleCard />
         </div>
       </div>
     </div>

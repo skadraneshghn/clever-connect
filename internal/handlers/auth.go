@@ -7,6 +7,7 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -30,17 +31,34 @@ func NewAuthHandler(cfg *config.Config) *AuthHandler {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.Warn("Auth", "Login request with invalid payload",
+			"ip", c.ClientIP(),
+			"error", err.Error(),
+		)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 		return
 	}
 
+	logger.Info("Auth", "Login attempt",
+		"username", req.Username,
+		"ip", c.ClientIP(),
+	)
+
 	var user models.User
 	if err := db.DB.Where("username = ?", req.Username).First(&user).Error; err != nil {
+		logger.Warn("Auth", "Login failed — user not found",
+			"username", req.Username,
+			"ip", c.ClientIP(),
+		)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		logger.Warn("Auth", "Login failed — incorrect password",
+			"username", req.Username,
+			"ip", c.ClientIP(),
+		)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
 		return
 	}
@@ -54,9 +72,19 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	tokenString, err := token.SignedString(h.cfg.JWTSecret)
 	if err != nil {
+		logger.Error("Auth", "Failed to sign JWT token",
+			"username", req.Username,
+			"error", err.Error(),
+		)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sign authentication token"})
 		return
 	}
+
+	logger.Info("Auth", "Login successful",
+		"username", user.Username,
+		"role", user.Role,
+		"ip", c.ClientIP(),
+	)
 
 	c.JSON(http.StatusOK, gin.H{
 		"token":    tokenString,
@@ -83,6 +111,10 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 		}
 
 		if tokenString == "" {
+			logger.Warn("Auth", "Request blocked — missing authorization token",
+				"path", c.Request.URL.Path,
+				"ip", c.ClientIP(),
+			)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization token"})
 			c.Abort()
 			return
@@ -93,6 +125,11 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 		})
 
 		if err != nil || !token.Valid {
+			logger.Warn("Auth", "Request blocked — invalid or expired token",
+				"path", c.Request.URL.Path,
+				"ip", c.ClientIP(),
+				"error", err,
+			)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 			c.Abort()
 			return

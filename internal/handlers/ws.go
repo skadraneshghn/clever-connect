@@ -1,12 +1,12 @@
 package handlers
 
 import (
-	"log"
 	"math/rand"
 	"net/http"
 	"time"
 
 	"clever-connect/internal/config"
+	"clever-connect/internal/logger"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -31,12 +31,18 @@ func NewWSHandler(cfg *config.Config) *WSHandler {
 func (h *WSHandler) ServeWS(c *gin.Context) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("[WS] Upgrade failed: %v", err)
+		logger.Error("WS", "WebSocket upgrade failed",
+			"error", err.Error(),
+			"ip", c.ClientIP(),
+		)
 		return
 	}
 	defer conn.Close()
 
-	log.Printf("[WS] Connection established. AppMode: %s", h.cfg.AppMode)
+	logger.Info("WS", "Connection established",
+		"mode", h.cfg.AppMode,
+		"ip", c.ClientIP(),
+	)
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -44,6 +50,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	// Initial Total counters
 	totalDownload := 8120.0
 	totalUpload := 2450.0
+	messageCount := 0
 
 	// Loop streaming telemetries
 	for {
@@ -103,8 +110,23 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			}
 
 			if err := conn.WriteJSON(msg); err != nil {
-				log.Printf("[WS] Write failed: %v", err)
+				logger.Warn("WS", "Connection closed — write failed",
+					"error", err.Error(),
+					"ip", c.ClientIP(),
+					"messagesSent", messageCount,
+				)
 				return
+			}
+			messageCount++
+
+			// Log periodic telemetry summary (every 30 messages ≈ 1 minute)
+			if messageCount%30 == 0 {
+				logger.Debug("WS", "Telemetry stream active",
+					"ip", c.ClientIP(),
+					"messagesSent", messageCount,
+					"totalDown", totalDownload,
+					"totalUp", totalUpload,
+				)
 			}
 		}
 	}

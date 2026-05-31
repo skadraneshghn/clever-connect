@@ -1096,3 +1096,12 @@ body {
     &--down { color: var(--color-brand-red); }
   }
 }
+
+/* --- Diagnostics Logs Terminal Styles --- */
+.log-row-hover:hover {
+  background-color: rgba(0, 0, 0, 0.03);
+}
+body.dark-theme .log-row-hover:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+

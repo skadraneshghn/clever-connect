@@ -2,17 +2,18 @@ package db
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
 	"clever-connect/internal/config"
+	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 var DB *gorm.DB
@@ -20,19 +21,26 @@ var DB *gorm.DB
 func InitDB(cfg *config.Config) *gorm.DB {
 	var err error
 
+	// Use GORM silent mode — we handle logging through our own system
+	gormCfg := &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	}
+
 	if cfg.AppMode == "client" {
 		// SQLite Mode
-		log.Printf("[DB] Connecting to SQLite database at: %s", cfg.SQLitePath)
+		logger.Info("DB", "Connecting to SQLite database", "path", cfg.SQLitePath)
+
 		// Ensure parent directory exists
 		dir := filepath.Dir(cfg.SQLitePath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Fatalf("[DB] Failed to create database directories: %v", err)
+			logger.Fatal("DB", "Failed to create database directories", "error", err)
 		}
 
-		DB, err = gorm.Open(sqlite.Open(cfg.SQLitePath), &gorm.Config{})
+		DB, err = gorm.Open(sqlite.Open(cfg.SQLitePath), gormCfg)
 		if err != nil {
-			log.Fatalf("[DB] Failed to connect to SQLite: %v", err)
+			logger.Fatal("DB", "Failed to connect to SQLite", "path", cfg.SQLitePath, "error", err)
 		}
+		logger.Info("DB", "SQLite connection established", "path", cfg.SQLitePath)
 	} else {
 		// MySQL Mode (Server panel)
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
@@ -42,32 +50,46 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			cfg.MySQLPort,
 			cfg.MySQLDBName,
 		)
-		log.Printf("[DB] Connecting to MySQL database: %s@tcp(%s:%s)/%s", cfg.MySQLUser, cfg.MySQLHost, cfg.MySQLPort, cfg.MySQLDBName)
+		logger.Info("DB", "Connecting to MySQL database",
+			"user", cfg.MySQLUser,
+			"host", cfg.MySQLHost,
+			"port", cfg.MySQLPort,
+			"database", cfg.MySQLDBName,
+		)
 
-		DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+		DB, err = gorm.Open(mysql.Open(dsn), gormCfg)
 		if err != nil {
 			// Elegant fallback to SQLite for easy development/review!
 			fallbackPath := "data/server_fallback.db"
-			log.Printf("[DB] WARNING: Failed to connect to MySQL database: %v", err)
-			log.Printf("[DB] FALLBACK: Elevating sandbox resilience, establishing SQLite fallback at: %s", fallbackPath)
+			logger.Warn("DB", "Failed to connect to MySQL — activating SQLite fallback",
+				"error", err,
+				"fallback", fallbackPath,
+			)
 
 			dir := filepath.Dir(fallbackPath)
 			_ = os.MkdirAll(dir, 0755)
 
-			DB, err = gorm.Open(sqlite.Open(fallbackPath), &gorm.Config{})
+			DB, err = gorm.Open(sqlite.Open(fallbackPath), gormCfg)
 			if err != nil {
-				log.Fatalf("[DB] Fatal: Database initialization failed completely: %v", err)
+				logger.Fatal("DB", "Database initialization failed completely", "error", err)
 			}
+			logger.Info("DB", "SQLite fallback connection established", "path", fallbackPath)
+		} else {
+			logger.Info("DB", "MySQL connection established",
+				"host", cfg.MySQLHost,
+				"database", cfg.MySQLDBName,
+			)
 		}
 	}
 
 	// Auto Migration
-	log.Println("[DB] Executing automatic database schema migrations...")
+	logger.Info("DB", "Executing automatic database schema migrations")
 	if err := DB.AutoMigrate(&models.User{}, &models.ClientSession{}); err != nil {
-		log.Fatalf("[DB] Auto migration failed: %v", err)
+		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
+	logger.Info("DB", "Schema migrations completed successfully")
 
-	// Seed Admin User: salman / 136517
+	// Seed Admin User
 	seedAdmin(cfg)
 
 	return DB
@@ -77,11 +99,11 @@ func seedAdmin(cfg *config.Config) {
 	var admin models.User
 	result := DB.Where("username = ?", cfg.AdminUsername).First(&admin)
 	if result.Error != nil {
-		log.Printf("[DB] Seeding administrator account. Username: %s", cfg.AdminUsername)
+		logger.Info("DB", "Seeding administrator account", "username", cfg.AdminUsername)
 
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(cfg.AdminPassword), bcrypt.DefaultCost)
 		if err != nil {
-			log.Fatalf("[DB] Failed to hash seeded password: %v", err)
+			logger.Fatal("DB", "Failed to hash seeded password", "error", err)
 		}
 
 		admin = models.User{
@@ -91,10 +113,10 @@ func seedAdmin(cfg *config.Config) {
 		}
 
 		if err := DB.Create(&admin).Error; err != nil {
-			log.Fatalf("[DB] Failed to seed administrator: %v", err)
+			logger.Fatal("DB", "Failed to seed administrator", "error", err)
 		}
-		log.Println("[DB] Administrator seeded successfully.")
+		logger.Info("DB", "Administrator seeded successfully", "username", cfg.AdminUsername)
 	} else {
-		log.Println("[DB] Seed integrity validated. Administrator account already exists.")
+		logger.Info("DB", "Seed integrity validated — administrator account exists", "username", cfg.AdminUsername)
 	}
 }

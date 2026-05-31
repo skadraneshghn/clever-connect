@@ -5,6 +5,7 @@ import { GoalCard } from '../components/molecules/GoalCard';
 import { SplineChart } from '../components/atoms/SplineChart';
 import { FiDownload, FiUpload, FiCreditCard } from 'react-icons/fi';
 import { Card } from '../components/molecules/Card';
+import { LogConsoleCard } from '../components/molecules/LogConsoleCard';
 
 export const DashboardPage: React.FC = () => {
   const { nodes, connectionState, bandwidthHistory, totalUsage, initWebSocket, connectNode } = useDashboardStore();
@@ -84,6 +85,9 @@ export const DashboardPage: React.FC = () => {
 
           {/* Virtual Card */}
           <ConnectionStateCard />
+
+          {/* Real-time System Log Preview Monitor */}
+          <LogConsoleCard />
         </div>
 
         {/* RIGHT COLUMN — Goals + Table */}
