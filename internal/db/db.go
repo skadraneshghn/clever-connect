@@ -84,7 +84,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 
 	// Auto Migration
 	logger.Info("DB", "Executing automatic database schema migrations")
-	if err := DB.AutoMigrate(&models.User{}, &models.ClientSession{}); err != nil {
+	if err := DB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
 	logger.Info("DB", "Schema migrations completed successfully")

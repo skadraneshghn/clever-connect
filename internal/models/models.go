@@ -8,7 +8,7 @@ import (
 
 type User struct {
 	gorm.Model
-	Username string `gorm:"uniqueIndex;not null" json:"username"`
+	Username string `gorm:"size:191;uniqueIndex;not null" json:"username"`
 	Password string `gorm:"not null" json:"-"`
 	Role     string `gorm:"default:'admin'" json:"role"`
 }
@@ -24,4 +24,23 @@ type ClientSession struct {
 	UploadSpeed   float64   `json:"upload_speed"`   // MB/s
 	DownloadSpeed float64   `json:"download_speed"` // MB/s
 	Active        bool      `gorm:"default:true" json:"active"`
+}
+
+// EhcoServerConfig stores how the Clever Cloud server listens for incoming tunnel traffic
+type EhcoServerConfig struct {
+	gorm.Model
+	ListenPort string `json:"listen_port" gorm:"default:'3001'"`
+	AuthToken  string `json:"auth_token"`
+	TargetMode string `json:"target_mode" gorm:"default:'direct'"` // 'direct' or 'xray'
+	TargetHost string `json:"target_host" gorm:"default:'127.0.0.1:80'"`
+	IsActive   bool   `json:"is_active" gorm:"default:false"`
+}
+
+// EhcoClientConfig stores how the local machine connects to Clever Cloud
+type EhcoClientConfig struct {
+	gorm.Model
+	LocalPort  string `json:"local_port" gorm:"default:'1080'"`
+	RemoteURL  string `json:"remote_url"` // e.g., wss://app.cleverapps.io/tunnel
+	AuthToken  string `json:"auth_token"`
+	IsActive   bool   `json:"is_active" gorm:"default:false"`
 }

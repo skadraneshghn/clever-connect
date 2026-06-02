@@ -8,8 +8,10 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/ehcocore"
 	"clever-connect/internal/handlers"
 	"clever-connect/internal/logger"
+	"clever-connect/internal/models"
 
 	"github.com/gin-gonic/gin"
 )
@@ -37,6 +39,25 @@ func main() {
 	database := db.InitDB(cfg)
 	_ = database // keep reference
 
+	// Auto-start active tunnel engine on bootstrap
+	if cfg.AppMode == "server" {
+		var serverCfg models.EhcoServerConfig
+		if err := db.DB.First(&serverCfg).Error; err == nil && serverCfg.IsActive {
+			logger.Info("Ehco", "Auto-starting active server tunnel engine")
+			if err := ehcocore.StartServerEngine(serverCfg.ListenPort, serverCfg.AuthToken, serverCfg.TargetHost); err != nil {
+				logger.Error("Ehco", "Failed to auto-start server tunnel", "error", err)
+			}
+		}
+	} else {
+		var clientCfg models.EhcoClientConfig
+		if err := db.DB.First(&clientCfg).Error; err == nil && clientCfg.IsActive {
+			logger.Info("Ehco", "Auto-starting active client tunnel engine")
+			if err := ehcocore.StartClientEngine(clientCfg.LocalPort, clientCfg.RemoteURL, clientCfg.AuthToken); err != nil {
+				logger.Error("Ehco", "Failed to auto-start client tunnel", "error", err)
+			}
+		}
+	}
+
 	// Setup Gin Router in release mode
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = logger.GinWriter()
@@ -50,6 +71,7 @@ func main() {
 	// Setup API Route Handlers
 	authHandler := handlers.NewAuthHandler(cfg)
 	wsHandler := handlers.NewWSHandler(cfg)
+	ehcoHandler := handlers.NewEhcoHandler(cfg)
 
 	// API Group
 	api := router.Group("/api")
@@ -67,6 +89,15 @@ func main() {
 			})
 
 			protected.GET("/logs/download", handlers.DownloadTodayLog)
+
+			// Ehco Tunneling routes
+			protected.GET("/ehco/config", ehcoHandler.GetConfig)
+			protected.POST("/ehco/config", ehcoHandler.SaveConfig)
+			protected.POST("/ehco/start", ehcoHandler.StartEngine)
+			protected.POST("/ehco/stop", ehcoHandler.StopEngine)
+
+			// System monitoring route
+			protected.GET("/system/stats", handlers.GetSystemStats)
 		}
 	}
 

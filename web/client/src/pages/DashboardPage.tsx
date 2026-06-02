@@ -6,6 +6,7 @@ import { SplineChart } from '../components/atoms/SplineChart';
 import { FiDownload, FiUpload, FiCreditCard } from 'react-icons/fi';
 import { Card } from '../components/molecules/Card';
 import { LogConsoleCard } from '../components/molecules/LogConsoleCard';
+import { SystemMonitor } from '../components/molecules/SystemMonitor';
 
 export const DashboardPage: React.FC = () => {
   const { nodes, connectionState, bandwidthHistory, totalUsage, initWebSocket, connectNode } = useDashboardStore();
@@ -92,6 +93,7 @@ export const DashboardPage: React.FC = () => {
 
         {/* RIGHT COLUMN — Goals + Table */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <SystemMonitor />
           {/* Goals Header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
             <div>

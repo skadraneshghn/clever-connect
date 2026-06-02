@@ -5,6 +5,7 @@ import { SplineChart } from '../components/atoms/SplineChart';
 import { FiUsers, FiCpu, FiShield, FiTerminal } from 'react-icons/fi';
 import { Card } from '../components/molecules/Card';
 import { LogConsoleCard } from '../components/molecules/LogConsoleCard';
+import { SystemMonitor } from '../components/molecules/SystemMonitor';
 
 export const DashboardPage: React.FC = () => {
   const { cpu, memory, disk, activeConnectionsCount, clients, bandwidthHistory, totalBandwidth, logs, initWebSocket, disconnectClient, blockClient } = useServerStore();
@@ -93,6 +94,7 @@ export const DashboardPage: React.FC = () => {
 
         {/* Right */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <SystemMonitor />
           {/* Connected clients */}
           <div className="g-card" style={{ padding: 0 }}>
             <div style={{ padding: '18px 20px 0' }}>

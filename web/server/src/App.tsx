@@ -8,6 +8,7 @@ const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then(m => ({ default: m.DashboardPage })));
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const LogsPage = lazy(() => import('./pages/LogsPage').then(m => ({ default: m.LogsPage })));
+const EhcoServerPage = lazy(() => import('./pages/EhcoServerPage').then(m => ({ default: m.EhcoServerPage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -34,6 +35,7 @@ const ProtectedLayout: React.FC = () => {
     clients: ['Users', 'Clients'],
     settings: ['Configure', 'Settings'],
     'fw-logs': ['System Logs', 'Diagnostics'],
+    'ehco-tunnel': ['Protocol', 'Ehco'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -85,6 +87,7 @@ const router = createBrowserRouter([
       { path: 'dashboard', element: <DashboardPage /> },
       { path: 'settings', element: <SettingsPage /> },
       { path: 'fw-logs', element: <LogsPage /> },
+      { path: 'ehco-tunnel', element: <EhcoServerPage /> },
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },
