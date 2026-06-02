@@ -53,4 +53,9 @@ type EhcoClientConfig struct {
 	KeepAlive  int    `json:"keep_alive" gorm:"default:15"`
 	BypassIR   bool   `json:"bypass_ir" gorm:"default:true"`
 	IsActive   bool   `json:"is_active" gorm:"default:false"`
+
+	// --- DYNAMIC EDGE BRIDGE ---
+	EnableBridge bool   `json:"enable_bridge" gorm:"default:false"`
+	BridgeURL    string `json:"bridge_url"`
+	BridgeSNI    string `json:"bridge_sni"`
 }

@@ -59,14 +59,17 @@ func (h *EhcoHandler) GetConfig(c *gin.Context) {
 		if err := db.DB.First(&clientCfg).Error; err != nil {
 			// Seed a default config record
 			clientCfg = models.EhcoClientConfig{
-				LocalPort:  "1080",
-				RemoteURL:  "",
-				AuthToken:  "",
-				SNI:        "",
-				EnableMux:  true,
-				KeepAlive:  15,
-				BypassIR:   true,
-				IsActive:   false,
+				LocalPort:    "1080",
+				RemoteURL:    "",
+				AuthToken:    "",
+				SNI:          "",
+				EnableMux:    true,
+				KeepAlive:    15,
+				BypassIR:     true,
+				IsActive:     false,
+				EnableBridge: false,
+				BridgeURL:    "",
+				BridgeSNI:    "",
 			}
 			db.DB.Create(&clientCfg)
 		}
@@ -133,13 +136,16 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "saved", "config": serverCfg})
 	} else {
 		var req struct {
-			LocalPort string `json:"local_port"`
-			RemoteURL string `json:"remote_url"`
-			AuthToken string `json:"auth_token"`
-			SNI       string `json:"sni"`
-			EnableMux bool   `json:"enable_mux"`
-			KeepAlive int    `json:"keep_alive"`
-			BypassIR  bool   `json:"bypass_ir"`
+			LocalPort    string `json:"local_port"`
+			RemoteURL    string `json:"remote_url"`
+			AuthToken    string `json:"auth_token"`
+			SNI          string `json:"sni"`
+			EnableMux    bool   `json:"enable_mux"`
+			KeepAlive    int    `json:"keep_alive"`
+			BypassIR     bool   `json:"bypass_ir"`
+			EnableBridge bool   `json:"enable_bridge"`
+			BridgeURL    string `json:"bridge_url"`
+			BridgeSNI    string `json:"bridge_sni"`
 		}
 
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -156,17 +162,23 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 			clientCfg.EnableMux = req.EnableMux
 			clientCfg.KeepAlive = req.KeepAlive
 			clientCfg.BypassIR = req.BypassIR
+			clientCfg.EnableBridge = req.EnableBridge
+			clientCfg.BridgeURL = req.BridgeURL
+			clientCfg.BridgeSNI = req.BridgeSNI
 			db.DB.Save(&clientCfg)
 		} else {
 			clientCfg = models.EhcoClientConfig{
-				LocalPort:  req.LocalPort,
-				RemoteURL:  req.RemoteURL,
-				AuthToken:  req.AuthToken,
-				SNI:        req.SNI,
-				EnableMux:  req.EnableMux,
-				KeepAlive:  req.KeepAlive,
-				BypassIR:   req.BypassIR,
-				IsActive:   false,
+				LocalPort:    req.LocalPort,
+				RemoteURL:    req.RemoteURL,
+				AuthToken:    req.AuthToken,
+				SNI:          req.SNI,
+				EnableMux:    req.EnableMux,
+				KeepAlive:    req.KeepAlive,
+				BypassIR:     req.BypassIR,
+				EnableBridge: req.EnableBridge,
+				BridgeURL:    req.BridgeURL,
+				BridgeSNI:    req.BridgeSNI,
+				IsActive:     false,
 			}
 			db.DB.Create(&clientCfg)
 		}

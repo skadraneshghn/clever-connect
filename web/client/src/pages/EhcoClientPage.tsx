@@ -13,6 +13,11 @@ export const EhcoClientPage: React.FC = () => {
   const [bypassIR, setBypassIR] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  // DYNAMIC EDGE BRIDGE CONFIGS
+  const [enableBridge, setEnableBridge] = useState(false);
+  const [bridgeURL, setBridgeURL] = useState('');
+  const [bridgeSNI, setBridgeSNI] = useState('');
+
   const [isRunning, setIsRunning] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -38,6 +43,9 @@ export const EhcoClientPage: React.FC = () => {
           setEnableMux(data.config.enable_mux !== undefined ? data.config.enable_mux : true);
           setKeepAlive(data.config.keep_alive || 15);
           setBypassIR(data.config.bypass_ir !== undefined ? data.config.bypass_ir : true);
+          setEnableBridge(data.config.enable_bridge !== undefined ? data.config.enable_bridge : false);
+          setBridgeURL(data.config.bridge_url || '');
+          setBridgeSNI(data.config.bridge_sni || '');
         }
         setIsRunning(data.is_running || false);
       }
@@ -71,7 +79,10 @@ export const EhcoClientPage: React.FC = () => {
           sni: sni,
           enable_mux: enableMux,
           keep_alive: Number(keepAlive),
-          bypass_ir: bypassIR
+          bypass_ir: bypassIR,
+          enable_bridge: enableBridge,
+          bridge_url: bridgeURL,
+          bridge_sni: bridgeSNI
         })
       });
 
@@ -86,6 +97,9 @@ export const EhcoClientPage: React.FC = () => {
           setEnableMux(data.config.enable_mux !== undefined ? data.config.enable_mux : true);
           setKeepAlive(data.config.keep_alive || 15);
           setBypassIR(data.config.bypass_ir !== undefined ? data.config.bypass_ir : true);
+          setEnableBridge(data.config.enable_bridge !== undefined ? data.config.enable_bridge : false);
+          setBridgeURL(data.config.bridge_url || '');
+          setBridgeSNI(data.config.bridge_sni || '');
         }
       } else {
         const data = await response.json();
@@ -251,6 +265,88 @@ export const EhcoClientPage: React.FC = () => {
                   {showToken ? <FiEyeOff size={16} /> : <FiEye size={16} />}
                 </button>
               </div>
+            </div>
+
+            {/* Dynamic Edge Bridge Option */}
+            <div style={{ 
+              border: '1px solid var(--color-brand-border)', 
+              borderRadius: 8, 
+              padding: '12px 14px',
+              background: enableBridge ? 'rgba(99, 102, 241, 0.05)' : 'var(--color-brand-bg)',
+              transition: 'all 0.3s ease'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <FiGlobe style={{ color: enableBridge ? 'var(--color-brand)' : 'var(--color-brand-muted)', fontSize: 14 }} />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                      Enable Dynamic Edge Bridge
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 9, color: 'var(--color-brand-text)', display: 'block', marginTop: 2 }}>
+                    Routes encrypted tunnel traffic through a Cloudflare Worker proxy/bridge to bypass geo-blocks.
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={enableBridge}
+                  onChange={(e) => setEnableBridge(e.target.checked)}
+                  style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+                />
+              </div>
+
+              {enableBridge && (
+                <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12, borderTop: '1px solid var(--color-brand-border)', paddingTop: 12 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>
+                      Bridge Worker URL
+                    </label>
+                    <input
+                      type="text"
+                      value={bridgeURL}
+                      onChange={(e) => setBridgeURL(e.target.value)}
+                      placeholder="e.g. wss://your-worker.yourname.workers.dev"
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: 6,
+                        border: '1px solid var(--color-brand-border)',
+                        background: 'var(--color-brand-card)',
+                        color: 'var(--color-brand-heading)',
+                        fontSize: 13
+                      }}
+                      required={enableBridge}
+                    />
+                    <span style={{ fontSize: 9, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>
+                      Enter your Cloudflare Worker URL or another edge network bridge address.
+                    </span>
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>
+                      Spoofed SNI (Optional override)
+                    </label>
+                    <input
+                      type="text"
+                      value={bridgeSNI}
+                      onChange={(e) => setBridgeSNI(e.target.value)}
+                      placeholder="e.g. your-worker.yourname.workers.dev"
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: 6,
+                        border: '1px solid var(--color-brand-border)',
+                        background: 'var(--color-brand-card)',
+                        color: 'var(--color-brand-heading)',
+                        fontSize: 13
+                      }}
+                    />
+                    <span style={{ fontSize: 9, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>
+                      Presents a clean, spoofed domain during TLS. Defaults to your Worker's hostname if empty.
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Advanced CTO Settings Accordion for Client */}
