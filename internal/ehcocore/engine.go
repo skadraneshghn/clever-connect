@@ -172,9 +172,9 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 	binPath := getEhcoBinPath()
 	cmdInstance = exec.Command(binPath, "-c", configPath)
 	
-	// Stream logs to Clever Connect logger
-	cmdInstance.Stdout = logger.GinWriter()
-	cmdInstance.Stderr = logger.GinWriter()
+	// --- Suppress noisy I/O streams in production ---
+	cmdInstance.Stdout = nil
+	cmdInstance.Stderr = nil
 
 	if err := cmdInstance.Start(); err != nil {
 		cmdInstance = nil
@@ -322,8 +322,10 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 	// Launch process
 	binPath := getEhcoBinPath()
 	cmdInstance = exec.Command(binPath, "-c", configPath)
-	cmdInstance.Stdout = logger.GinWriter()
-	cmdInstance.Stderr = logger.GinWriter()
+	
+	// --- Suppress noisy I/O streams in production ---
+	cmdInstance.Stdout = nil
+	cmdInstance.Stderr = nil
 
 	if err := cmdInstance.Start(); err != nil {
 		cmdInstance = nil
