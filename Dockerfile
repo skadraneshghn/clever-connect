@@ -77,5 +77,5 @@ COPY nginx.conf /etc/nginx/nginx.conf
 ENV APP_MODE=server
 ENV PORT=8080
 
-# Start Nginx in background and run the Go backend directly as the main process (PID 1)
-CMD service nginx start && exec ./bin/clever-connect
+# Start Nginx in background, set Gin port to 3000, and run Go backend directly as main process (PID 1)
+CMD service nginx start && export PORT=3000 && exec ./bin/clever-connect
