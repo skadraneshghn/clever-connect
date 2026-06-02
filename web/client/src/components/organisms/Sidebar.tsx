@@ -1,5 +1,5 @@
 import React from 'react';
-import { FiGrid, FiLayers, FiGlobe, FiRepeat, FiShield, FiTrendingUp, FiUsers, FiSettings, FiBook, FiHelpCircle, FiLogOut, FiSearch, FiZap, FiMenu, FiCpu } from 'react-icons/fi';
+import { FiGrid, FiLayers, FiGlobe, FiRepeat, FiShield, FiTrendingUp, FiUsers, FiSettings, FiBook, FiHelpCircle, FiLogOut, FiSearch, FiZap, FiMenu, FiCpu, FiFolder } from 'react-icons/fi';
 
 interface SidebarProps {
   activeTab: string;
@@ -17,6 +17,12 @@ const navItems = [
     id: 'protocol', label: 'Protocol', icon: FiCpu,
     children: [
       { id: 'ehco-tunnel', label: 'Ehco' },
+    ]
+  },
+  {
+    id: 'files-section', label: 'Files', icon: FiFolder,
+    children: [
+      { id: 'files', label: 'File manager' },
     ]
   },
   {

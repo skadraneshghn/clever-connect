@@ -257,42 +257,6 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 		params.Add("mux", "false")
 	}
 
-	// Dynamic SNI Selection
-	sniToUse := ""
-	if dbCfg.EnableBridge {
-		if dbCfg.BridgeSNI != "" {
-			sniToUse = dbCfg.BridgeSNI
-		} else if dbCfg.BridgeURL != "" {
-			// Auto extract SNI from BridgeURL
-			uBridge, err := url.Parse(dbCfg.BridgeURL)
-			if err == nil {
-				host := uBridge.Host
-				if strings.Contains(host, ":") {
-					host = strings.Split(host, ":")[0]
-				}
-				sniToUse = host
-			}
-		}
-	} else {
-		if dbCfg.SNI != "" {
-			sniToUse = dbCfg.SNI
-		} else if dbCfg.RemoteURL != "" {
-			// Auto extract SNI from RemoteURL
-			uRemote, err := url.Parse(dbCfg.RemoteURL)
-			if err == nil {
-				host := uRemote.Host
-				if strings.Contains(host, ":") {
-					host = strings.Split(host, ":")[0]
-				}
-				sniToUse = host
-			}
-		}
-	}
-
-	if sniToUse != "" {
-		params.Add("sni", sniToUse)
-	}
-
 	// Add params to WS Path query string
 	if strings.Contains(authPath, "?") {
 		authPath += "&" + params.Encode()

@@ -72,6 +72,7 @@ func main() {
 	authHandler := handlers.NewAuthHandler(cfg)
 	wsHandler := handlers.NewWSHandler(cfg)
 	ehcoHandler := handlers.NewEhcoHandler(cfg)
+	fileHandler := handlers.NewFileHandler(cfg)
 
 	// API Group
 	api := router.Group("/api")
@@ -98,6 +99,19 @@ func main() {
 
 			// System monitoring route
 			protected.GET("/system/stats", handlers.GetSystemStats)
+
+			// File Manager API Endpoints
+			protected.GET("/files/list", fileHandler.ListDirectory)
+			protected.GET("/files/stream", fileHandler.StreamOrDownload)
+			protected.GET("/files/content", fileHandler.GetContent)
+			protected.POST("/files/save", fileHandler.SaveContent)
+			protected.POST("/files/create-folder", fileHandler.CreateFolder)
+			protected.POST("/files/delete", fileHandler.DeleteItem)
+			protected.POST("/files/upload", fileHandler.UploadFile)
+			protected.POST("/files/move", fileHandler.MoveItem)
+			protected.POST("/files/copy", fileHandler.CopyItem)
+			protected.POST("/files/compress", fileHandler.CompressItems)
+			protected.POST("/files/decompress", fileHandler.DecompressItem)
 		}
 	}
 
