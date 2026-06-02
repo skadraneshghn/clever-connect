@@ -44,7 +44,7 @@ func main() {
 		var serverCfg models.EhcoServerConfig
 		if err := db.DB.First(&serverCfg).Error; err == nil && serverCfg.IsActive {
 			logger.Info("Ehco", "Auto-starting active server tunnel engine")
-			if err := ehcocore.StartServerEngine(serverCfg.ListenPort, serverCfg.AuthToken, serverCfg.TargetHost); err != nil {
+			if err := ehcocore.StartServerEngine(&serverCfg); err != nil {
 				logger.Error("Ehco", "Failed to auto-start server tunnel", "error", err)
 			}
 		}
@@ -52,7 +52,7 @@ func main() {
 		var clientCfg models.EhcoClientConfig
 		if err := db.DB.First(&clientCfg).Error; err == nil && clientCfg.IsActive {
 			logger.Info("Ehco", "Auto-starting active client tunnel engine")
-			if err := ehcocore.StartClientEngine(clientCfg.LocalPort, clientCfg.RemoteURL, clientCfg.AuthToken); err != nil {
+			if err := ehcocore.StartClientEngine(&clientCfg); err != nil {
 				logger.Error("Ehco", "Failed to auto-start client tunnel", "error", err)
 			}
 		}

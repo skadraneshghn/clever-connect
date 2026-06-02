@@ -5,6 +5,14 @@ export const EhcoClientPage: React.FC = () => {
   const [localPort, setLocalPort] = useState('1080');
   const [remoteURL, setRemoteURL] = useState('');
   const [authToken, setAuthToken] = useState('');
+  
+  // NEW CTO CONFIGS
+  const [sni, setSni] = useState('');
+  const [enableMux, setEnableMux] = useState(true);
+  const [keepAlive, setKeepAlive] = useState(15);
+  const [bypassIR, setBypassIR] = useState(true);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   const [isRunning, setIsRunning] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -26,6 +34,10 @@ export const EhcoClientPage: React.FC = () => {
           setLocalPort(data.config.local_port || '1080');
           setRemoteURL(data.config.remote_url || '');
           setAuthToken(data.config.auth_token || '');
+          setSni(data.config.sni || '');
+          setEnableMux(data.config.enable_mux !== undefined ? data.config.enable_mux : true);
+          setKeepAlive(data.config.keep_alive || 15);
+          setBypassIR(data.config.bypass_ir !== undefined ? data.config.bypass_ir : true);
         }
         setIsRunning(data.is_running || false);
       }
@@ -55,7 +67,11 @@ export const EhcoClientPage: React.FC = () => {
         body: JSON.stringify({
           local_port: localPort,
           remote_url: remoteURL,
-          auth_token: authToken
+          auth_token: authToken,
+          sni: sni,
+          enable_mux: enableMux,
+          keep_alive: Number(keepAlive),
+          bypass_ir: bypassIR
         })
       });
 
@@ -66,6 +82,10 @@ export const EhcoClientPage: React.FC = () => {
           setLocalPort(data.config.local_port || '1080');
           setRemoteURL(data.config.remote_url || '');
           setAuthToken(data.config.auth_token || '');
+          setSni(data.config.sni || '');
+          setEnableMux(data.config.enable_mux !== undefined ? data.config.enable_mux : true);
+          setKeepAlive(data.config.keep_alive || 15);
+          setBypassIR(data.config.bypass_ir !== undefined ? data.config.bypass_ir : true);
         }
       } else {
         const data = await response.json();
@@ -144,13 +164,13 @@ export const EhcoClientPage: React.FC = () => {
         {/* Left Column - Configurations & Guide */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           
-          <form onSubmit={handleSave} className="g-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+          <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 18 }} className="g-card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
               <FiSliders style={{ color: 'var(--color-brand)', fontSize: 18 }} />
               <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Client SOCKS5 settings</span>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 16, marginBottom: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 16, marginBottom: 4 }}>
               <div>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Local Port</label>
                 <input
@@ -192,7 +212,7 @@ export const EhcoClientPage: React.FC = () => {
               </div>
             </div>
 
-            <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 4 }}>
               <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Auth Token</label>
               <div style={{ position: 'relative' }}>
                 <input
@@ -231,6 +251,123 @@ export const EhcoClientPage: React.FC = () => {
                   {showToken ? <FiEyeOff size={16} /> : <FiEye size={16} />}
                 </button>
               </div>
+            </div>
+
+            {/* Advanced CTO Settings Accordion for Client */}
+            <div style={{ 
+              border: '1px solid var(--color-brand-border)', 
+              borderRadius: 8, 
+              padding: '12px 14px',
+              background: 'var(--color-brand-bg)'
+            }}>
+              <div 
+                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+                onClick={() => setShowAdvanced(!showAdvanced)}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <FiSliders style={{ color: 'var(--color-brand)', fontSize: 14 }} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                    Advanced DPI Bypass Settings
+                  </span>
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--color-brand)', fontWeight: 600 }}>
+                  {showAdvanced ? 'Hide ▲' : 'Show Advanced Settings ▼'}
+                </span>
+              </div>
+
+              {showAdvanced && (
+                <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12, borderTop: '1px solid var(--color-brand-border)', paddingTop: 12 }}>
+                  
+                  {/* SNI Field */}
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>
+                      SNI Spoof Hostname
+                    </label>
+                    <input
+                      type="text"
+                      value={sni}
+                      onChange={(e) => setSni(e.target.value)}
+                      placeholder="e.g. www.speedtest.net or clean.domain.com"
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: 6,
+                        border: '1px solid var(--color-brand-border)',
+                        background: 'var(--color-brand-card)',
+                        color: 'var(--color-brand-heading)',
+                        fontSize: 13
+                      }}
+                    />
+                    <span style={{ fontSize: 9, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>
+                      Spoofs TLS handshake hostname. Crucial for CDNs and bypassing active DPI blocks.
+                    </span>
+                  </div>
+
+                  {/* Enable Mux Toggle */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)', margin: 0 }}>
+                        Enable TCP Multiplexing (Mux)
+                      </label>
+                      <span style={{ fontSize: 9, color: 'var(--color-brand-text)', display: 'block' }}>
+                        Funnels concurrent streams into a single WebSocket connection to evade handshake volume rules.
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={enableMux}
+                      onChange={(e) => setEnableMux(e.target.checked)}
+                      style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+                    />
+                  </div>
+
+                  {/* Keep Alive Ping */}
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>
+                      Keep-Alive Ping (Seconds)
+                    </label>
+                    <input
+                      type="number"
+                      value={keepAlive}
+                      onChange={(e) => setKeepAlive(Number(e.target.value))}
+                      min="5"
+                      max="300"
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: 6,
+                        border: '1px solid var(--color-brand-border)',
+                        background: 'var(--color-brand-card)',
+                        color: 'var(--color-brand-heading)',
+                        fontSize: 13
+                      }}
+                      required
+                    />
+                    <span style={{ fontSize: 9, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>
+                      Ensures firewall loops do not drop idle connections. Recommended: 15s.
+                    </span>
+                  </div>
+
+                  {/* Bypass IR Toggle */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--color-brand-border)', paddingTop: 10 }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)', margin: 0 }}>
+                        Bypass Iranian Domains & IPs (.ir)
+                      </label>
+                      <span style={{ fontSize: 9, color: 'var(--color-brand-text)', display: 'block' }}>
+                        Allows local banking and local Snapp apps to connect directly without routing over foreign proxies.
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={bypassIR}
+                      onChange={(e) => setBypassIR(e.target.checked)}
+                      style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+                    />
+                  </div>
+
+                </div>
+              )}
             </div>
 
             <button type="submit" className="btn btn--primary" style={{ display: 'flex', alignItems: 'center', gap: 6 }} disabled={isLoading}>
@@ -344,7 +481,7 @@ export const EhcoClientPage: React.FC = () => {
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, marginBottom: 14 }}>
-              <span className="live-dot" style={{ background: isRunning ? 'var(--color-brand-green)' : '#ef4444' }} />
+              <span className="live-dot" style={{ background: isRunning ? '#10b981' : '#ef4444' }} />
               <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
                 {isRunning ? 'ACTIVE' : 'INACTIVE'}
               </span>

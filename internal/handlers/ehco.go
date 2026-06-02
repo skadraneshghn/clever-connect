@@ -42,6 +42,8 @@ func (h *EhcoHandler) GetConfig(c *gin.Context) {
 				AuthToken:  GenerateRandomToken(),
 				TargetMode: "direct",
 				TargetHost: "127.0.0.1:80",
+				EnableMux:  true,
+				KeepAlive:  15,
 				IsActive:   false,
 			}
 			db.DB.Create(&serverCfg)
@@ -57,10 +59,14 @@ func (h *EhcoHandler) GetConfig(c *gin.Context) {
 		if err := db.DB.First(&clientCfg).Error; err != nil {
 			// Seed a default config record
 			clientCfg = models.EhcoClientConfig{
-				LocalPort: "1080",
-				RemoteURL: "",
-				AuthToken: "",
-				IsActive:  false,
+				LocalPort:  "1080",
+				RemoteURL:  "",
+				AuthToken:  "",
+				SNI:        "",
+				EnableMux:  true,
+				KeepAlive:  15,
+				BypassIR:   true,
+				IsActive:   false,
 			}
 			db.DB.Create(&clientCfg)
 		}
@@ -81,6 +87,8 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 			AuthToken  string `json:"auth_token"`
 			TargetMode string `json:"target_mode"`
 			TargetHost string `json:"target_host"`
+			EnableMux  bool   `json:"enable_mux"`
+			KeepAlive  int    `json:"keep_alive"`
 		}
 
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -94,6 +102,8 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 			serverCfg.AuthToken = req.AuthToken
 			serverCfg.TargetMode = req.TargetMode
 			serverCfg.TargetHost = req.TargetHost
+			serverCfg.EnableMux = req.EnableMux
+			serverCfg.KeepAlive = req.KeepAlive
 			db.DB.Save(&serverCfg)
 		} else {
 			serverCfg = models.EhcoServerConfig{
@@ -101,6 +111,8 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 				AuthToken:  req.AuthToken,
 				TargetMode: req.TargetMode,
 				TargetHost: req.TargetHost,
+				EnableMux:  req.EnableMux,
+				KeepAlive:  req.KeepAlive,
 				IsActive:   false,
 			}
 			db.DB.Create(&serverCfg)
@@ -110,7 +122,7 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 		if ehcocore.IsRunning() {
 			logger.Info("Ehco", "Configuration updated. Restarting server tunnel engine.")
 			ehcocore.StopEngine()
-			if err := ehcocore.StartServerEngine(serverCfg.ListenPort, serverCfg.AuthToken, serverCfg.TargetHost); err != nil {
+			if err := ehcocore.StartServerEngine(&serverCfg); err != nil {
 				serverCfg.IsActive = false
 				db.DB.Save(&serverCfg)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Engine restarted but failed with error: " + err.Error()})
@@ -124,6 +136,10 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 			LocalPort string `json:"local_port"`
 			RemoteURL string `json:"remote_url"`
 			AuthToken string `json:"auth_token"`
+			SNI       string `json:"sni"`
+			EnableMux bool   `json:"enable_mux"`
+			KeepAlive int    `json:"keep_alive"`
+			BypassIR  bool   `json:"bypass_ir"`
 		}
 
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -136,13 +152,21 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 			clientCfg.LocalPort = req.LocalPort
 			clientCfg.RemoteURL = req.RemoteURL
 			clientCfg.AuthToken = req.AuthToken
+			clientCfg.SNI = req.SNI
+			clientCfg.EnableMux = req.EnableMux
+			clientCfg.KeepAlive = req.KeepAlive
+			clientCfg.BypassIR = req.BypassIR
 			db.DB.Save(&clientCfg)
 		} else {
 			clientCfg = models.EhcoClientConfig{
-				LocalPort: req.LocalPort,
-				RemoteURL: req.RemoteURL,
-				AuthToken: req.AuthToken,
-				IsActive:  false,
+				LocalPort:  req.LocalPort,
+				RemoteURL:  req.RemoteURL,
+				AuthToken:  req.AuthToken,
+				SNI:        req.SNI,
+				EnableMux:  req.EnableMux,
+				KeepAlive:  req.KeepAlive,
+				BypassIR:   req.BypassIR,
+				IsActive:   false,
 			}
 			db.DB.Create(&clientCfg)
 		}
@@ -151,7 +175,7 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 		if ehcocore.IsRunning() {
 			logger.Info("Ehco", "Configuration updated. Restarting client tunnel engine.")
 			ehcocore.StopEngine()
-			if err := ehcocore.StartClientEngine(clientCfg.LocalPort, clientCfg.RemoteURL, clientCfg.AuthToken); err != nil {
+			if err := ehcocore.StartClientEngine(&clientCfg); err != nil {
 				clientCfg.IsActive = false
 				db.DB.Save(&clientCfg)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Engine restarted but failed with error: " + err.Error()})
@@ -172,7 +196,7 @@ func (h *EhcoHandler) StartEngine(c *gin.Context) {
 			return
 		}
 
-		if err := ehcocore.StartServerEngine(serverCfg.ListenPort, serverCfg.AuthToken, serverCfg.TargetHost); err != nil {
+		if err := ehcocore.StartServerEngine(&serverCfg); err != nil {
 			logger.Error("Ehco", "Failed to start server tunnel", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -189,7 +213,7 @@ func (h *EhcoHandler) StartEngine(c *gin.Context) {
 			return
 		}
 
-		if err := ehcocore.StartClientEngine(clientCfg.LocalPort, clientCfg.RemoteURL, clientCfg.AuthToken); err != nil {
+		if err := ehcocore.StartClientEngine(&clientCfg); err != nil {
 			logger.Error("Ehco", "Failed to start client tunnel", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

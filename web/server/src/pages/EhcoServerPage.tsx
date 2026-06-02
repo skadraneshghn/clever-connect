@@ -1,12 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { FiSliders, FiCpu, FiGlobe, FiKey, FiPlay, FiSquare, FiSave, FiRefreshCw, FiEye, FiEyeOff } from 'react-icons/fi';
-import { Card } from '../components/molecules/Card';
 
 export const EhcoServerPage: React.FC = () => {
   const [listenPort, setListenPort] = useState('3001');
   const [authToken, setAuthToken] = useState('');
   const [targetMode, setTargetMode] = useState('direct');
   const [targetHost, setTargetHost] = useState('127.0.0.1:80');
+  
+  // NEW CTO CONFIGS
+  const [enableMux, setEnableMux] = useState(true);
+  const [keepAlive, setKeepAlive] = useState(15);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   const [isRunning, setIsRunning] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -29,6 +34,8 @@ export const EhcoServerPage: React.FC = () => {
           setAuthToken(data.config.auth_token || '');
           setTargetMode(data.config.target_mode || 'direct');
           setTargetHost(data.config.target_host || '127.0.0.1:80');
+          setEnableMux(data.config.enable_mux !== undefined ? data.config.enable_mux : true);
+          setKeepAlive(data.config.keep_alive || 15);
         }
         setIsRunning(data.is_running || false);
       }
@@ -68,7 +75,9 @@ export const EhcoServerPage: React.FC = () => {
           listen_port: listenPort,
           auth_token: authToken,
           target_mode: targetMode,
-          target_host: targetHost
+          target_host: targetHost,
+          enable_mux: enableMux,
+          keep_alive: Number(keepAlive)
         })
       });
 
@@ -81,6 +90,8 @@ export const EhcoServerPage: React.FC = () => {
           setAuthToken(data.config.auth_token || '');
           setTargetMode(data.config.target_mode || 'direct');
           setTargetHost(data.config.target_host || '127.0.0.1:80');
+          setEnableMux(data.config.enable_mux !== undefined ? data.config.enable_mux : true);
+          setKeepAlive(data.config.keep_alive || 15);
         }
       } else {
         const data = await response.json();
@@ -306,6 +317,75 @@ export const EhcoServerPage: React.FC = () => {
             </div>
           </div>
 
+          {/* Advanced CTO Settings Accordion */}
+          <div className="g-card" style={{ padding: '16px 20px' }}>
+            <div 
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+              onClick={() => setShowAdvanced(!showAdvanced)}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <FiSliders style={{ color: 'var(--color-brand)', fontSize: 16 }} />
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                  Advanced DPI Bypass Settings
+                </span>
+              </div>
+              <span style={{ fontSize: 12, color: 'var(--color-brand)', fontWeight: 600 }}>
+                {showAdvanced ? 'Hide ▲' : 'Show Advanced Settings ▼'}
+              </span>
+            </div>
+
+            {showAdvanced && (
+              <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 14, borderTop: '1px solid var(--color-brand-border)', paddingTop: 16 }}>
+                
+                {/* Enable Mux */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', margin: 0 }}>
+                      Enable TCP Multiplexing (Mux)
+                    </label>
+                    <span style={{ fontSize: 10, color: 'var(--color-brand-text)' }}>
+                      Funnels all TCP streams through a single persistent WebSocket to reduce handshake latency.
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={enableMux}
+                    onChange={(e) => setEnableMux(e.target.checked)}
+                    style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+                  />
+                </div>
+
+                {/* Keep-Alive Interval */}
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>
+                    Keep-Alive Ping (Seconds)
+                  </label>
+                  <input
+                    type="number"
+                    value={keepAlive}
+                    onChange={(e) => setKeepAlive(Number(e.target.value))}
+                    min="5"
+                    max="300"
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      border: '1px solid var(--color-brand-border)',
+                      background: 'var(--color-brand-card)',
+                      color: 'var(--color-brand-heading)',
+                      fontSize: 13
+                    }}
+                    required
+                  />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>
+                    Prevents Iranian ISPs from silently dropping idle proxy sockets. Recommended: 15s.
+                  </span>
+                </div>
+
+              </div>
+            )}
+          </div>
+
           <div style={{ display: 'flex', gap: 12 }}>
             <button type="submit" className="btn btn--primary" style={{ display: 'flex', alignItems: 'center', gap: 6 }} disabled={isLoading}>
               <FiSave /> Save Settings
@@ -336,7 +416,7 @@ export const EhcoServerPage: React.FC = () => {
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, marginBottom: 14 }}>
-              <span className="live-dot" style={{ background: isRunning ? 'var(--color-brand-green)' : '#ef4444' }} />
+              <span className="live-dot" style={{ background: isRunning ? '#10b981' : '#ef4444' }} />
               <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
                 {isRunning ? 'RUNNING' : 'STOPPED'}
               </span>
