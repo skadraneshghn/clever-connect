@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     unzip \
     nginx \
+    gzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install stable Go 1.22.3
@@ -73,9 +74,16 @@ RUN mkdir -p data && chmod 777 data
 # Copy Nginx config
 COPY nginx.conf /etc/nginx/nginx.conf
 
+# ==========================================
+# PHASE 4: INSTALL GOST (SOCKS5 PROXY)
+# ==========================================
+# Download and install Gost to handle the decrypted traffic from Ehco
+RUN curl -L https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz | gzip -d > /usr/local/bin/gost && \
+    chmod +x /usr/local/bin/gost
+
 # Default environment configuration (Clever Cloud will override these)
 ENV APP_MODE=server
 ENV PORT=8080
 
-# Start Nginx in background, set Gin port to 3000, and run Go backend directly as main process (PID 1)
-CMD service nginx start && export PORT=3000 && exec ./bin/clever-connect
+# Start Nginx in background, launch Gost socks5 relayer in background, set Gin port to 3000, and exec main binary directly (PID 1)
+CMD service nginx start && /usr/local/bin/gost -L socks5://127.0.0.1:10805 & export PORT=3000 && exec ./bin/clever-connect
