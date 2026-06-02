@@ -15,7 +15,7 @@ RUN cd web/server && bun run build
 # ==========================================
 # STAGE 2: COMPILE GO BINARIES
 # ==========================================
-FROM golang:1.22.3 AS go-builder
+FROM golang:1.26.3 AS go-builder
 WORKDIR /app
 
 # Pre-fetch Go dependencies
