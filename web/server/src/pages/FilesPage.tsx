@@ -23,6 +23,47 @@ interface ClipboardState {
 	items: FileItem[];
 }
 
+// Helper functions defined outside component to avoid temporal dead zone (TDZ) initialization issues
+const getFileCategory = (ext: string): 'image' | 'video' | 'code' | 'other' => {
+	const e = ext.toLowerCase();
+	if (['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'].includes(e)) return 'image';
+	if (['.mp4', '.mkv', '.mov', '.webm', '.ogg', '.3gp'].includes(e)) return 'video';
+	if (['.go', '.ts', '.tsx', '.js', '.jsx', '.css', '.scss', '.html', '.md', '.json', '.env', '.sh', '.yml', '.yaml', '.txt', '.ini', '.conf'].includes(e)) return 'code';
+	return 'other';
+};
+
+const getMonacoLanguage = (ext: string): string => {
+	const e = ext.toLowerCase();
+	if (e === '.go') return 'go';
+	if (e === '.ts' || e === '.tsx') return 'typescript';
+	if (e === '.js' || e === '.jsx') return 'javascript';
+	if (e === '.css') return 'css';
+	if (e === '.scss') return 'scss';
+	if (e === '.html') return 'html';
+	if (e === '.md') return 'markdown';
+	if (e === '.json') return 'json';
+	if (e === '.sh') return 'shell';
+	if (e === '.yml' || e === '.yaml') return 'yaml';
+	return 'plaintext';
+};
+
+const getFileIcon = (file: FileItem) => {
+	if (file.is_dir) return <FiFolder style={{ color: '#eab308', fontSize: 36 }} />;
+	const category = getFileCategory(file.extension);
+	if (category === 'image') return <FiImage style={{ color: '#22c55e', fontSize: 36 }} />;
+	if (category === 'video') return <FiVideo style={{ color: '#a855f7', fontSize: 36 }} />;
+	if (category === 'code') return <FiEdit3 style={{ color: '#3b82f6', fontSize: 36 }} />;
+	return <FiFile style={{ color: '#64748b', fontSize: 36 }} />;
+};
+
+const formatSize = (bytes: number): string => {
+	if (bytes === 0) return '0 Bytes';
+	const k = 1024;
+	const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+	const i = Math.floor(Math.log(bytes) / Math.log(k));
+	return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
+
 export const FilesPage: React.FC = () => {
 	const { token } = useAuthStore();
 	const [currentPath, setCurrentPath] = useState<string>('/');
@@ -367,46 +408,7 @@ export const FilesPage: React.FC = () => {
 		setShowShareModal(true);
 	};
 
-	// File categories and extensions
-	const getFileCategory = (ext: string): 'image' | 'video' | 'code' | 'other' => {
-		const e = ext.toLowerCase();
-		if (['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'].includes(e)) return 'image';
-		if (['.mp4', '.mkv', '.mov', '.webm', '.ogg', '.3gp'].includes(e)) return 'video';
-		if (['.go', '.ts', '.tsx', '.js', '.jsx', '.css', '.scss', '.html', '.md', '.json', '.env', '.sh', '.yml', '.yaml', '.txt', '.ini', '.conf'].includes(e)) return 'code';
-		return 'other';
-	};
 
-	const getMonacoLanguage = (ext: string): string => {
-		const e = ext.toLowerCase();
-		if (e === '.go') return 'go';
-		if (e === '.ts' || e === '.tsx') return 'typescript';
-		if (e === '.js' || e === '.jsx') return 'javascript';
-		if (e === '.css') return 'css';
-		if (e === '.scss') return 'scss';
-		if (e === '.html') return 'html';
-		if (e === '.md') return 'markdown';
-		if (e === '.json') return 'json';
-		if (e === '.sh') return 'shell';
-		if (e === '.yml' || e === '.yaml') return 'yaml';
-		return 'plaintext';
-	};
-
-	const getFileIcon = (file: FileItem) => {
-		if (file.is_dir) return <FiFolder style={{ color: '#eab308', fontSize: 36 }} />;
-		const category = getFileCategory(file.extension);
-		if (category === 'image') return <FiImage style={{ color: '#22c55e', fontSize: 36 }} />;
-		if (category === 'video') return <FiVideo style={{ color: '#a855f7', fontSize: 36 }} />;
-		if (category === 'code') return <FiEdit3 style={{ color: '#3b82f6', fontSize: 36 }} />;
-		return <FiFile style={{ color: '#64748b', fontSize: 36 }} />;
-	};
-
-	const formatSize = (bytes: number): string => {
-		if (bytes === 0) return '0 Bytes';
-		const k = 1024;
-		const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-		const i = Math.floor(Math.log(bytes) / Math.log(k));
-		return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-	};
 
 	// Create Folder
 	const handleCreateFolder = async (e: React.FormEvent) => {

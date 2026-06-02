@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,22 @@ var (
 	Manager  *Engine
 	initOnce sync.Once
 )
+
+// getAbsoluteSavePath resolves any relative or absolute download folder path
+// to ensure it is sandboxed and located inside the File Manager's root folder ("./data/manager")
+func getAbsoluteSavePath(saveDir string) string {
+	absBase, _ := filepath.Abs("./data/manager")
+	
+	// Check if already absolute and contains the data/manager path
+	absSave, err := filepath.Abs(saveDir)
+	if err == nil && strings.HasPrefix(absSave, absBase) {
+		return absSave
+	}
+
+	// Clean path and ensure it's nested under the absolute base
+	clean := filepath.Clean("/" + saveDir)
+	return filepath.Join(absBase, clean)
+}
 
 type Engine struct {
 	client     *grab.Client
@@ -139,7 +156,8 @@ func (e *Engine) StartJob(jobID string) error {
 	}
 
 	// Create download workspace folder if it doesn't exist
-	if err := os.MkdirAll(job.SaveDirectory, 0755); err != nil {
+	absSaveDir := getAbsoluteSavePath(job.SaveDirectory)
+	if err := os.MkdirAll(absSaveDir, 0755); err != nil {
 		return fmt.Errorf("failed to create download workspace: %w", err)
 	}
 
@@ -147,7 +165,7 @@ func (e *Engine) StartJob(jobID string) error {
 	e.activeJobs[jobID] = cancel
 
 	// Create request
-	destPath := filepath.Join(job.SaveDirectory, job.Filename)
+	destPath := filepath.Join(absSaveDir, job.Filename)
 	req, err := grab.NewRequest(destPath, job.URL)
 	if err != nil {
 		cancel()
@@ -204,7 +222,8 @@ func (e *Engine) DeleteJob(jobID string, deleteFiles bool) {
 	var job models.LeechJob
 	if err := db.DB.First(&job, "id = ?", jobID).Error; err == nil {
 		if deleteFiles {
-			destPath := filepath.Join(job.SaveDirectory, job.Filename)
+			absSaveDir := getAbsoluteSavePath(job.SaveDirectory)
+			destPath := filepath.Join(absSaveDir, job.Filename)
 			_ = os.Remove(destPath)
 			// Remove temporary grab files too (.grab files)
 			_ = os.Remove(destPath + ".gtmp")

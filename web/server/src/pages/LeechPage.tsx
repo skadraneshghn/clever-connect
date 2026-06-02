@@ -3,7 +3,7 @@ import { useAuthStore } from '../store/authStore';
 import { 
 	FiPlay, FiPause, FiTrash2, FiFolder, FiPlus, FiSettings, 
 	FiGlobe, FiCheck, FiX, FiLink, FiDownloadCloud, FiServer,
-	FiChevronLeft, FiFolderPlus, FiInfo
+	FiChevronLeft, FiFolderPlus, FiInfo, FiDownload
 } from 'react-icons/fi';
 
 interface LeechJob {
@@ -28,6 +28,138 @@ interface LeechConfig {
 	user_agent: string;
 	proxy_url: string;
 }
+
+const GameProgressBar: React.FC<{ progress: number; status: string }> = ({ progress, status }) => {
+	const isDownloading = status === 'downloading';
+	const isCompleted = status === 'completed';
+	const isError = status === 'error';
+
+	const outerCircleColor = isCompleted ? '#166534' : isError ? '#991b1b' : '#ea580c';
+	const trackBorderColor = isCompleted ? '#22c55e' : isError ? '#ef4444' : '#f97316';
+	const fillGradient = isCompleted 
+		? 'linear-gradient(180deg, #4ade80 0%, #22c55e 100%)' 
+		: isError 
+		? 'linear-gradient(180deg, #f87171 0%, #ef4444 100%)' 
+		: 'linear-gradient(180deg, #fbbf24 0%, #ea580c 100%)';
+
+	const lightningColor = isCompleted ? '#4ade80' : isError ? '#f87171' : '#38bdf8';
+
+	return (
+		<div style={{ display: 'flex', alignItems: 'center', position: 'relative', width: '100%', height: 44, margin: '6px 0' }}>
+			{/* Left badge circle */}
+			<div style={{
+				width: 44,
+				height: 44,
+				borderRadius: '50%',
+				background: `linear-gradient(135deg, ${trackBorderColor} 0%, ${outerCircleColor} 100%)`,
+				border: '2px solid rgba(255,255,255,0.2)',
+				boxShadow: '0 3px 6px rgba(0,0,0,0.3), inset 0 2px 4px rgba(255,255,255,0.4)',
+				display: 'flex',
+				alignItems: 'center',
+				justifyContent: 'center',
+				zIndex: 10,
+				position: 'absolute',
+				left: 0,
+			}}>
+				{/* Inner yellow glass circle */}
+				<div style={{
+					width: 34,
+					height: 34,
+					borderRadius: '50%',
+					background: 'linear-gradient(135deg, #fef08a 0%, #eab308 100%)',
+					border: '1px solid rgba(255,255,255,0.6)',
+					boxShadow: 'inset 0 1px 3px rgba(255,255,255,0.8), inset 0 -2px 4px rgba(0,0,0,0.2)',
+					display: 'flex',
+					alignItems: 'center',
+					justifyContent: 'center',
+					position: 'relative',
+					overflow: 'hidden'
+				}}>
+					{/* Top glossy reflection overlay */}
+					<div style={{
+						position: 'absolute',
+						top: 1,
+						left: 4,
+						right: 4,
+						height: 12,
+						background: 'linear-gradient(180deg, rgba(255,255,255,0.7) 0%, rgba(255,255,255,0) 100%)',
+						borderRadius: '34px 34px 0 0',
+						pointerEvents: 'none'
+					}} />
+
+					{/* Lightning Bolt SVG */}
+					<svg 
+						viewBox="0 0 24 24" 
+						className={isDownloading ? 'pulse-lightning' : ''} 
+						style={{ 
+							width: 20, 
+							height: 20, 
+							fill: lightningColor,
+							filter: `drop-shadow(0 1px 2px rgba(0,0,0,0.3))`
+						}}
+					>
+						<path d="M19 9h-6l3-7L5 13h6l-3 9z" />
+					</svg>
+				</div>
+			</div>
+
+			{/* Right track wrapper */}
+			<div style={{
+				flex: 1,
+				height: 28,
+				background: '#27170a', // Dark warm brown-black track
+				border: `2px solid ${trackBorderColor}`,
+				borderRadius: 14,
+				boxShadow: '0 2px 4px rgba(0,0,0,0.4), inset 0 2px 5px rgba(0,0,0,0.8)',
+				padding: '2px',
+				paddingLeft: 34, // Push starting point past circle boundary
+				display: 'flex',
+				alignItems: 'center',
+				marginLeft: 10,
+				position: 'relative',
+				overflow: 'hidden'
+			}}>
+				{/* Inner progress fill bar */}
+				<div style={{
+					width: `${Math.max(3, progress)}%`, // min 3% to look nice inside track
+					height: '100%',
+					borderRadius: 10,
+					background: fillGradient,
+					position: 'relative',
+					overflow: 'hidden',
+					transition: 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+					boxShadow: '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.4)'
+				}}>
+					{/* Animated Stripes overlay */}
+					<div 
+						className={isDownloading ? 'scroll-stripes' : ''}
+						style={{
+							position: 'absolute',
+							top: 0,
+							left: 0,
+							right: 0,
+							bottom: 0,
+							backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,0.18), rgba(255,255,255,0.18) 12px, transparent 12px, transparent 24px)',
+							backgroundSize: '40px 100%'
+						}}
+					/>
+
+					{/* Top gloss highlight bar overlay */}
+					<div style={{
+						position: 'absolute',
+						top: 1,
+						left: 4,
+						right: 4,
+						height: '40%',
+						background: 'linear-gradient(180deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 100%)',
+						borderRadius: 6,
+						pointerEvents: 'none'
+					}} />
+				</div>
+			</div>
+		</div>
+	);
+};
 
 export const LeechPage: React.FC = () => {
 	const { token } = useAuthStore();
@@ -271,6 +403,23 @@ export const LeechPage: React.FC = () => {
 
 	return (
 		<div>
+			<style>{`
+				@keyframes lightningPulse {
+					0%, 100% { transform: scale(1); filter: drop-shadow(0 0 2px rgba(56,189,248,0.5)); }
+					50% { transform: scale(1.15); filter: drop-shadow(0 0 8px rgba(56,189,248,0.9)); }
+				}
+				@keyframes stripesScroll {
+					from { background-position: 0 0; }
+					to { background-position: 40px 0; }
+				}
+				.pulse-lightning {
+					animation: lightningPulse 1.5s infinite ease-in-out;
+					transform-origin: center;
+				}
+				.scroll-stripes {
+					animation: stripesScroll 1s infinite linear;
+				}
+			`}</style>
 			{/* Page Header */}
 			<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
 				<div>
@@ -347,27 +496,30 @@ export const LeechPage: React.FC = () => {
 										<FiTrash2 size={12} /> Clear
 									</button>
 									{job.status === 'completed' && (
-										<button 
-											className="btn btn--sm"
-											onClick={() => handleDeleteJob(job.id, true)}
-											style={{ color: '#ef4444', background: 'rgba(239,68,68,0.05)', borderColor: '#ef4444' }}
-										>
-											Delete File
-										</button>
+										<>
+											<a 
+												href={`/api/files/stream?path=${encodeURIComponent(`${job.save_directory}/${job.filename}`)}&download=true&token=${encodeURIComponent(token || '')}`}
+												download
+												className="btn btn--sm btn--primary"
+												style={{ display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none', height: 32 }}
+											>
+												<FiDownload size={12} /> Download
+											</a>
+											<button 
+												className="btn btn--sm"
+												onClick={() => handleDeleteJob(job.id, true)}
+												style={{ color: '#ef4444', background: 'rgba(239,68,68,0.05)', borderColor: '#ef4444' }}
+											>
+												Delete File
+											</button>
+										</>
 									)}
 								</div>
 							</div>
 
 							{/* Progress Bar indicator */}
 							<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-								<div style={{ background: 'var(--color-brand-border)', height: 8, borderRadius: 4, overflow: 'hidden' }}>
-									<div style={{
-										width: `${job.progress}%`,
-										background: job.status === 'completed' ? '#22c55e' : job.status === 'error' ? '#ef4444' : 'var(--color-brand)',
-										height: '100%',
-										transition: 'width 0.4s ease'
-									}} />
-								</div>
+								<GameProgressBar progress={job.progress} status={job.status} />
 								<div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--color-brand-text)', fontFamily: 'monospace' }}>
 									<span>{formatBytes(job.downloaded)} / {formatBytes(job.total_bytes)} ({job.progress.toFixed(1)}%)</span>
 									{job.status === 'downloading' && (
