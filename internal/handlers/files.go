@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"clever-connect/internal/config"
@@ -66,15 +67,26 @@ func (h *FileHandler) proxyToServer(c *gin.Context, method string, apiPath strin
 		return false
 	}
 
-	// Read remote server client config from database
-	var clientCfg models.EhcoClientConfig
-	if err := db.DB.First(&clientCfg).Error; err != nil || clientCfg.RemoteURL == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No remote server connection configured in client panel"})
-		return true
+	var remoteURLTarget string
+	var remoteToken string
+
+	// 1. Check if configured via environment variables
+	if h.cfg.ServerURL != "" {
+		remoteURLTarget = h.cfg.ServerURL
+		remoteToken = h.cfg.ServerAuthToken
+	} else {
+		// 2. Fall back to reading remote server client config from database
+		var clientCfg models.EhcoClientConfig
+		if err := db.DB.First(&clientCfg).Error; err != nil || clientCfg.RemoteURL == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No remote server connection configured in client panel"})
+			return true
+		}
+		remoteURLTarget = clientCfg.RemoteURL
+		remoteToken = clientCfg.AuthToken
 	}
 
 	// Convert ws/wss to http/https
-	remoteHost := clientCfg.RemoteURL
+	remoteHost := remoteURLTarget
 	remoteHost = strings.Replace(remoteHost, "wss://", "https://", 1)
 	remoteHost = strings.Replace(remoteHost, "ws://", "http://", 1)
 
@@ -94,7 +106,7 @@ func (h *FileHandler) proxyToServer(c *gin.Context, method string, apiPath strin
 		remoteURL += "?" + c.Request.URL.RawQuery
 	}
 
-	// Create request proxy
+	// Create proxy request
 	req, err := http.NewRequest(method, remoteURL, c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request", "details": err.Error()})
@@ -109,7 +121,9 @@ func (h *FileHandler) proxyToServer(c *gin.Context, method string, apiPath strin
 	}
 
 	// Overwrite local credentials with the actual remote server's Ehco client auth_token!
-	req.Header.Set("Authorization", "Bearer " + clientCfg.AuthToken)
+	if remoteToken != "" {
+		req.Header.Set("Authorization", "Bearer " + remoteToken)
+	}
 
 	// Execute proxy request to remote server
 	client := &http.Client{}
@@ -131,6 +145,17 @@ func (h *FileHandler) proxyToServer(c *gin.Context, method string, apiPath strin
 	// Pipe remote file stream/content back directly
 	_, _ = io.Copy(c.Writer, resp.Body)
 	return true
+}
+
+// getDiskInfo queries the file system statistics using syscall.Statfs.
+func getDiskInfo(path string) (total uint64, free uint64, used uint64) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err == nil {
+		total = stat.Blocks * uint64(stat.Bsize)
+		free = stat.Bfree * uint64(stat.Bsize)
+		used = total - free
+	}
+	return
 }
 
 // ListDirectory handles GET /api/files/list
@@ -174,9 +199,14 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 		displayPath = "/"
 	}
 
+	diskTotal, diskFree, diskUsed := getDiskInfo(h.rootDir)
+
 	c.JSON(http.StatusOK, gin.H{
 		"current_path": displayPath,
 		"files":        files,
+		"disk_total":   diskTotal,
+		"disk_free":    diskFree,
+		"disk_used":    diskUsed,
 	})
 }
 

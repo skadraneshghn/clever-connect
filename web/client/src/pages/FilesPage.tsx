@@ -41,6 +41,11 @@ export const FilesPage: React.FC = () => {
 	// Interactive Tree Folders List (loaded dynamically for structural sidebar)
 	const [folderTree, setFolderTree] = useState<string[]>([]);
 
+	// Server machine HDD info
+	const [diskTotal, setDiskTotal] = useState<number>(0);
+	const [diskFree, setDiskFree] = useState<number>(0);
+	const [diskUsed, setDiskUsed] = useState<number>(0);
+
 	// Active Preview States
 	const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
 	const [previewType, setPreviewType] = useState<'image' | 'video' | 'editor' | 'other' | null>(null);
@@ -85,6 +90,9 @@ export const FilesPage: React.FC = () => {
 				const data = await res.json();
 				setFiles(data.files || []);
 				setCurrentPath(data.current_path || '/');
+				setDiskTotal(data.disk_total || 0);
+				setDiskFree(data.disk_free || 0);
+				setDiskUsed(data.disk_used || 0);
 				
 				// Update structural sidebar helper
 				updateFolderTree(data.current_path || '/', data.files || []);
@@ -677,6 +685,14 @@ export const FilesPage: React.FC = () => {
 							<span style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Storage Occupied</span>
 							<span style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)' }}>{formatSize(totalSize)}</span>
 						</div>
+						{diskTotal > 0 && (
+							<div style={{ display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--color-brand-border)', paddingLeft: 20 }}>
+								<span style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Server Machine HDD</span>
+								<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', marginTop: 2 }}>
+									{formatSize(diskUsed)} / {formatSize(diskTotal)} ({((diskUsed / diskTotal) * 100).toFixed(0)}% Used, {formatSize(diskFree)} Free)
+								</span>
+							</div>
+						)}
 					</div>
 					
 					{/* Status labels */}

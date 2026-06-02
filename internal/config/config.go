@@ -13,6 +13,8 @@ type Config struct {
 	Port                string
 	JWTSecret           []byte
 	WSHeartbeatInterval time.Duration
+	ServerURL           string
+	ServerAuthToken     string
 
 	// SQLite (Client mode)
 	SQLitePath string
@@ -60,11 +62,23 @@ func LoadConfig() *Config {
 		}
 	}
 
+	serverURL := os.Getenv("SERVER_URL")
+	if serverURL == "" {
+		serverURL = os.Getenv("CLIVER_SERVER_URL")
+	}
+
+	serverAuthToken := os.Getenv("SERVER_AUTH_TOKEN")
+	if serverAuthToken == "" {
+		serverAuthToken = os.Getenv("CLIVER_SERVER_AUTH_TOKEN")
+	}
+
 	cfg := &Config{
 		AppMode:             appMode,
 		Port:                port,
 		JWTSecret:           []byte(jwtSecret),
 		WSHeartbeatInterval: wsInterval,
+		ServerURL:           serverURL,
+		ServerAuthToken:     serverAuthToken,
 		SQLitePath:          getEnv("SQLITE_DB_PATH", "data/client.db"),
 		MySQLUser:           getEnv("MYSQL_USER", "root"),
 		MySQLPassword:       os.Getenv("MYSQL_PASSWORD"),

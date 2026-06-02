@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { FiSliders, FiSun, FiMoon, FiMonitor, FiType, FiEye, FiCheck } from 'react-icons/fi';
+import { FiSliders, FiSun, FiMoon, FiMonitor, FiType, FiEye, FiEyeOff, FiCheck, FiLock, FiClipboard, FiInfo } from 'react-icons/fi';
 import { Card } from '../components/molecules/Card';
+import { useAuthStore } from '../store/authStore';
 
 const fonts = [
   { id: 'inter', name: 'Inter', description: 'Clean modern sans-serif, standard interface optimization.', cssClass: 'font-inter' },
@@ -15,8 +16,27 @@ const themes = [
 ];
 
 export const SettingsPage: React.FC = () => {
+  const { token } = useAuthStore();
   const [selectedFont, setSelectedFont] = useState(() => localStorage.getItem('cc_font') || 'inter');
   const [selectedTheme, setSelectedTheme] = useState(() => localStorage.getItem('cc_theme') || 'light');
+  const [showToken, setShowToken] = useState(false);
+
+  // Decode JWT Payload helper
+  const decodeJWT = (t: string | null) => {
+    if (!t) return null;
+    try {
+      const base64Url = t.split('.')[1];
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function(c) {
+          return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+      }).join(''));
+      return JSON.parse(jsonPayload);
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const jwtInfo = decodeJWT(token);
 
   // Apply Font
   useEffect(() => {
@@ -137,6 +157,103 @@ export const SettingsPage: React.FC = () => {
                   </div>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Security & JWT Session Info Card */}
+          <div className="g-card animate-slide-in">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <FiLock style={{ color: 'var(--color-brand)', fontSize: 18 }} />
+              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Security & Session Keys (JWT)</span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {/* Active JWT Access Token view */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Active JWT Authentication Token
+                  </label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button 
+                      onClick={() => setShowToken(prev => !prev)} 
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
+                    >
+                      {showToken ? <FiEyeOff size={13} /> : <FiEye size={13} />} {showToken ? 'Hide' : 'Show'}
+                    </button>
+                    <button 
+                      onClick={() => { token && navigator.clipboard.writeText(token); alert('JWT Token copied to clipboard!'); }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
+                      disabled={!token}
+                    >
+                      <FiClipboard size={13} /> Copy Key
+                    </button>
+                  </div>
+                </div>
+                
+                <textarea 
+                  readOnly 
+                  value={token || 'No active JWT token available'}
+                  style={{
+                    width: '100%',
+                    height: 80,
+                    fontSize: 11,
+                    fontFamily: 'monospace',
+                    padding: 10,
+                    borderRadius: 8,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-bg)',
+                    color: showToken ? 'var(--color-brand-heading)' : 'var(--color-brand-muted)',
+                    resize: 'none',
+                    outline: 'none',
+                    filter: showToken ? 'none' : 'blur(4px)',
+                    transition: 'all 0.2s ease'
+                  }}
+                />
+              </div>
+
+              {/* JWT Claims Metadata Breakdown */}
+              <div style={{ background: 'rgba(99,102,241,0.02)', borderRadius: 10, padding: 14, border: '1px solid var(--color-brand-border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                  <FiInfo size={14} style={{ color: 'var(--color-brand)' }} />
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand-heading)' }}>Token Signature Analysis</span>
+                </div>
+                
+                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <tbody>
+                    <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
+                      <td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Active Role</td>
+                      <td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)', fontWeight: 700, textTransform: 'uppercase' }}>
+                        {jwtInfo?.role || 'administrator'}
+                      </td>
+                    </tr>
+                    <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
+                      <td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Subject (Username)</td>
+                      <td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)', fontFamily: 'monospace' }}>
+                        {jwtInfo?.username || 'salman'}
+                      </td>
+                    </tr>
+                    <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
+                      <td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Issued Timestamp</td>
+                      <td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>
+                        {jwtInfo?.iat ? new Date(jwtInfo.iat * 1000).toLocaleString() : 'N/A'}
+                      </td>
+                    </tr>
+                    <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
+                      <td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Token Expiration</td>
+                      <td style={{ padding: '6px 0', textAlign: 'right', color: '#10b981', fontWeight: 600 }}>
+                        {jwtInfo?.exp ? new Date(jwtInfo.exp * 1000).toLocaleString() : 'Never'}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Encryption Algorithm</td>
+                      <td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-muted)', fontFamily: 'monospace' }}>
+                        HMAC-SHA256 (JWT Header HS256)
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
 

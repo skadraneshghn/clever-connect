@@ -68,6 +68,8 @@ func main() {
 	router.Use(logger.GinRecoveryMiddleware())
 	router.Use(logger.GinMiddleware())
 
+	router.GET("/swagger", handlers.ServeSwagger)
+
 	// Setup API Route Handlers
 	authHandler := handlers.NewAuthHandler(cfg)
 	wsHandler := handlers.NewWSHandler(cfg)
@@ -155,7 +157,7 @@ func serveEmbeddedSPA(embedFS fs.FS) gin.HandlerFunc {
 		path := c.Request.URL.Path
 
 		// If route matches API endpoints, continue to other middleware/handlers
-		if strings.HasPrefix(path, "/api") || strings.HasPrefix(path, "/ws") {
+		if strings.HasPrefix(path, "/api") || strings.HasPrefix(path, "/ws") || strings.HasPrefix(path, "/swagger") {
 			c.Next()
 			return
 		}
