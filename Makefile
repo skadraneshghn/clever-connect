@@ -25,7 +25,9 @@ build-frontend:
 build-backend:
 	@echo "=== Compiling Go backend binary ==="
 	go build -o bin/clever-connect main.go
-	@echo "Build successful! Binary location: bin/clever-connect"
+	@echo "=== Compiling Ehco engine binary ==="
+	go build -o bin/ehco github.com/Ehco1996/ehco/cmd/ehco
+	@echo "Build successful! Binaries located in bin/"
 
 # Run development environments
 run-client:

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -50,16 +51,30 @@ var (
 	mu          sync.Mutex
 )
 
-// EnsureBinary checks if the ehco binary exists in bin/ehco, and compiles it if missing.
+// getEhcoBinPath ensures we look for 'ehco' in the exact same directory as 'clever-connect'
+func getEhcoBinPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "bin/ehco" // Fallback
+	}
+	return filepath.Join(filepath.Dir(exe), "ehco")
+}
+
+// getConfigDir uses the OS Temp directory to guarantee write permissions on cloud platforms
+func getConfigDir() string {
+	return filepath.Join(os.TempDir(), "clever-connect-data")
+}
+
+// EnsureBinary checks if the ehco binary exists, and compiles it if missing.
 func EnsureBinary() error {
-	binPath := "bin/ehco"
+	binPath := getEhcoBinPath()
 	if _, err := os.Stat(binPath); err == nil {
 		return nil // File found, no compilation needed
 	}
 
-	logger.Info("Ehco", "ehco binary missing. Starting automatic self-compilation.")
+	logger.Info("Ehco", "ehco binary missing. Starting automatic self-compilation.", "path", binPath)
 	
-	if err := os.MkdirAll("bin", 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(binPath), 0755); err != nil {
 		return fmt.Errorf("failed to create bin directory: %w", err)
 	}
 
@@ -67,7 +82,7 @@ func EnsureBinary() error {
 	
 	out, err := buildCmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to compile ehco: %w\nCompiler Output:\n%s", err, string(out))
+		return fmt.Errorf("failed to compile ehco at %s: %w\nCompiler Output:\n%s", binPath, err, string(out))
 	}
 
 	logger.Info("Ehco", "ehco binary compiled successfully", "path", binPath)
@@ -131,11 +146,12 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 	}
 
 	// Write config to data folder
-	if err := os.MkdirAll("data", 0755); err != nil {
+	dataDir := getConfigDir()
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	configPath := "data/ehco_server.json"
+	configPath := filepath.Join(dataDir, "ehco_server.json")
 	configBytes, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
@@ -153,7 +169,8 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 	)
 
 	// Launch process
-	cmdInstance = exec.Command("bin/ehco", "-c", configPath)
+	binPath := getEhcoBinPath()
+	cmdInstance = exec.Command(binPath, "-c", configPath)
 	
 	// Stream logs to Clever Connect logger
 	cmdInstance.Stdout = logger.GinWriter()
@@ -277,11 +294,12 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 	}
 
 	// Write config to data folder
-	if err := os.MkdirAll("data", 0755); err != nil {
+	dataDir := getConfigDir()
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	configPath := "data/ehco_client.json"
+	configPath := filepath.Join(dataDir, "ehco_client.json")
 	configBytes, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
@@ -302,7 +320,8 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 	)
 
 	// Launch process
-	cmdInstance = exec.Command("bin/ehco", "-c", configPath)
+	binPath := getEhcoBinPath()
+	cmdInstance = exec.Command(binPath, "-c", configPath)
 	cmdInstance.Stdout = logger.GinWriter()
 	cmdInstance.Stderr = logger.GinWriter()
 
