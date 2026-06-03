@@ -85,24 +85,38 @@ print_diagnostics() {
 
 # Handle stopping everything
 kill_all() {
-    echo -e "\n${CLR_YELLOW}${ICON_STOP} Gracefully terminating all processes...${CLR_NC}"
+    echo -e "\n${CLR_YELLOW}${ICON_STOP} Aggressively terminating all instances...${CLR_NC}"
     
-    # Kill clever-connect
+    # 1. Kill any process listening on ports 8080, 8081, 3000, 3001
+    for port in 8080 8081 3000 3001; do
+        if command -v lsof >/dev/null 2>&1; then
+            PIDS=$(lsof -t -i :$port 2>/dev/null)
+            if [ -n "$PIDS" ]; then
+                echo -e "  - Port $port: Found process(es) $PIDS. Killing aggressively..."
+                kill -9 $PIDS 2>/dev/null
+            fi
+        fi
+        if command -v fuser >/dev/null 2>&1; then
+            fuser -k -9 $port/tcp >/dev/null 2>&1
+        fi
+    done
+
+    # 2. Kill clever-connect processes aggressively
     if pgrep -f "clever-connect" > /dev/null; then
-        pkill -f "clever-connect"
-        echo -e "  - Terminated CleverConnect processes."
+        pkill -9 -f "clever-connect"
+        echo -e "  - Terminated CleverConnect processes aggressively."
     fi
 
-    # Kill ehco
+    # 3. Kill ehco processes aggressively
     if pgrep -f "bin/ehco" > /dev/null; then
-        pkill -f "bin/ehco"
-        echo -e "  - Terminated Ehco Tunnel subprocesses."
+        pkill -9 -f "bin/ehco"
+        echo -e "  - Terminated Ehco Tunnel subprocesses aggressively."
     fi
 
-    # Kill Nginx (local development if running sudo/user)
+    # 4. Kill Nginx (local development if running sudo/user)
     if pgrep -x "nginx" > /dev/null; then
-        pkill -x "nginx"
-        echo -e "  - Terminated Nginx service."
+        pkill -9 -x "nginx"
+        echo -e "  - Terminated Nginx service aggressively."
     fi
 
     echo -e "${CLR_GREEN}${ICON_CHECK} System quieted successfully.${CLR_NC}"
@@ -132,7 +146,7 @@ while true; do
             echo -e "  - Access UI at: ${CLR_CYAN}http://localhost:8080${CLR_NC}"
             echo -e "  - Press Ctrl+C inside the backend log loop to return to TUI menu."
             echo ""
-            APP_MODE=server PORT=8080 go run main.go
+            APP_MODE=server PORT=8080 go run --ldflags '-extldflags "-Wl,--allow-multiple-definition"' main.go
             ;;
         2)
             print_banner
@@ -140,7 +154,7 @@ while true; do
             echo -e "  - Access UI at: ${CLR_CYAN}http://localhost:8081${CLR_NC}"
             echo -e "  - Press Ctrl+C inside the backend log loop to return to TUI menu."
             echo ""
-            APP_MODE=client PORT=8081 go run main.go
+            APP_MODE=client PORT=8081 go run --ldflags '-extldflags "-Wl,--allow-multiple-definition"' main.go
             ;;
         3)
             print_banner
