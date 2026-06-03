@@ -72,7 +72,7 @@ print_diagnostics() {
     # 4. Port listeners
     echo -n "    Active Ports Check: "
     for port in 8080 8081 3000 3001; do
-        if ss -tln | grep -q ":$port " 2>/dev/null || netstat -an | grep -q "\.$port " 2>/dev/null || ss -tln | grep -q "127.0.0.1:$port" 2>/dev/null; then
+        if (ss -tln 2>/dev/null | grep -q ":$port ") || (netstat -an 2>/dev/null | grep -q "\.$port ") || (ss -tln 2>/dev/null | grep -q "127.0.0.1:$port"); then
             echo -e -n "${CLR_GREEN}$port${CLR_NC} "
         else
             echo -e -n "${CLR_WHITE}$port${CLR_NC} "
