@@ -27,6 +27,9 @@ var QueueUploadJob func(filePath string, chatID int64) error
 // QueueDownloadJob is a callback registered by the scheduler engine to queue Telegram download jobs.
 var QueueDownloadJob func(chatID int64, messageID int, fileName string, fileSize int64) error
 
+// RetryJob is a callback registered by the scheduler engine to retry/restart a job.
+var RetryJob func(jobID uint) error
+
 type progressWriterAt struct {
 	writer     io.WriterAt
 	total      int64
@@ -386,7 +389,19 @@ func FastUploadFile(ctx context.Context, client *telegram.Client, filePath strin
 	}
 
 	threads := calculateOptimalThreads(info.Size())
-	api := tg.NewClient(client)
+
+	var invoker tg.Invoker = client
+	if threads > 1 {
+		poolInvoker, err := client.Pool(int64(threads))
+		if err != nil {
+			logger.Warn("Telegram", "Failed to create connection pool for upload, using single connection", "error", err)
+		} else {
+			defer poolInvoker.Close()
+			invoker = poolInvoker
+		}
+	}
+
+	api := tg.NewClient(invoker)
 
 	up := uploader.NewUploader(api).
 		WithThreads(threads).
@@ -418,9 +433,20 @@ func FastUploadFile(ctx context.Context, client *telegram.Client, filePath strin
 // FastDownloadFile downloads a file from Telegram using concurrent goroutines via the
 // gotd MTProto downloader. It streams chunks directly to the local filesystem.
 func FastDownloadFile(ctx context.Context, client *telegram.Client, fileLocation tg.InputFileLocationClass, destPath string, fileSize int64, onProgress func(downloaded, total int64)) error {
-	api := tg.NewClient(client)
 	threads := calculateOptimalThreads(fileSize)
 
+	var invoker tg.Invoker = client
+	if threads > 1 {
+		poolInvoker, err := client.Pool(int64(threads))
+		if err != nil {
+			logger.Warn("Telegram", "Failed to create connection pool for download, using single connection", "error", err)
+		} else {
+			defer poolInvoker.Close()
+			invoker = poolInvoker
+		}
+	}
+
+	api := tg.NewClient(invoker)
 	dl := downloader.NewDownloader().WithPartSize(512 * 1024)
 
 	logger.Info("Telegram", "Starting fast parallel download",

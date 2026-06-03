@@ -12,6 +12,7 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/torrent"
@@ -561,6 +562,11 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 	if err := c.SaveUploadedFile(file, safeFilePath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to write file on disk", "details": err.Error()})
 		return
+	}
+
+	// Register uploaded file (deduplicates automatically if already existing)
+	if _, err := filecore.RegisterFile(safeFilePath, "", "", 0, ""); err != nil {
+		logger.Error("Files", "Failed to register uploaded file in registry", "path", safeFilePath, "error", err)
 	}
 
 	logger.Info("Files", "File uploaded successfully", "folder", targetFolder, "filename", filename, "ip", c.ClientIP())

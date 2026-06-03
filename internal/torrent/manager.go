@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"clever-connect/internal/db"
+	"clever-connect/internal/filecore"
+	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
 	"github.com/anacrolix/torrent"
@@ -344,7 +346,10 @@ func (m *TorrentManager) updateStats() {
 			// Update state based on download status
 			if job.Status != "paused" && totalBytes > 0 {
 				if downloaded >= totalBytes {
-					job.Status = "seeding"
+					if job.Status != "seeding" && job.Status != "completed" {
+						job.Status = "seeding"
+						go m.onTorrentCompleted(t, &job)
+					}
 				} else {
 					job.Status = "downloading"
 				}
@@ -566,6 +571,38 @@ func (m *TorrentManager) ApplyFilePriorities(t *torrent.Torrent, selectedFilesJS
 			f.Download()
 		} else {
 			f.Cancel()
+		}
+	}
+}
+
+// onTorrentCompleted is triggered when a torrent is fully downloaded.
+// It iterates over all torrent files and registers them with FileCore.
+func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, job *models.TorrentJob) {
+	// Wait for metadata to resolve
+	select {
+	case <-t.GotInfo():
+	case <-time.After(10 * time.Second):
+		logger.Error("Torrent", "Timeout waiting for metadata on completion", "info_hash", job.InfoHash)
+		return
+	}
+
+	saveDir := job.SaveDirectory
+	if saveDir == "" {
+		saveDir = "./data/manager/downloads"
+	}
+	absSaveDir, err := filepath.Abs(saveDir)
+	if err != nil {
+		absSaveDir = saveDir
+	}
+
+	for _, f := range t.Files() {
+		torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, f.Path()))
+		if info, err := os.Stat(torrentFilePath); err == nil && !info.IsDir() {
+			logger.Info("Torrent", "Registering completed torrent file in database", "path", torrentFilePath)
+			_, err = filecore.RegisterFile(torrentFilePath, "", "", 0, job.InfoHash)
+			if err != nil {
+				logger.Error("Torrent", "Failed to register completed torrent file", "path", torrentFilePath, "error", err)
+			}
 		}
 	}
 }

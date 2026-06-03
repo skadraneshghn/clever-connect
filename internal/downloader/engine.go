@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"clever-connect/internal/db"
+	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
@@ -230,6 +231,48 @@ func (e *Engine) StartJob(jobID string) error {
 		destPath = filepath.Join(absSaveDir, resolvedFilename)
 	}
 
+	// Deduplication pre-check
+	if resolvedFilename != "getfile.php" && resolvedFilename != "downloaded_file" && resolvedFilename != "" {
+		if matched, _, err := filecore.CheckDuplicateByURL(downloadURL, destPath); err == nil && matched {
+			logger.Info("Downloader", "HTTP download deduplicated (instant match)", "url", downloadURL, "dest", destPath)
+
+			fileInfo, _ := os.Stat(destPath)
+			totalBytes := int64(0)
+			if fileInfo != nil {
+				totalBytes = fileInfo.Size()
+			}
+
+			// Instant completion updates
+			db.DB.Model(&models.LeechJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+				"status":      "completed",
+				"downloaded":  totalBytes,
+				"total_bytes": totalBytes,
+				"progress":    100.0,
+				"speed":       0.0,
+				"filename":    resolvedFilename,
+			})
+
+			// Register in FileRegistry with the URL / path (to update info or verify it's registered)
+			_, _ = filecore.RegisterFile(destPath, downloadURL, "", 0, "")
+
+			// Trigger auto-upload to Telegram if enabled
+			var leechCfg models.LeechConfig
+			if err := db.DB.First(&leechCfg).Error; err == nil && leechCfg.AutoUploadToTelegram {
+				absBase, _ := filepath.Abs("./data/manager")
+				relPath := strings.TrimPrefix(destPath, absBase)
+				if relPath == "" {
+					relPath = "/"
+				}
+				if queueFn := getAutoUploadFunc(); queueFn != nil {
+					_ = queueFn(relPath, leechCfg.AutoUploadChatID)
+				}
+			}
+
+			cancel()
+			return nil
+		}
+	}
+
 	req, err := grab.NewRequest(destPath, downloadURL)
 	if err != nil {
 		cancel()
@@ -363,10 +406,21 @@ func (e *Engine) monitorProgress(resp *grab.Response, jobID string, ctx context.
 
 			// Auto-upload to Telegram if enabled and download succeeded
 			if status == "completed" {
+				absSaveDir := getAbsoluteSavePath(job.SaveDirectory)
+				destPath := filepath.Join(absSaveDir, finalName)
+
+				etag := ""
+				if resp.HTTPResponse != nil {
+					etag = resp.HTTPResponse.Header.Get("ETag")
+				}
+
+				// Register file with FileCore. If duplicate exists, it will delete and hardlink.
+				if _, err := filecore.RegisterFile(destPath, job.URL, etag, 0, ""); err != nil {
+					logger.Error("Downloader", "Failed to register downloaded file in registry", "path", destPath, "error", err)
+				}
+
 				var leechCfg models.LeechConfig
 				if err := db.DB.First(&leechCfg).Error; err == nil && leechCfg.AutoUploadToTelegram {
-					absSaveDir := getAbsoluteSavePath(job.SaveDirectory)
-					destPath := filepath.Join(absSaveDir, finalName)
 
 					// Convert absolute path to relative path within file manager sandbox
 					absBase, _ := filepath.Abs("./data/manager")

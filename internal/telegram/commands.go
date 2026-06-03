@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -237,6 +238,26 @@ func (e *Engine) registerCommands() {
 			})
 			return c.Respond(&tele.CallbackResponse{Text: "📤 Sending file..."})
 
+		case strings.HasPrefix(data, "restart_job:"):
+			if !e.IsAdmin(c.Sender().ID) {
+				return c.Respond(&tele.CallbackResponse{Text: "⛔ Admin only"})
+			}
+			jobIDStr := strings.TrimPrefix(data, "restart_job:")
+			jobID, err := strconv.ParseUint(jobIDStr, 10, 64)
+			if err != nil {
+				return c.Respond(&tele.CallbackResponse{Text: "❌ Invalid job ID"})
+			}
+
+			if RetryJob == nil {
+				return c.Respond(&tele.CallbackResponse{Text: "❌ Scheduler callback not registered"})
+			}
+
+			if err := RetryJob(uint(jobID)); err != nil {
+				return c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("❌ Failed: %v", err)})
+			}
+
+			return c.Respond(&tele.CallbackResponse{Text: "🔄 Job restarted!"})
+
 		default:
 			return c.Respond(&tele.CallbackResponse{Text: "Unknown action"})
 		}
@@ -403,15 +424,15 @@ func (e *Engine) sendUserMessage(ctx context.Context, entities tg.Entities, peer
 
 func (e *Engine) handleUserCallbackQuery(ctx context.Context, entities tg.Entities, u *tg.UpdateBotCallbackQuery) error {
 	api := tg.NewClient(e.gotdClient)
-	_, _ = api.MessagesSetBotCallbackAnswer(ctx, &tg.MessagesSetBotCallbackAnswerRequest{
-		QueryID: u.QueryID,
-	})
 
 	data := string(u.Data)
 	logger.Info("Telegram", "Callback received (MTProto)", "data", data, "user_id", u.UserID)
 
 	switch {
 	case strings.HasPrefix(data, "fb:"):
+		_, _ = api.MessagesSetBotCallbackAnswer(ctx, &tg.MessagesSetBotCallbackAnswerRequest{
+			QueryID: u.QueryID,
+		})
 		if !e.IsAdmin(u.UserID) {
 			return nil
 		}
@@ -419,6 +440,9 @@ func (e *Engine) handleUserCallbackQuery(ctx context.Context, entities tg.Entiti
 		return e.handleFileBrowseUser(ctx, entities, u.Peer, u.MsgID, path)
 
 	case strings.HasPrefix(data, "send:"):
+		_, _ = api.MessagesSetBotCallbackAnswer(ctx, &tg.MessagesSetBotCallbackAnswerRequest{
+			QueryID: u.QueryID,
+		})
 		if !e.IsAdmin(u.UserID) {
 			return nil
 		}
@@ -427,6 +451,51 @@ func (e *Engine) handleUserCallbackQuery(ctx context.Context, entities tg.Entiti
 			if err := e.sendFileToChatUser(ctx, entities, u.Peer, filePath); err != nil {
 				logger.Error("Telegram", "Failed to send file", "path", filePath, "error", err)
 			}
+		})
+		return nil
+
+	case strings.HasPrefix(data, "restart_job:"):
+		if !e.IsAdmin(u.UserID) {
+			_, _ = api.MessagesSetBotCallbackAnswer(ctx, &tg.MessagesSetBotCallbackAnswerRequest{
+				QueryID: u.QueryID,
+				Message: "⛔ Admin only",
+				Alert:   true,
+			})
+			return nil
+		}
+		jobIDStr := strings.TrimPrefix(data, "restart_job:")
+		jobID, err := strconv.ParseUint(jobIDStr, 10, 64)
+		if err != nil {
+			_, _ = api.MessagesSetBotCallbackAnswer(ctx, &tg.MessagesSetBotCallbackAnswerRequest{
+				QueryID: u.QueryID,
+				Message: "❌ Invalid job ID",
+				Alert:   true,
+			})
+			return nil
+		}
+
+		if RetryJob == nil {
+			_, _ = api.MessagesSetBotCallbackAnswer(ctx, &tg.MessagesSetBotCallbackAnswerRequest{
+				QueryID: u.QueryID,
+				Message: "❌ Scheduler callback not registered",
+				Alert:   true,
+			})
+			return nil
+		}
+
+		if err := RetryJob(uint(jobID)); err != nil {
+			_, _ = api.MessagesSetBotCallbackAnswer(ctx, &tg.MessagesSetBotCallbackAnswerRequest{
+				QueryID: u.QueryID,
+				Message: fmt.Sprintf("❌ Failed: %v", err),
+				Alert:   true,
+			})
+			return nil
+		}
+
+		_, _ = api.MessagesSetBotCallbackAnswer(ctx, &tg.MessagesSetBotCallbackAnswerRequest{
+			QueryID: u.QueryID,
+			Message: "🔄 Job restarted!",
+			Alert:   false,
 		})
 		return nil
 	}

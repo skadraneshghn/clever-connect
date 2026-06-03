@@ -15,6 +15,7 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/filecore"
 	"clever-connect/internal/models"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -94,14 +95,40 @@ func (p *uploadProgress) Chunk(ctx context.Context, state uploader.ProgressState
 		)
 
 		if p.progressMsg != nil && p.eng.Bot != nil {
-			_, _ = p.eng.Bot.Edit(p.progressMsg, progressText, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+			btnRestart := tele.InlineButton{
+				Text:   "🔄 Restart Job",
+				Unique: "restart_job",
+				Data:   fmt.Sprintf("%d", p.job.ID),
+			}
+			inlineMarkup := &tele.ReplyMarkup{
+				InlineKeyboard: [][]tele.InlineButton{
+					{btnRestart},
+				},
+			}
+			_, _ = p.eng.Bot.Edit(p.progressMsg, progressText, &tele.SendOptions{
+				ParseMode:   tele.ModeMarkdown,
+				ReplyMarkup: inlineMarkup,
+			})
 		} else if p.gotdClient != nil && p.gotdPeer != nil && p.gotdMsgID != 0 {
 			api := tg.NewClient(p.gotdClient)
 			htmlText := mdToHTML(progressText)
+			kbMarkup := &tg.ReplyInlineMarkup{
+				Rows: []tg.KeyboardButtonRow{
+					{
+						Buttons: []tg.KeyboardButtonClass{
+							&tg.KeyboardButtonCallback{
+								Text: "🔄 Restart Job",
+								Data: []byte(fmt.Sprintf("restart_job:%d", p.job.ID)),
+							},
+						},
+					},
+				},
+			}
 			_, _ = api.MessagesEditMessage(ctx, &tg.MessagesEditMessageRequest{
-				Peer:    p.gotdPeer,
-				ID:      p.gotdMsgID,
-				Message: htmlText,
+				Peer:        p.gotdPeer,
+				ID:          p.gotdMsgID,
+				Message:     htmlText,
+				ReplyMarkup: kbMarkup,
 			})
 		}
 	}
@@ -172,7 +199,21 @@ func RunTelegramUploadJob(ctx context.Context, job *models.SchedulerJob, logFn f
 		initialText := fmt.Sprintf("📤 *Starting Upload*\n\n📄 *File:* `%s`\n📏 *Size:* %s\n\n%s `0%%`",
 			fileName, formatFileSize(info.Size()), pBar)
 		
-		msg, err := eng.Bot.Send(tele.ChatID(chatID), initialText, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+		btnRestart := tele.InlineButton{
+			Text:   "🔄 Restart Job",
+			Unique: "restart_job",
+			Data:   fmt.Sprintf("%d", job.ID),
+		}
+		inlineMarkup := &tele.ReplyMarkup{
+			InlineKeyboard: [][]tele.InlineButton{
+				{btnRestart},
+			},
+		}
+
+		msg, err := eng.Bot.Send(tele.ChatID(chatID), initialText, &tele.SendOptions{
+			ParseMode:   tele.ModeMarkdown,
+			ReplyMarkup: inlineMarkup,
+		})
 		if err != nil {
 			logFn("WARN", fmt.Sprintf("Failed to send initial progress message to Telegram: %v", err))
 		} else {
@@ -208,7 +249,19 @@ func RunTelegramUploadJob(ctx context.Context, job *models.SchedulerJob, logFn f
 
 		sender := message.NewSender(api)
 		htmlText := mdToHTML(initialText)
-		msg, err := sender.To(peer).StyledText(eng.gotdCtx, html.String(nil, htmlText))
+		kbMarkup := &tg.ReplyInlineMarkup{
+			Rows: []tg.KeyboardButtonRow{
+				{
+					Buttons: []tg.KeyboardButtonClass{
+						&tg.KeyboardButtonCallback{
+							Text: "🔄 Restart Job",
+							Data: []byte(fmt.Sprintf("restart_job:%d", job.ID)),
+						},
+					},
+				},
+			},
+		}
+		msg, err := sender.To(peer).Markup(kbMarkup).StyledText(eng.gotdCtx, html.String(nil, htmlText))
 		if err == nil {
 			if upd, ok := msg.(*tg.UpdateShortSentMessage); ok {
 				pMsgID = upd.ID
@@ -720,6 +773,94 @@ func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn
 
 	logFn("INFO", fmt.Sprintf("Downloading %s (size %s) to %s", fileName, FormatFileSize(fileSize), safePath))
 
+	// Pre-download check
+	var docID int64
+	if docLoc, ok := fileLocation.(*tg.InputDocumentFileLocation); ok {
+		docID = docLoc.ID
+	} else if photoLoc, ok := fileLocation.(*tg.InputPhotoFileLocation); ok {
+		docID = photoLoc.ID
+	}
+
+	if docID != 0 {
+		if matched, _, err := filecore.CheckDuplicateByTgID(docID, safePath); err == nil && matched {
+			logFn("INFO", fmt.Sprintf("Telegram file already exists (instant deduplication match for ID %d)", docID))
+
+			// Register file to ensure it's recorded correctly
+			_, _ = filecore.RegisterFile(safePath, "", "", docID, "")
+
+			// Instant completion updates in database
+			db.DB.Model(job).Updates(map[string]interface{}{
+				"progress": 100,
+				"status":   models.JobStatusCompleted,
+				"message":  fmt.Sprintf("Deduplicated: saved as %s", fileName),
+			})
+
+			// Generate success notification directly
+			appCfg := config.LoadConfig()
+			token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+				"username": "admin",
+				"role":     "admin",
+				"exp":      time.Now().Add(7 * 24 * time.Hour).Unix(),
+			})
+			tokenString, _ := token.SignedString(appCfg.JWTSecret)
+
+			var absoluteDownloadURL string
+			downloadPath := fmt.Sprintf("/api/files/stream?path=%s&download=true", url.QueryEscape(relPath))
+			if tokenString != "" {
+				downloadPath += fmt.Sprintf("&token=%s", url.QueryEscape(tokenString))
+			}
+
+			var ehcoCfg models.EhcoClientConfig
+			if err := db.DB.First(&ehcoCfg).Error; err == nil && ehcoCfg.RemoteURL != "" {
+				domain := ehcoCfg.RemoteURL
+				domain = strings.Replace(domain, "wss://", "https://", 1)
+				domain = strings.Replace(domain, "ws://", "http://", 1)
+				domain = strings.TrimSuffix(domain, "/ws")
+				domain = strings.TrimSuffix(domain, "/tunnel")
+				domain = strings.TrimSuffix(domain, "/")
+				absoluteDownloadURL = fmt.Sprintf("%s%s", domain, downloadPath)
+			} else {
+				absoluteDownloadURL = fmt.Sprintf("https://ondata.ir%s", downloadPath)
+			}
+
+			successText := fmt.Sprintf(
+				"✅ *Download Completed (Instant Deduplication)*\n\n"+
+					"📄 *File Name:* `%s`\n"+
+					"📏 *File Size:* `%s`\n"+
+					"📁 *Saved Path:* `%s`\n\n"+
+					"⚡ _Powered by CleverConnect Job Scheduler_",
+				fileName,
+				FormatFileSize(fileSize),
+				relPath,
+			)
+
+			if eng.Bot != nil {
+				kb := &tele.ReplyMarkup{}
+				btn := kb.URL("📥 Download Direct Link", absoluteDownloadURL)
+				kb.Inline(kb.Row(btn))
+				_, _ = eng.Bot.Send(tele.ChatID(payload.ChatID), successText, &tele.SendOptions{ParseMode: tele.ModeMarkdown, ReplyMarkup: kb})
+			} else {
+				kbMarkup := &tg.ReplyInlineMarkup{
+					Rows: []tg.KeyboardButtonRow{
+						{
+							Buttons: []tg.KeyboardButtonClass{
+								&tg.KeyboardButtonURL{
+									Text: "📥 Download Direct Link",
+									URL:  absoluteDownloadURL,
+								},
+							},
+						},
+					},
+				}
+				sender := message.NewSender(api)
+				htmlText := mdToHTML(successText)
+				_, _ = sender.To(peer).Markup(kbMarkup).StyledText(eng.gotdCtx, html.String(nil, htmlText))
+			}
+
+			return nil
+		}
+	}
+
 	// 5. Send initial progress message
 	var progressMsg *tele.Message
 	var pMsgID int
@@ -728,7 +869,20 @@ func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn
 		fileName, FormatFileSize(fileSize), pBar)
 
 	if eng.Bot != nil {
-		msg, err := eng.Bot.Send(tele.ChatID(payload.ChatID), initialText, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+		btnRestart := tele.InlineButton{
+			Text:   "🔄 Restart Job",
+			Unique: "restart_job",
+			Data:   fmt.Sprintf("%d", job.ID),
+		}
+		inlineMarkup := &tele.ReplyMarkup{
+			InlineKeyboard: [][]tele.InlineButton{
+				{btnRestart},
+			},
+		}
+		msg, err := eng.Bot.Send(tele.ChatID(payload.ChatID), initialText, &tele.SendOptions{
+			ParseMode:   tele.ModeMarkdown,
+			ReplyMarkup: inlineMarkup,
+		})
 		if err != nil {
 			logFn("WARN", fmt.Sprintf("Failed to send initial download progress message to Telegram: %v", err))
 		} else {
@@ -737,7 +891,19 @@ func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn
 	} else {
 		sender := message.NewSender(api)
 		htmlText := mdToHTML(initialText)
-		msg, err := sender.To(peer).StyledText(eng.gotdCtx, html.String(nil, htmlText))
+		kbMarkup := &tg.ReplyInlineMarkup{
+			Rows: []tg.KeyboardButtonRow{
+				{
+					Buttons: []tg.KeyboardButtonClass{
+						&tg.KeyboardButtonCallback{
+							Text: "🔄 Restart Job",
+							Data: []byte(fmt.Sprintf("restart_job:%d", job.ID)),
+						},
+					},
+				},
+			},
+		}
+		msg, err := sender.To(peer).Markup(kbMarkup).StyledText(eng.gotdCtx, html.String(nil, htmlText))
 		if err == nil {
 			if upd, ok := msg.(*tg.UpdateShortSentMessage); ok {
 				pMsgID = upd.ID
@@ -794,13 +960,39 @@ func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn
 			)
 
 			if progressMsg != nil && eng.Bot != nil {
-				_, _ = eng.Bot.Edit(progressMsg, progressText, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+				btnRestart := tele.InlineButton{
+					Text:   "🔄 Restart Job",
+					Unique: "restart_job",
+					Data:   fmt.Sprintf("%d", job.ID),
+				}
+				inlineMarkup := &tele.ReplyMarkup{
+					InlineKeyboard: [][]tele.InlineButton{
+						{btnRestart},
+					},
+				}
+				_, _ = eng.Bot.Edit(progressMsg, progressText, &tele.SendOptions{
+					ParseMode:   tele.ModeMarkdown,
+					ReplyMarkup: inlineMarkup,
+				})
 			} else if pMsgID != 0 {
 				htmlText := mdToHTML(progressText)
+				kbMarkup := &tg.ReplyInlineMarkup{
+					Rows: []tg.KeyboardButtonRow{
+						{
+							Buttons: []tg.KeyboardButtonClass{
+								&tg.KeyboardButtonCallback{
+									Text: "🔄 Restart Job",
+									Data: []byte(fmt.Sprintf("restart_job:%d", job.ID)),
+								},
+							},
+						},
+					},
+				}
 				_, _ = api.MessagesEditMessage(eng.gotdCtx, &tg.MessagesEditMessageRequest{
-					Peer:    peer,
-					ID:      pMsgID,
-					Message: htmlText,
+					Peer:        peer,
+					ID:          pMsgID,
+					Message:     htmlText,
+					ReplyMarkup: kbMarkup,
 				})
 			}
 		}
@@ -818,6 +1010,18 @@ func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn
 			})
 		}
 		return err
+	}
+
+	// Register file after successful download
+	var regDocID int64
+	if docLoc, ok := fileLocation.(*tg.InputDocumentFileLocation); ok {
+		regDocID = docLoc.ID
+	} else if photoLoc, ok := fileLocation.(*tg.InputPhotoFileLocation); ok {
+		regDocID = photoLoc.ID
+	}
+
+	if _, err := filecore.RegisterFile(safePath, "", "", regDocID, ""); err != nil {
+		logFn("WARN", fmt.Sprintf("Failed to register downloaded file in registry: %v", err))
 	}
 
 	// 7. Success! Generate download URL

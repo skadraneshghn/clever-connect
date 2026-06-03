@@ -257,3 +257,18 @@ type YouTubeConfig struct {
 	MaxConcurrent   int    `json:"max_concurrent" gorm:"default:2"`
 	ProxyURL        string `json:"proxy_url"`
 }
+
+// FileRegistry tracks unique files saved on disk via their BLAKE3 checksum
+type FileRegistry struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Checksum    string    `gorm:"uniqueIndex;not null" json:"checksum"`
+	FilePath    string    `gorm:"type:text;not null" json:"file_path"`
+	FileSize    int64     `json:"file_size"`
+	MimeType    string    `json:"mime_type"`
+	URL         string    `gorm:"type:text" json:"url"`
+	ETag        string    `gorm:"index" json:"etag"`
+	TgFileID    int64     `gorm:"index" json:"tg_file_id"`
+	TorrentHash string    `gorm:"index" json:"torrent_hash"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
