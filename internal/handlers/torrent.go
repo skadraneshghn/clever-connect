@@ -314,3 +314,67 @@ func (h *TorrentHandler) SelectTorrentFiles(c *gin.Context) {
 
 	c.JSON(http.StatusNotFound, gin.H{"error": "Torrent not found"})
 }
+
+// GetConfig returns the BitTorrent configurations
+func (h *TorrentHandler) GetConfig(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+
+	var cfg models.TorrentConfig
+	if err := db.DB.First(&cfg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load torrent config", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, cfg)
+}
+
+// SaveConfig updates the BitTorrent configurations
+func (h *TorrentHandler) SaveConfig(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+
+	var input models.TorrentConfig
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid config payload", "details": err.Error()})
+		return
+	}
+
+	var cfg models.TorrentConfig
+	if err := db.DB.First(&cfg).Error; err == nil {
+		cfg.SaveDirectory = input.SaveDirectory
+		cfg.MaxConnectionsPerTorrent = input.MaxConnectionsPerTorrent
+		cfg.MaxHalfOpenConnections = input.MaxHalfOpenConnections
+		cfg.UploadLimitMB = input.UploadLimitMB
+		cfg.DownloadLimitMB = input.DownloadLimitMB
+		cfg.EnableDHT = input.EnableDHT
+		cfg.EnablePEX = input.EnablePEX
+		cfg.EnableUTP = input.EnableUTP
+		cfg.EnableTCP = input.EnableTCP
+		cfg.EnableUpload = input.EnableUpload
+		cfg.PieceHashersPerTorrent = input.PieceHashersPerTorrent
+		cfg.CustomTrackers = input.CustomTrackers
+		db.DB.Save(&cfg)
+	} else {
+		db.DB.Create(&input)
+	}
+
+	// Dynamic limits update or full restart
+	if torrent.Manager != nil {
+		// Try to apply speed limits dynamically without resetting connections
+		torrent.Manager.ApplyLimits(input.UploadLimitMB, input.DownloadLimitMB)
+		
+		// Reinitialize full engine (only if app mode is server)
+		if h.cfg.AppMode == "server" {
+			if err := torrent.Init(); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reload torrent client with new configuration", "details": err.Error()})
+				return
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "saved"})
+}
+

@@ -198,6 +198,21 @@ const TorrentProgressBar: React.FC<{ progress: number; status: string }> = ({ pr
 	);
 };
 
+interface TorrentConfig {
+	save_directory: string;
+	max_connections_per_torrent: number;
+	max_half_open_connections: number;
+	upload_limit_mb: number;
+	download_limit_mb: number;
+	enable_dht: boolean;
+	enable_pex: boolean;
+	enable_utp: boolean;
+	enable_tcp: boolean;
+	enable_upload: boolean;
+	piece_hashers_per_torrent: number;
+	custom_trackers: string;
+}
+
 export const TorrentPage: React.FC = () => {
 	const { token } = useAuthStore();
 
@@ -206,6 +221,22 @@ export const TorrentPage: React.FC = () => {
 	const [magnetUri, setMagnetUri] = useState('');
 	const [torrentFile, setTorrentFile] = useState<File | null>(null);
 	const [saveDir, setSaveDir] = useState('./data/manager/downloads');
+	const [showConfigModal, setShowConfigModal] = useState(false);
+	const [folderPickerTarget, setFolderPickerTarget] = useState<'add' | 'settings'>('add');
+	const [config, setConfig] = useState<TorrentConfig>({
+		save_directory: './data/manager/downloads',
+		max_connections_per_torrent: 200,
+		max_half_open_connections: 100,
+		upload_limit_mb: 0,
+		download_limit_mb: 0,
+		enable_dht: true,
+		enable_pex: true,
+		enable_utp: true,
+		enable_tcp: true,
+		enable_upload: true,
+		piece_hashers_per_torrent: 4,
+		custom_trackers: '',
+	});
 
 	// Folder Picker state
 	const [showFolderModal, setShowFolderModal] = useState(false);
@@ -238,9 +269,47 @@ export const TorrentPage: React.FC = () => {
 		}
 	};
 
+	const fetchConfig = async () => {
+		try {
+			const res = await fetch('/api/torrent/config', {
+				headers: { 'Authorization': `Bearer ${token}` }
+			});
+			if (res.ok) {
+				const data = await res.json();
+				setConfig(data);
+				if (!saveDir) setSaveDir(data.save_directory);
+			}
+		} catch (err) {
+			console.error('Failed to fetch torrent configuration', err);
+		}
+	};
+
+	const handleSaveConfig = async () => {
+		try {
+			const res = await fetch('/api/torrent/config', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${token}`
+				},
+				body: JSON.stringify(config)
+			});
+			if (res.ok) {
+				setShowConfigModal(false);
+				fetchConfig();
+			} else {
+				const data = await res.json();
+				alert(data.error || 'Failed to save configuration');
+			}
+		} catch (err) {
+			console.error(err);
+		}
+	};
+
 	useEffect(() => {
 		if (token) {
 			fetchTorrents();
+			fetchConfig();
 			const interval = setInterval(fetchTorrents, 2000);
 			return () => clearInterval(interval);
 		}
@@ -265,8 +334,10 @@ export const TorrentPage: React.FC = () => {
 		}
 	};
 
-	const openFolderPicker = () => {
-		fetchDirectories(saveDir || currentPath);
+	const openFolderPicker = (target: 'add' | 'settings') => {
+		setFolderPickerTarget(target);
+		const initialPath = target === 'add' ? saveDir : config.save_directory;
+		fetchDirectories(initialPath || currentPath);
 		setShowFolderModal(true);
 	};
 
@@ -479,13 +550,22 @@ export const TorrentPage: React.FC = () => {
 					<h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: 'var(--color-brand-heading)' }}>BitTorrent Client</h1>
 					<p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--color-brand-muted)' }}>Manage high performance parallel torrent downloads</p>
 				</div>
-				<button 
-					onClick={() => setShowAddModal(true)} 
-					className="btn btn--primary" 
-					style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#ea580c', borderColor: '#ea580c', color: '#fff' }}
-				>
-					<FiPlus size={16} /> Add Torrent
-				</button>
+				<div style={{ display: 'flex', gap: 12 }}>
+					<button 
+						onClick={() => setShowAddModal(true)} 
+						className="btn btn--primary" 
+						style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#ea580c', borderColor: '#ea580c', color: '#fff' }}
+					>
+						<FiPlus size={16} /> Add Torrent
+					</button>
+					<button 
+						onClick={() => setShowConfigModal(true)} 
+						className="btn" 
+						style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+					>
+						<FiSettings size={16} /> Settings
+					</button>
+				</div>
 			</div>
 
 			{/* Torrent Jobs List */}
@@ -670,7 +750,7 @@ export const TorrentPage: React.FC = () => {
 										onChange={(e) => setSaveDir(e.target.value)}
 										style={{ flex: 1, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
 									/>
-									<button type="button" onClick={openFolderPicker} className="btn" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+									<button type="button" onClick={() => openFolderPicker('add')} className="btn" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
 										<FiFolder size={14} /> Browse
 									</button>
 								</div>
@@ -766,7 +846,14 @@ export const TorrentPage: React.FC = () => {
 							<button type="button" onClick={() => setShowFolderModal(false)} className="btn">Cancel</button>
 							<button 
 								type="button" 
-								onClick={() => { setSaveDir(currentPath); setShowFolderModal(false); }} 
+								onClick={() => {
+									if (folderPickerTarget === 'add') {
+										setSaveDir(currentPath);
+									} else {
+										setConfig(prev => ({ ...prev, save_directory: currentPath }));
+									}
+									setShowFolderModal(false);
+								}} 
 								className="btn btn--primary"
 								style={{ background: '#ea580c', borderColor: '#ea580c', color: '#fff' }}
 							>
@@ -882,6 +969,190 @@ export const TorrentPage: React.FC = () => {
 								disabled={loadingFiles}
 							>
 								Save Changes
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{/* SETTINGS MODAL */}
+			{showConfigModal && (
+				<div style={{
+					position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+					background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+					display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
+				}}>
+					<div style={{
+						background: 'var(--color-card-bg, #fff)',
+						borderRadius: 16, width: '90%', maxWidth: 650, padding: 24,
+						border: '1px solid var(--color-brand-border)',
+						boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+						maxHeight: '90vh', overflowY: 'auto'
+					}}>
+						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+							<h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--color-brand-heading)' }}>BitTorrent Client Configuration</h3>
+							<button onClick={() => setShowConfigModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-muted)' }}><FiX size={18} /></button>
+						</div>
+
+						<div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+							{/* Form Grid */}
+							<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+								{/* Left Column */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Default Save Folder</label>
+										<div style={{ display: 'flex', gap: 8 }}>
+											<input 
+												type="text" 
+												value={config.save_directory} 
+												onChange={(e) => setConfig(prev => ({ ...prev, save_directory: e.target.value }))}
+												style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+											/>
+											<button type="button" onClick={() => openFolderPicker('settings')} className="btn btn--sm" style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiFolder size={12} /> Browse</button>
+										</div>
+									</div>
+
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Upload Speed Limit (MB/s)</label>
+										<input 
+											type="number" 
+											step="0.1"
+											min="0"
+											value={config.upload_limit_mb} 
+											onChange={(e) => setConfig(prev => ({ ...prev, upload_limit_mb: parseFloat(e.target.value) || 0 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+											placeholder="0 for unlimited"
+										/>
+									</div>
+
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Download Speed Limit (MB/s)</label>
+										<input 
+											type="number" 
+											step="0.1"
+											min="0"
+											value={config.download_limit_mb} 
+											onChange={(e) => setConfig(prev => ({ ...prev, download_limit_mb: parseFloat(e.target.value) || 0 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+											placeholder="0 for unlimited"
+										/>
+									</div>
+
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Piece Hashers Per Torrent</label>
+										<input 
+											type="number" 
+											min="1"
+											max="16"
+											value={config.piece_hashers_per_torrent} 
+											onChange={(e) => setConfig(prev => ({ ...prev, piece_hashers_per_torrent: parseInt(e.target.value) || 4 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+										/>
+									</div>
+								</div>
+
+								{/* Right Column */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Max Connections Per Torrent</label>
+										<input 
+											type="number" 
+											min="10"
+											max="2000"
+											value={config.max_connections_per_torrent} 
+											onChange={(e) => setConfig(prev => ({ ...prev, max_connections_per_torrent: parseInt(e.target.value) || 200 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+										/>
+									</div>
+
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Max Half-Open Connections</label>
+										<input 
+											type="number" 
+											min="5"
+											max="500"
+											value={config.max_half_open_connections} 
+											onChange={(e) => setConfig(prev => ({ ...prev, max_half_open_connections: parseInt(e.target.value) || 100 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+										/>
+									</div>
+
+									{/* Toggles */}
+									<div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_dht} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_dht: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable DHT (Distributed Hash Table)</span>
+										</label>
+
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_pex} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_pex: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable PEX (Peer Exchange)</span>
+										</label>
+
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_utp} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_utp: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable uTP Protocol</span>
+										</label>
+
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_tcp} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_tcp: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable TCP Protocol</span>
+										</label>
+
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_upload} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_upload: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable Seeding / Uploading</span>
+										</label>
+									</div>
+								</div>
+							</div>
+
+							{/* Custom Trackers list */}
+							<div>
+								<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Inject Custom Trackers (Newline Separated)</label>
+								<textarea 
+									rows={4}
+									value={config.custom_trackers}
+									onChange={(e) => setConfig(prev => ({ ...prev, custom_trackers: e.target.value }))}
+									style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 12, fontFamily: 'monospace' }}
+									placeholder="udp://tracker.opentrackr.org:1337/announce"
+								/>
+							</div>
+						</div>
+
+						<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 20 }}>
+							<button onClick={() => setShowConfigModal(false)} className="btn">Cancel</button>
+							<button 
+								onClick={handleSaveConfig} 
+								className="btn btn--primary" 
+								style={{ background: '#ea580c', borderColor: '#ea580c', color: '#fff' }}
+							>
+								Save Settings
 							</button>
 						</div>
 					</div>

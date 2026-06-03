@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,7 +14,31 @@ import (
 
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
+	"golang.org/x/time/rate"
 )
+
+// Default trackers list of high-quality public trackers to boost download speeds
+var DefaultTrackers = []string{
+	"udp://tracker.coppersurfer.tk:6969/announce",
+	"udp://tracker.openbittorrent.com:6969/announce",
+	"udp://opentracker.i2p.rocks:6969/announce",
+	"udp://tracker.internetwarriors.net:1337/announce",
+	"udp://tracker.leechers-paradise.org:6969/announce",
+	"udp://coppersurfer.tk:6969/announce",
+	"udp://open.demonii.com:1337/announce",
+	"udp://tracker.cyberia.is:6969/announce",
+	"udp://tracker.moack.jacklist.net:1337/announce",
+	"udp://tracker.torrent.eu.org:451/announce",
+	"udp://explodie.org:6969/announce",
+	"udp://tracker.tiny-vps.com:6969/announce",
+	"http://tracker.gbitt.info:80/announce",
+	"udp://tracker.opentrackr.org:1337/announce",
+	"udp://9.rarbg.to:2710/announce",
+	"udp://9.rarbg.me:2780/announce",
+	"udp://tracker.dler.org:6969/announce",
+	"udp://exodus.desync.com:6969/announce",
+	"udp://open.stealth.si:80/announce",
+}
 
 type torrentSpeed struct {
 	lastDownloaded int64
@@ -24,17 +49,52 @@ type torrentSpeed struct {
 }
 
 type TorrentManager struct {
-	client     *torrent.Client
-	mu         sync.Mutex
-	speeds     map[string]*torrentSpeed
-	stopStats  chan struct{}
+	client          *torrent.Client
+	mu              sync.Mutex
+	speeds          map[string]*torrentSpeed
+	stopStats       chan struct{}
+	uploadLimiter   *rate.Limiter
+	downloadLimiter *rate.Limiter
 }
 
 var Manager *TorrentManager
 
 // Init initializes the torrent client instance
 func Init() error {
-	saveDir := "./data/manager/downloads"
+	// If an active manager already exists, close it first to avoid leaks
+	if Manager != nil {
+		Manager.Close()
+	}
+
+	// Auto-migrate the GORM TorrentJob and TorrentConfig models
+	if err := db.DB.AutoMigrate(&models.TorrentJob{}, &models.TorrentConfig{}); err != nil {
+		return fmt.Errorf("failed to migrate torrent DB tables: %w", err)
+	}
+
+	// Load or create the default TorrentConfig
+	var dbCfg models.TorrentConfig
+	if err := db.DB.First(&dbCfg).Error; err != nil {
+		dbCfg = models.TorrentConfig{
+			SaveDirectory:            "./data/manager/downloads",
+			MaxConnectionsPerTorrent: 200,
+			MaxHalfOpenConnections:   100,
+			UploadLimitMB:            0,
+			DownloadLimitMB:          0,
+			EnableDHT:                true,
+			EnablePEX:                true,
+			EnableUTP:                true,
+			EnableTCP:                true,
+			EnableUpload:             true,
+			PieceHashersPerTorrent:   4,
+			CustomTrackers:           strings.Join(DefaultTrackers, "\n"),
+		}
+		_ = db.DB.Create(&dbCfg)
+	}
+
+	saveDir := dbCfg.SaveDirectory
+	if saveDir == "" {
+		saveDir = "./data/manager/downloads"
+	}
 	if err := os.MkdirAll(saveDir, 0755); err != nil {
 		return fmt.Errorf("failed to create downloads directory: %w", err)
 	}
@@ -46,7 +106,42 @@ func Init() error {
 
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.DataDir = saveDir
-	cfg.NoUpload = false // Seed completed files to keep ratio healthy
+	cfg.NoUpload = !dbCfg.EnableUpload
+	cfg.Seed = dbCfg.EnableUpload
+
+	// Apply high performance connection & parallel limits
+	cfg.EstablishedConnsPerTorrent = dbCfg.MaxConnectionsPerTorrent
+	cfg.HalfOpenConnsPerTorrent = dbCfg.MaxHalfOpenConnections
+	cfg.TotalHalfOpenConns = dbCfg.MaxHalfOpenConnections * 2
+	cfg.TorrentPeersHighWater = dbCfg.MaxConnectionsPerTorrent * 2
+	cfg.TorrentPeersLowWater = dbCfg.MaxConnectionsPerTorrent / 4
+	cfg.PieceHashersPerTorrent = dbCfg.PieceHashersPerTorrent
+
+	// Network options
+	cfg.NoDHT = !dbCfg.EnableDHT
+	cfg.DisablePEX = !dbCfg.EnablePEX
+	cfg.DisableUTP = !dbCfg.EnableUTP
+	cfg.DisableTCP = !dbCfg.EnableTCP
+
+	// High speed dialing parameters
+	cfg.DialForPeerConns = true
+	cfg.AlwaysWantConns = true
+	cfg.NominalDialTimeout = 5 * time.Second
+	cfg.MaxUnverifiedBytes = 256 * 1024 * 1024 // 256MB to saturate network pipes
+
+	// Setup Rate Limiters
+	uploadLimiter := rate.NewLimiter(rate.Inf, 1024*1024)
+	downloadLimiter := rate.NewLimiter(rate.Inf, 1024*1024)
+
+	if dbCfg.UploadLimitMB > 0 {
+		uploadLimiter.SetLimit(rate.Limit(dbCfg.UploadLimitMB * 1024 * 1024))
+	}
+	if dbCfg.DownloadLimitMB > 0 {
+		downloadLimiter.SetLimit(rate.Limit(dbCfg.DownloadLimitMB * 1024 * 1024))
+	}
+
+	cfg.UploadRateLimiter = uploadLimiter
+	cfg.DownloadRateLimiter = downloadLimiter
 
 	client, err := torrent.NewClient(cfg)
 	if err != nil {
@@ -54,14 +149,11 @@ func Init() error {
 	}
 
 	Manager = &TorrentManager{
-		client:    client,
-		speeds:    make(map[string]*torrentSpeed),
-		stopStats: make(chan struct{}),
-	}
-
-	// Auto-migrate the GORM TorrentJob model
-	if err := db.DB.AutoMigrate(&models.TorrentJob{}); err != nil {
-		return fmt.Errorf("failed to migrate torrent DB table: %w", err)
+		client:          client,
+		speeds:          make(map[string]*torrentSpeed),
+		stopStats:       make(chan struct{}),
+		uploadLimiter:   uploadLimiter,
+		downloadLimiter: downloadLimiter,
 	}
 
 	// Reload all existing torrent jobs from database
@@ -71,6 +163,7 @@ func Init() error {
 			if job.MagnetURI != "" {
 				t, err := client.AddMagnet(job.MagnetURI)
 				if err == nil {
+					Manager.InjectTrackers(t)
 					if job.Status == "paused" {
 						t.DisallowDataDownload()
 					} else {
@@ -84,6 +177,7 @@ func Init() error {
 					if err == nil {
 						t, err := client.AddTorrent(mi)
 						if err == nil {
+							Manager.InjectTrackers(t)
 							if job.Status == "paused" {
 								t.DisallowDataDownload()
 							} else {
@@ -101,6 +195,54 @@ func Init() error {
 	go Manager.statsLoop()
 
 	return nil
+}
+
+// ApplyLimits dynamically updates rate limits at runtime without resetting connections
+func (m *TorrentManager) ApplyLimits(uploadLimitMB float64, downloadLimitMB float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.uploadLimiter != nil {
+		if uploadLimitMB > 0 {
+			m.uploadLimiter.SetLimit(rate.Limit(uploadLimitMB * 1024 * 1024))
+		} else {
+			m.uploadLimiter.SetLimit(rate.Inf)
+		}
+	}
+
+	if m.downloadLimiter != nil {
+		if downloadLimitMB > 0 {
+			m.downloadLimiter.SetLimit(rate.Limit(downloadLimitMB * 1024 * 1024))
+		} else {
+			m.downloadLimiter.SetLimit(rate.Inf)
+		}
+	}
+}
+
+// InjectTrackers adds a set of robust trackers to a torrent to accelerate download speed
+func (m *TorrentManager) InjectTrackers(t *torrent.Torrent) {
+	var dbCfg models.TorrentConfig
+	trackersList := []string{}
+	if err := db.DB.First(&dbCfg).Error; err == nil && dbCfg.CustomTrackers != "" {
+		lines := strings.Split(dbCfg.CustomTrackers, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				trackersList = append(trackersList, line)
+			}
+		}
+	}
+
+	if len(trackersList) == 0 {
+		trackersList = DefaultTrackers
+	}
+
+	announceList := make([][]string, len(trackersList))
+	for i, tr := range trackersList {
+		announceList[i] = []string{tr}
+	}
+
+	t.AddTrackers(announceList)
 }
 
 // Close gracefully closes the torrent client
@@ -216,11 +358,16 @@ func (m *TorrentManager) AddMagnet(uri string, saveDir string) (string, error) {
 		return "", err
 	}
 
+	m.InjectTrackers(t)
 	infoHash := t.InfoHash().HexString()
 
-	// Default save directory is downloads
 	if saveDir == "" {
-		saveDir = "./data/manager/downloads"
+		var dbCfg models.TorrentConfig
+		if err := db.DB.First(&dbCfg).Error; err == nil && dbCfg.SaveDirectory != "" {
+			saveDir = dbCfg.SaveDirectory
+		} else {
+			saveDir = "./data/manager/downloads"
+		}
 	}
 
 	job := models.TorrentJob{
@@ -257,10 +404,16 @@ func (m *TorrentManager) AddTorrentFile(torrentPath string, saveDir string) (str
 		return "", err
 	}
 
+	m.InjectTrackers(t)
 	infoHash := t.InfoHash().HexString()
 
 	if saveDir == "" {
-		saveDir = "./data/manager/downloads"
+		var dbCfg models.TorrentConfig
+		if err := db.DB.First(&dbCfg).Error; err == nil && dbCfg.SaveDirectory != "" {
+			saveDir = dbCfg.SaveDirectory
+		} else {
+			saveDir = "./data/manager/downloads"
+		}
 	}
 
 	// Save metadata to persistent configs

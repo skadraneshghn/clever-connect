@@ -123,3 +123,21 @@ type TelegramConfig struct {
 	IsActive            bool   `json:"is_active" gorm:"default:false"`                  // Whether the bot should auto-start
 }
 
+// TorrentConfig stores advanced client configurations for BitTorrent client
+type TorrentConfig struct {
+	gorm.Model
+	SaveDirectory              string  `json:"save_directory" gorm:"default:'./data/manager/downloads'"`
+	MaxConnectionsPerTorrent   int     `json:"max_connections_per_torrent" gorm:"default:200"`
+	MaxHalfOpenConnections     int     `json:"max_half_open_connections" gorm:"default:100"`
+	UploadLimitMB              float64 `json:"upload_limit_mb" gorm:"default:0"` // 0 is unlimited
+	DownloadLimitMB            float64 `json:"download_limit_mb" gorm:"default:0"` // 0 is unlimited
+	EnableDHT                  bool    `json:"enable_dht" gorm:"default:true"`
+	EnablePEX                  bool    `json:"enable_pex" gorm:"default:true"`
+	EnableUTP                  bool    `json:"enable_utp" gorm:"default:true"`
+	EnableTCP                  bool    `json:"enable_tcp" gorm:"default:true"`
+	EnableUpload               bool    `json:"enable_upload" gorm:"default:true"`
+	PieceHashersPerTorrent     int     `json:"piece_hashers_per_torrent" gorm:"default:4"`
+	CustomTrackers             string  `json:"custom_trackers" gorm:"type:text"`
+}
+
+

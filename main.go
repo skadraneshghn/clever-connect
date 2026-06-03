@@ -159,6 +159,8 @@ func main() {
 			protected.POST("/torrent/delete", torrentHandler.DeleteTorrent)
 			protected.GET("/torrent/files", torrentHandler.ListTorrentFiles)
 			protected.POST("/torrent/select-files", torrentHandler.SelectTorrentFiles)
+			protected.GET("/torrent/config", torrentHandler.GetConfig)
+			protected.POST("/torrent/config", torrentHandler.SaveConfig)
 
 			// Telegram Bot Core API Endpoints
 			protected.GET("/telegram/config", telegramHandler.GetConfig)

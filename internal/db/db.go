@@ -84,8 +84,17 @@ func InitDB(cfg *config.Config) *gorm.DB {
 
 	// Auto Migration
 	logger.Info("DB", "Executing automatic database schema migrations")
-	if err := DB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}); err != nil {
+	migrateDB := DB
+	if DB.Dialector.Name() == "mysql" {
+		migrateDB = DB.Set("gorm:table_options", "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
+	}
+	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
+	}
+	
+	// Ensure the table collation is converted to utf8mb4 to support emoji/symbols in welcome messages
+	if DB.Dialector.Name() == "mysql" {
+		DB.Exec("ALTER TABLE `telegram_configs` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 	}
 	logger.Info("DB", "Schema migrations completed successfully")
 
