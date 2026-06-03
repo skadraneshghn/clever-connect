@@ -355,3 +355,236 @@ func getBestImage(m map[string]interface{}) string {
 	}
 	return bestURL
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Embed Scraping Structures & Function (No-Auth Fallback)
+// ──────────────────────────────────────────────────────────────────────────────
+
+type EmbedNextData struct {
+	Props struct {
+		PageProps struct {
+			Status      int    `json:"status"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			State       struct {
+				Data struct {
+					Entity *EmbedEntity `json:"entity"`
+				} `json:"data"`
+			} `json:"state"`
+		} `json:"pageProps"`
+	} `json:"props"`
+}
+
+type EmbedEntity struct {
+	ID          string         `json:"id"`
+	URI         string         `json:"uri"`
+	Type        string         `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Artists     []EmbedArtist  `json:"artists"`
+	CoverArt    *EmbedCoverArt `json:"coverArt"`
+	Images      []EmbedImage   `json:"images"`
+	ReleaseDate *EmbedDate     `json:"releaseDate"`
+	Release_Date string        `json:"release_date"`
+	TrackList   []EmbedTrack   `json:"trackList"`
+	Duration    int            `json:"duration"`
+	TrackNumber int            `json:"track_number"`
+}
+
+type EmbedArtist struct {
+	Name string `json:"name"`
+}
+
+type EmbedCoverArt struct {
+	Sources []EmbedImage `json:"sources"`
+}
+
+type EmbedImage struct {
+	URL    string `json:"url"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
+type EmbedDate struct {
+	ISOString string `json:"isoString"`
+}
+
+type EmbedTrack struct {
+	ID          string        `json:"id"`
+	URI         string        `json:"uri"`
+	Title       string        `json:"title"`
+	Name        string        `json:"name"`
+	Artists     []EmbedArtist `json:"artists"`
+	Duration    int           `json:"duration"`
+	TrackNumber int           `json:"track_number"`
+}
+
+// ScrapeSpotifyEmbed fetches track or album metadata directly from the public Spotify embed player page
+func ScrapeSpotifyEmbed(linkType, id string) (interface{}, error) {
+	embedURL := fmt.Sprintf("https://open.spotify.com/embed/%s/%s", linkType, id)
+
+	req, err := http.NewRequest("GET", embedURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create scrape request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Referer", "https://open.spotify.com/")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("scrape request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("scrape failed with HTTP status %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read scrape response: %w", err)
+	}
+
+	body := string(bodyBytes)
+
+	// Extract the __NEXT_DATA__ json script tag
+	re := regexp.MustCompile(`<script id="__NEXT_DATA__" type="application/json">(.*?)</script>`)
+	matches := re.FindStringSubmatch(body)
+	if len(matches) < 2 {
+		return nil, fmt.Errorf("metadata JSON script block not found in embed page")
+	}
+
+	var nextData EmbedNextData
+	if err := json.Unmarshal([]byte(matches[1]), &nextData); err != nil {
+		return nil, fmt.Errorf("failed to parse page metadata JSON: %w", err)
+	}
+
+	if nextData.Props.PageProps.Status == 404 {
+		return nil, fmt.Errorf("spotify embed player returned 404 (often blocked on VPS/cloud hosts by Spotify's CDN)")
+	}
+
+	entity := nextData.Props.PageProps.State.Data.Entity
+	if entity == nil {
+		return nil, fmt.Errorf("no metadata entity found in page payload")
+	}
+
+	if entity.Name == "" {
+		return nil, fmt.Errorf("metadata entity name is empty")
+	}
+
+	// Normalize cover image URL
+	coverURL := ""
+	if entity.CoverArt != nil && len(entity.CoverArt.Sources) > 0 {
+		coverURL = entity.CoverArt.Sources[0].URL
+	} else if len(entity.Images) > 0 {
+		coverURL = entity.Images[0].URL
+	}
+
+	// Normalize release date
+	releaseDate := entity.Release_Date
+	if entity.ReleaseDate != nil && entity.ReleaseDate.ISOString != "" {
+		releaseDate = entity.ReleaseDate.ISOString
+	}
+
+	// Normalize artists
+	var artists []string
+	for _, a := range entity.Artists {
+		if a.Name != "" {
+			artists = append(artists, a.Name)
+		}
+	}
+	primaryArtist := "Unknown Artist"
+	if len(artists) > 0 {
+		primaryArtist = artists[0]
+	} else {
+		artists = []string{primaryArtist}
+	}
+
+	switch linkType {
+	case "track":
+		meta := &TrackMeta{
+			ID:          id,
+			Title:       entity.Name,
+			Artist:      primaryArtist,
+			Artists:     artists,
+			Album:       "Unknown Album",
+			AlbumArtist: primaryArtist,
+			CoverURL:    coverURL,
+			ReleaseDate: releaseDate,
+			TrackNumber: entity.TrackNumber,
+			TotalTracks: 1,
+			DiscNumber:  1,
+			DurationMs:  entity.Duration,
+			SpotifyURL:  fmt.Sprintf("https://open.spotify.com/track/%s", id),
+		}
+		return meta, nil
+
+	case "album":
+		album := &AlbumMeta{
+			ID:          id,
+			Name:        entity.Name,
+			Artist:      primaryArtist,
+			CoverURL:    coverURL,
+			ReleaseDate: releaseDate,
+			TotalTracks: len(entity.TrackList),
+		}
+
+		for idx, t := range entity.TrackList {
+			tTrackID := t.ID
+			if tTrackID == "" {
+				parts := strings.Split(t.URI, ":")
+				if len(parts) > 2 {
+					tTrackID = parts[2]
+				} else {
+					tTrackID = fmt.Sprintf("%s_track_%d", id, idx)
+				}
+			}
+
+			tTitle := t.Title
+			if tTitle == "" {
+				tTitle = t.Name
+			}
+
+			var tArtists []string
+			for _, a := range t.Artists {
+				if a.Name != "" {
+					tArtists = append(tArtists, a.Name)
+				}
+			}
+			tPrimaryArtist := primaryArtist
+			if len(tArtists) > 0 {
+				tPrimaryArtist = tArtists[0]
+			} else {
+				tArtists = []string{tPrimaryArtist}
+			}
+
+			tNum := t.TrackNumber
+			if tNum == 0 {
+				tNum = idx + 1
+			}
+
+			album.Tracks = append(album.Tracks, TrackMeta{
+				ID:          tTrackID,
+				Title:       tTitle,
+				Artist:      tPrimaryArtist,
+				Artists:     tArtists,
+				Album:       entity.Name,
+				AlbumArtist: primaryArtist,
+				CoverURL:    coverURL,
+				ReleaseDate: releaseDate,
+				TrackNumber: tNum,
+				TotalTracks: len(entity.TrackList),
+				DiscNumber:  1,
+				DurationMs:  t.Duration,
+				SpotifyURL:  fmt.Sprintf("https://open.spotify.com/track/%s", tTrackID),
+			})
+		}
+		return album, nil
+	}
+
+	return nil, fmt.Errorf("unsupported Spotify link type for scraping: %s", linkType)
+}
+

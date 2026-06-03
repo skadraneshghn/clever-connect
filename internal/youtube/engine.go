@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -277,6 +276,24 @@ func (e *Engine) executeDownload(ctx context.Context, job *models.YouTubeJob) {
 		}
 	}
 
+	// Check if selected format has video and audio
+	hasVideo := selectedFormat.QualityLabel != ""
+	hasAudio := selectedFormat.AudioChannels > 0
+	needAudioMerge := hasVideo && !hasAudio
+
+	// If we need audio merge, find the best audio format
+	var bestAudioFormat *ytdl.Format
+	if needAudioMerge {
+		for i := range video.Formats {
+			f := &video.Formats[i]
+			if f.AudioChannels > 0 {
+				if bestAudioFormat == nil || f.Bitrate > bestAudioFormat.Bitrate {
+					bestAudioFormat = f
+				}
+			}
+		}
+	}
+
 	// Create download directory
 	absSaveDir := getAbsoluteSavePath(job.SaveDirectory)
 	if err := os.MkdirAll(absSaveDir, 0755); err != nil {
@@ -284,16 +301,35 @@ func (e *Engine) executeDownload(ctx context.Context, job *models.YouTubeJob) {
 		return
 	}
 
-	// Get download stream
-	stream, size, err := e.client.GetStreamContext(ctx, video, selectedFormat)
+	// Get video stream
+	videoStream, videoSize, err := e.client.GetStreamContext(ctx, video, selectedFormat)
 	if err != nil {
-		e.failJob(job.ID, fmt.Sprintf("Failed to get stream: %s", err))
+		e.failJob(job.ID, fmt.Sprintf("Failed to get video stream: %s", err))
 		return
 	}
-	defer stream.Close()
+	defer videoStream.Close()
+
+	// Get audio stream if needed
+	var audioStream io.ReadCloser
+	var audioSize int64
+	if needAudioMerge && bestAudioFormat != nil {
+		var aErr error
+		audioStream, audioSize, aErr = e.client.GetStreamContext(ctx, video, bestAudioFormat)
+		if aErr != nil {
+			logger.Error("YouTube", "Failed to get audio stream, proceeding without audio merge", "id", job.ID, "error", aErr)
+			needAudioMerge = false
+		}
+	}
+	if audioStream != nil {
+		defer audioStream.Close()
+	}
 
 	// Update total bytes
-	db.DB.Model(&models.YouTubeJob{}).Where("id = ?", job.ID).Update("total_bytes", size)
+	totalBytes := videoSize
+	if needAudioMerge {
+		totalBytes += audioSize
+	}
+	db.DB.Model(&models.YouTubeJob{}).Where("id = ?", job.ID).Update("total_bytes", totalBytes)
 
 	// Build final destination path
 	destPath := filepath.Join(absSaveDir, job.Filename)
@@ -304,79 +340,78 @@ func (e *Engine) executeDownload(ctx context.Context, job *models.YouTubeJob) {
 		downloadPath = destPath + ".ytdl_temp"
 	}
 
-	// Create output file
-	outFile, err := os.Create(downloadPath)
-	if err != nil {
-		e.failJob(job.ID, fmt.Sprintf("Failed to create output file: %s", err))
-		return
+	// Setup download paths for separate streams if merging is required
+	videoPath := downloadPath
+	audioPath := ""
+	if needAudioMerge {
+		videoPath = downloadPath + ".video"
+		audioPath = downloadPath + ".audio"
 	}
 
-	// Download with progress tracking
-	downloaded := int64(0)
+	// Download Video stream
 	lastUpdate := time.Now()
 	lastBytes := int64(0)
-	buf := make([]byte, 256*1024) // 256KB buffer for high speed
+	totalDownloaded := int64(0)
 
-	for {
-		select {
-		case <-ctx.Done():
-			outFile.Close()
-			os.Remove(downloadPath)
+	err = e.downloadStream(ctx, job.ID, videoStream, videoPath, totalBytes, &lastUpdate, &lastBytes, &totalDownloaded)
+	if err != nil {
+		os.Remove(videoPath)
+		if audioPath != "" {
+			os.Remove(audioPath)
+		}
+		if err == context.Canceled {
 			db.DB.Model(&models.YouTubeJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
 				"status": "error",
 				"speed":  0,
 				"error_message": "Download cancelled",
 			})
-			return
-		default:
+		} else {
+			e.failJob(job.ID, fmt.Sprintf("Video download error: %s", err))
 		}
+		return
+	}
 
-		n, readErr := stream.Read(buf)
-		if n > 0 {
-			if _, writeErr := outFile.Write(buf[:n]); writeErr != nil {
-				outFile.Close()
-				e.failJob(job.ID, fmt.Sprintf("Write error: %s", writeErr))
-				return
-			}
-			downloaded += int64(n)
-
-			// Update progress every 500ms
-			if time.Since(lastUpdate) > 500*time.Millisecond {
-				elapsed := time.Since(lastUpdate).Seconds()
-				speed := float64(downloaded-lastBytes) / elapsed / (1024 * 1024) // MB/s
-
-				progress := float64(0)
-				if size > 0 {
-					progress = float64(downloaded) / float64(size) * 100
-				}
-
+	// Download Audio stream if needed
+	if needAudioMerge {
+		err = e.downloadStream(ctx, job.ID, audioStream, audioPath, totalBytes, &lastUpdate, &lastBytes, &totalDownloaded)
+		if err != nil {
+			os.Remove(videoPath)
+			os.Remove(audioPath)
+			if err == context.Canceled {
 				db.DB.Model(&models.YouTubeJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
-					"downloaded": downloaded,
-					"progress":   progress,
-					"speed":      speed,
-					"status":     "downloading",
+					"status": "error",
+					"speed":  0,
+					"error_message": "Download cancelled",
 				})
-
-				lastUpdate = time.Now()
-				lastBytes = downloaded
+			} else {
+				e.failJob(job.ID, fmt.Sprintf("Audio download error: %s", err))
 			}
+			return
 		}
 
-		if readErr != nil {
-			if readErr == io.EOF {
-				break
+		// Merge Video & Audio streams into downloadPath
+		err = e.mergeVideoAudio(ctx, job.ID, videoPath, audioPath, downloadPath)
+		os.Remove(videoPath)
+		os.Remove(audioPath)
+
+		if err != nil {
+			if err == context.Canceled {
+				os.Remove(downloadPath)
+				db.DB.Model(&models.YouTubeJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
+					"status": "error",
+					"speed":  0,
+					"error_message": "Download cancelled during merge",
+				})
+			} else {
+				e.failJob(job.ID, fmt.Sprintf("Merge error: %s", err))
 			}
-			outFile.Close()
-			e.failJob(job.ID, fmt.Sprintf("Read error: %s", readErr))
 			return
 		}
 	}
 
-	outFile.Close()
-
 	// Final progress update
 	db.DB.Model(&models.YouTubeJob{}).Where("id = ?", job.ID).Updates(map[string]interface{}{
-		"downloaded": downloaded,
+		"downloaded": totalDownloaded,
 		"progress":   100.0,
 		"speed":      0,
 	})
@@ -421,6 +456,111 @@ func (e *Engine) executeDownload(ctx context.Context, job *models.YouTubeJob) {
 	logger.Info("YouTube", "Download completed successfully", "id", job.ID, "title", job.Title)
 }
 
+// downloadStream writes data from stream to filePath and updates progress in DB.
+func (e *Engine) downloadStream(ctx context.Context, jobID string, stream io.ReadCloser, filePath string, totalSize int64, lastUpdate *time.Time, lastBytes *int64, totalDownloaded *int64) error {
+	outFile, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer outFile.Close()
+
+	buf := make([]byte, 256*1024) // 256KB buffer for high speed
+
+	for {
+		select {
+		case <-ctx.Done():
+			return context.Canceled
+		default:
+		}
+
+		n, readErr := stream.Read(buf)
+		if n > 0 {
+			if _, writeErr := outFile.Write(buf[:n]); writeErr != nil {
+				return fmt.Errorf("write error: %w", writeErr)
+			}
+			*totalDownloaded += int64(n)
+
+			// Update progress every 500ms
+			if time.Since(*lastUpdate) > 500*time.Millisecond {
+				elapsed := time.Since(*lastUpdate).Seconds()
+				if elapsed <= 0 {
+					elapsed = 0.5
+				}
+				speed := float64(*totalDownloaded-*lastBytes) / elapsed / (1024 * 1024) // MB/s
+
+				progress := float64(0)
+				if totalSize > 0 {
+					progress = float64(*totalDownloaded) / float64(totalSize) * 100
+				}
+				if progress > 99.9 && totalSize > 0 {
+					progress = 99.9 // Save 100% for after merge is done
+				}
+
+				db.DB.Model(&models.YouTubeJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+					"downloaded": *totalDownloaded,
+					"progress":   progress,
+					"speed":      speed,
+					"status":     "downloading",
+				})
+
+				*lastUpdate = time.Now()
+				*lastBytes = *totalDownloaded
+			}
+		}
+
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return fmt.Errorf("read error: %w", readErr)
+		}
+	}
+
+	return nil
+}
+
+// mergeVideoAudio merges separate video and audio files into a single file using FFmpeg.
+func (e *Engine) mergeVideoAudio(ctx context.Context, jobID, videoPath, audioPath, outputPath string) error {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return fmt.Errorf("ffmpeg is not installed or not in PATH")
+	}
+
+	// Update status to converting so UI shows orange spinner/badge
+	db.DB.Model(&models.YouTubeJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+		"status": "converting",
+	})
+
+	var audioCodec string
+	if strings.HasSuffix(strings.ToLower(outputPath), ".webm") {
+		audioCodec = "libopus"
+	} else {
+		audioCodec = "aac"
+	}
+
+	// Build FFmpeg command for copying video and transcoding/copying audio
+	args := []string{
+		"-y",                 // Overwrite output
+		"-i", videoPath,      // Video input
+		"-i", audioPath,      // Audio input
+		"-c:v", "copy",       // Copy video codec without transcoding
+		"-c:a", audioCodec,   // Re-encode audio to aac/opus for target container compatibility
+		"-map", "0:v:0",      // Map first video stream from first input
+		"-map", "1:a:0",      // Map first audio stream from second input
+		outputPath,           // Output path
+	}
+
+	var stderrBuf bytes.Buffer
+	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ffmpeg merge failed: %w (stderr: %s)", err, strings.TrimSpace(stderrBuf.String()))
+	}
+
+	return nil
+}
+
 // convertForTV transcodes video to Sony Bravia 46W700A compatible format using FFmpeg
 // Container: MP4, Video: H.264 AVC High@4.0, Resolution: 1920×1080 or lower, Audio: AAC-LC stereo or AAC 5.1
 // Uses all CPU cores for maximum parallel encoding speed
@@ -431,22 +571,19 @@ func (e *Engine) convertForTV(ctx context.Context, jobID, inputPath, outputPath 
 		return fmt.Errorf("ffmpeg is not installed or not in PATH")
 	}
 
-	// Number of CPU threads for parallel encoding
-	numThreads := runtime.NumCPU()
-	if numThreads < 1 {
-		numThreads = 1
-	}
-
 	// Build FFmpeg command for Sony Bravia 46W700A compatibility
-	// H.264 AVC High Profile Level 4.0, AAC-LC stereo, MP4 container
+	// Uses H.264 AVC High Profile Level 4.0, AAC-LC stereo, MP4 container.
+	// Configured to use all CPU cores globally (-threads 0) and the ultrafast preset
+	// for maximum encoding speed and efficiency.
 	args := []string{
 		"-y",                          // Overwrite output
+		"-threads", "0",               // Enable global multithreading (decoders, filters, encoders) using all cores
 		"-i", inputPath,               // Input file
 		"-c:v", "libx264",            // H.264 AVC codec
 		"-profile:v", "high",          // High profile
 		"-level:v", "4.0",            // Level 4.0
-		"-preset", "fast",             // Fast preset for speed (good balance)
-		"-crf", "18",                  // High quality (lower = better, 18 is visually lossless)
+		"-preset", "ultrafast",        // Ultrafast preset for maximum CPU efficiency
+		"-crf", "22",                  // CRF 22 offers excellent quality with fast encode speed
 		"-maxrate", "20M",            // Max bitrate for TV compatibility
 		"-bufsize", "25M",            // Buffer size
 		"-pix_fmt", "yuv420p",        // Pixel format for maximum compatibility
@@ -456,7 +593,6 @@ func (e *Engine) convertForTV(ctx context.Context, jobID, inputPath, outputPath 
 		"-b:a", "192k",              // Audio bitrate
 		"-ar", "48000",               // Audio sample rate
 		"-movflags", "+faststart",    // Enable fast start for streaming
-		"-threads", strconv.Itoa(numThreads), // Use all CPU cores
 		"-progress", "pipe:1",        // Output progress to stdout
 		outputPath,                    // Output file
 	}
@@ -475,13 +611,17 @@ func (e *Engine) convertForTV(ctx context.Context, jobID, inputPath, outputPath 
 		return fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
 
-	// Parse progress from ffmpeg output
+	// Parse progress from ffmpeg output using a throttled loop to prevent SQLite locking
 	go func() {
-		scanner := bufio.NewScanner(stdout)
+		reader := bufio.NewReader(stdout)
 		progressRegex := regexp.MustCompile(`out_time_us=(\d+)`)
+		lastUpdate := time.Now()
 
-		for scanner.Scan() {
-			line := scanner.Text()
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				break
+			}
 			matches := progressRegex.FindStringSubmatch(line)
 			if len(matches) > 1 {
 				timeUs, err := strconv.ParseInt(matches[1], 10, 64)
@@ -490,7 +630,12 @@ func (e *Engine) convertForTV(ctx context.Context, jobID, inputPath, outputPath 
 					if progress > 100 {
 						progress = 100
 					}
-					db.DB.Model(&models.YouTubeJob{}).Where("id = ?", jobID).Update("convert_progress", progress)
+
+					// Throttle DB updates to once per 1 second to avoid database write-locking
+					if time.Since(lastUpdate) >= 1*time.Second || progress == 100 {
+						db.DB.Model(&models.YouTubeJob{}).Where("id = ?", jobID).Update("convert_progress", progress)
+						lastUpdate = time.Now()
+					}
 				}
 			}
 		}

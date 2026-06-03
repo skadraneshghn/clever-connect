@@ -70,34 +70,50 @@ func getAbsoluteSavePath(saveDir string) string {
 
 // FetchInfo fetches metadata for a Spotify track or album URL
 func (e *Engine) FetchInfo(spotifyURL string) (interface{}, string, error) {
-	var cfg models.SpotifyConfig
-	if err := db.DB.First(&cfg).Error; err != nil || cfg.ClientID == "" || cfg.ClientSecret == "" {
-		return nil, "", fmt.Errorf("Spotify API credentials not configured. Go to Settings → Spotify to add your Client ID & Secret")
-	}
-
 	linkType, id, err := ParseSpotifyURL(spotifyURL)
 	if err != nil {
 		return nil, "", err
 	}
 
-	client := NewSpotifyClient(cfg.ClientID, cfg.ClientSecret)
-
-	switch linkType {
-	case "track":
-		track, err := client.GetTrack(id)
-		if err != nil {
-			return nil, "", err
-		}
-		return track, "track", nil
-	case "album":
-		album, err := client.GetAlbum(id)
-		if err != nil {
-			return nil, "", err
-		}
-		return album, "album", nil
-	default:
-		return nil, "", fmt.Errorf("unsupported Spotify link type: %s", linkType)
+	var cfg models.SpotifyConfig
+	hasCredentials := false
+	if err := db.DB.First(&cfg).Error; err == nil && cfg.ClientID != "" && cfg.ClientSecret != "" {
+		hasCredentials = true
 	}
+
+	if hasCredentials {
+		client := NewSpotifyClient(cfg.ClientID, cfg.ClientSecret)
+		logger.Info("Spotify", "Attempting metadata retrieval via official Spotify Web API", "type", linkType, "id", id)
+		switch linkType {
+		case "track":
+			track, err := client.GetTrack(id)
+			if err == nil {
+				return track, "track", nil
+			}
+			logger.Warn("Spotify", "Official API fetch failed, falling back to keyless scraper", "error", err)
+		case "album":
+			album, err := client.GetAlbum(id)
+			if err == nil {
+				return album, "album", nil
+			}
+			logger.Warn("Spotify", "Official API fetch failed, falling back to keyless scraper", "error", err)
+		}
+	}
+
+	logger.Info("Spotify", "Attempting keyless metadata scraping from public web player", "type", linkType, "id", id)
+	scraped, err := ScrapeSpotifyEmbed(linkType, id)
+	if err == nil {
+		return scraped, linkType, nil
+	}
+
+	// If both failed, return a detailed helpful error
+	if hasCredentials {
+		return nil, "", fmt.Errorf("Spotify metadata lookup failed: %w", err)
+	}
+	return nil, "", fmt.Errorf("Spotify metadata lookup failed: %v.\n\n"+
+		"Note: Keyless scraping is often blocked on cloud/VPS servers by Spotify's CDN. "+
+		"To resolve this, go to Settings → Spotify and configure a free Spotify Client ID & Client Secret "+
+		"(no Spotify Premium account required!)", err)
 }
 
 // AddTrackJob creates a new download job for a single Spotify track
