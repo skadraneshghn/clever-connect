@@ -380,6 +380,7 @@ type EmbedEntity struct {
 	URI         string         `json:"uri"`
 	Type        string         `json:"type"`
 	Name        string         `json:"name"`
+	Subtitle    string         `json:"subtitle"`
 	Description string         `json:"description"`
 	Artists     []EmbedArtist  `json:"artists"`
 	CoverArt    *EmbedCoverArt `json:"coverArt"`
@@ -414,6 +415,7 @@ type EmbedTrack struct {
 	URI         string        `json:"uri"`
 	Title       string        `json:"title"`
 	Name        string        `json:"name"`
+	Subtitle    string        `json:"subtitle"`
 	Artists     []EmbedArtist `json:"artists"`
 	Duration    int           `json:"duration"`
 	TrackNumber int           `json:"track_number"`
@@ -496,6 +498,18 @@ func ScrapeSpotifyEmbed(linkType, id string) (interface{}, error) {
 			artists = append(artists, a.Name)
 		}
 	}
+
+	// Fallback to subtitle if artists list is empty (Spotify embed album pages use subtitle)
+	if len(artists) == 0 && entity.Subtitle != "" {
+		parts := strings.Split(entity.Subtitle, ",")
+		for _, part := range parts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				artists = append(artists, trimmed)
+			}
+		}
+	}
+
 	primaryArtist := "Unknown Artist"
 	if len(artists) > 0 {
 		primaryArtist = artists[0]
@@ -505,6 +519,22 @@ func ScrapeSpotifyEmbed(linkType, id string) (interface{}, error) {
 
 	switch linkType {
 	case "track":
+		// Fallback to subtitle if artists is empty/unknown but subtitle is present
+		if len(artists) == 1 && artists[0] == "Unknown Artist" && entity.Subtitle != "" {
+			var trackArtists []string
+			parts := strings.Split(entity.Subtitle, ",")
+			for _, part := range parts {
+				trimmed := strings.TrimSpace(part)
+				if trimmed != "" {
+					trackArtists = append(trackArtists, trimmed)
+				}
+			}
+			if len(trackArtists) > 0 {
+				artists = trackArtists
+				primaryArtist = artists[0]
+			}
+		}
+
 		meta := &TrackMeta{
 			ID:          id,
 			Title:       entity.Name,
@@ -554,6 +584,18 @@ func ScrapeSpotifyEmbed(linkType, id string) (interface{}, error) {
 					tArtists = append(tArtists, a.Name)
 				}
 			}
+
+			// Fallback to track subtitle if t.Artists is empty (essential for scraped album tracks)
+			if len(tArtists) == 0 && t.Subtitle != "" {
+				parts := strings.Split(t.Subtitle, ",")
+				for _, part := range parts {
+					trimmed := strings.TrimSpace(part)
+					if trimmed != "" {
+						tArtists = append(tArtists, trimmed)
+					}
+				}
+			}
+
 			tPrimaryArtist := primaryArtist
 			if len(tArtists) > 0 {
 				tPrimaryArtist = tArtists[0]

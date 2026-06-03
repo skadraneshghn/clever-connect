@@ -336,6 +336,66 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	})
 }
 
+// SearchFiles handles GET /api/files/search
+func (h *FileHandler) SearchFiles(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+	reqPath := c.DefaultQuery("path", "")
+	query := c.DefaultQuery("q", "")
+
+	if len(query) <= 3 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Query must be more than 3 characters"})
+		return
+	}
+
+	safePath, err := h.securePath(reqPath)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	results := make([]gin.H, 0)
+	limit := 100
+
+	err = filepath.WalkDir(safePath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if len(results) >= limit {
+			return filepath.SkipDir
+		}
+		name := d.Name()
+		if strings.Contains(strings.ToLower(name), strings.ToLower(query)) {
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			relPath, err := filepath.Rel(h.rootDir, path)
+			if err != nil {
+				relPath = name
+			}
+			relPath = "/" + filepath.ToSlash(relPath)
+			results = append(results, gin.H{
+				"name":      name,
+				"is_dir":    d.IsDir(),
+				"size":      info.Size(),
+				"mod_time":  info.ModTime(),
+				"extension": filepath.Ext(name),
+				"path":      relPath,
+			})
+		}
+		return nil
+	})
+
+	if err != nil && err != filepath.SkipDir {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Search failed", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, results)
+}
+
 // StreamOrDownload handles GET /api/files/stream
 // Crucial: Automatically handles HTTP Range headers (HTTP 206 Partial Content)
 // for HLS/MP4 video streaming seeking and multi-connection fast download engines!

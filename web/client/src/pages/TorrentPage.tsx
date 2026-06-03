@@ -227,6 +227,9 @@ export const TorrentPage: React.FC = () => {
 	const sendAction = useJobsStore(state => state.sendAction);
 	const { token } = useAuthStore();
 
+	const [hoveredTorrentHash, setHoveredTorrentHash] = useState<string | null>(null);
+	const [dismissedOverlays, setDismissedOverlays] = useState<Record<string, boolean>>({});
+
 	const [showAddModal, setShowAddModal] = useState(false);
 	const [magnetUri, setMagnetUri] = useState('');
 	const [torrentFile, setTorrentFile] = useState<File | null>(null);
@@ -716,109 +719,193 @@ export const TorrentPage: React.FC = () => {
 				</div>
 			) : (
 				<div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-					{torrents.map((t) => (
-						<div 
-							key={t.info_hash} 
-							style={{
-								background: 'var(--color-card-bg, #fff)',
-								border: '1px solid var(--color-brand-border, rgba(0,0,0,0.08))',
-								borderRadius: 12,
-								padding: 20,
-								boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03)'
-							}}
-						>
-							<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, gap: 16 }}>
-								<div style={{ minWidth: 0 }}>
-									<h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--color-brand-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-										{t.name}
-									</h3>
-									<div style={{ display: 'flex', gap: 16, marginTop: 4, fontSize: 12, color: 'var(--color-brand-muted)', flexWrap: 'wrap' }}>
-										<span>Hash: <span style={{ fontFamily: 'monospace' }}>{t.info_hash.substring(0, 8)}...</span></span>
-										<span>Dir: {t.save_directory}</span>
-										{t.total_bytes > 0 && <span>Size: {formatBytes(t.total_bytes)}</span>}
-										<span>Peers: {t.peers}</span>
+					{torrents.map((t) => {
+						const isDone = t.status === 'completed' || t.status === 'seeding';
+						const fileMissing = isDone && t.file_exists === false;
+						const isHovered = hoveredTorrentHash === t.info_hash;
+						const showOverlay = fileMissing && isHovered && !dismissedOverlays[t.info_hash];
+
+						return (
+							<div 
+								key={t.info_hash} 
+								onMouseEnter={() => setHoveredTorrentHash(t.info_hash)}
+								onMouseLeave={() => {
+									setHoveredTorrentHash(null);
+									if (dismissedOverlays[t.info_hash]) {
+										setDismissedOverlays(prev => ({ ...prev, [t.info_hash]: false }));
+									}
+								}}
+								style={{
+									background: 'var(--color-card-bg, #fff)',
+									border: '1px solid var(--color-brand-border, rgba(0,0,0,0.08))',
+									borderRadius: 12,
+									padding: 20,
+									boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03)',
+									position: 'relative',
+									...(fileMissing ? {
+										filter: 'grayscale(1) contrast(1.1) brightness(0.8)',
+										border: '1px dashed #4b5563',
+										background: '#121212',
+									} : {})
+								}}
+							>
+								{showOverlay && (
+									<div className="missing-file-overlay" style={{
+										position: 'absolute',
+										top: 0,
+										left: 0,
+										right: 0,
+										bottom: 0,
+										background: 'rgba(0, 0, 0, 0.85)',
+										zIndex: 50,
+										display: 'flex',
+										alignItems: 'center',
+										justifyContent: 'center',
+										gap: 12,
+										borderRadius: 12,
+									}}>
+										<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+											<div style={{ color: '#ef4444', fontSize: 13, fontWeight: 'bold' }}>
+												File is missing physically on disk
+											</div>
+											<div style={{ display: 'flex', gap: 12 }}>
+												<button 
+													className="btn btn--primary" 
+													onClick={(e) => {
+														e.stopPropagation();
+														sendAction({
+															action: 'delete_torrent',
+															info_hash: t.info_hash,
+															delete_files: false
+														});
+													}}
+													style={{ 
+														background: '#dc2626', 
+														borderColor: '#dc2626',
+														color: '#fff',
+														padding: '6px 12px',
+														fontSize: 12,
+														fontWeight: 'bold',
+														display: 'flex',
+														alignItems: 'center',
+														gap: 6
+													}}
+												>
+													<FiTrash2 size={14} /> Delete Database Record
+												</button>
+												<button 
+													className="btn" 
+													onClick={(e) => {
+														e.stopPropagation();
+														setDismissedOverlays(prev => ({ ...prev, [t.info_hash]: true }));
+													}}
+													style={{ 
+														background: '#374151',
+														borderColor: '#4b5563',
+														color: '#fff',
+														padding: '6px 12px',
+														fontSize: 12
+													}}
+												>
+													Cancel / View Info
+												</button>
+											</div>
+										</div>
+									</div>
+								)}
+								<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, gap: 16 }}>
+									<div style={{ minWidth: 0 }}>
+										<h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--color-brand-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+											{t.name}
+										</h3>
+										<div style={{ display: 'flex', gap: 16, marginTop: 4, fontSize: 12, color: 'var(--color-brand-muted)', flexWrap: 'wrap' }}>
+											<span>Hash: <span style={{ fontFamily: 'monospace' }}>{t.info_hash.substring(0, 8)}...</span></span>
+											<span>Dir: {t.save_directory}</span>
+											{t.total_bytes > 0 && <span>Size: {formatBytes(t.total_bytes)}</span>}
+											<span>Peers: {t.peers}</span>
+										</div>
+									</div>
+									
+									{/* Actions */}
+									<div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+										<button 
+											onClick={() => openFilesModal(t)}
+											className="btn btn--sm"
+											title="Select Files"
+											style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+										>
+											<FiLayers size={13} /> Files
+										</button>
+										
+										{t.status === 'paused' ? (
+											<button 
+												onClick={() => handleResume(t.info_hash)}
+												className="btn btn--sm"
+												style={{ background: 'rgba(34, 197, 94, 0.1)', color: '#22c55e', borderColor: 'rgba(34, 197, 94, 0.2)' }}
+												title="Resume"
+											>
+												<FiPlay size={13} />
+											</button>
+										) : (
+											<button 
+												onClick={() => handlePause(t.info_hash)}
+												className="btn btn--sm"
+												style={{ background: 'rgba(234, 88, 12, 0.1)', color: '#ea580c', borderColor: 'rgba(234, 88, 12, 0.2)' }}
+												title="Pause"
+											>
+												<FiPause size={13} />
+											</button>
+										)}
+
+										<button 
+											onClick={() => setTorrentToDelete(t)}
+											className="btn btn--sm"
+											style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+											title="Delete"
+										>
+											<FiTrash2 size={13} />
+										</button>
 									</div>
 								</div>
-								
-								{/* Actions */}
-								<div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-									<button 
-										onClick={() => openFilesModal(t)}
-										className="btn btn--sm"
-										title="Select Files"
-										style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
-									>
-										<FiLayers size={13} /> Files
-									</button>
-									
-									{t.status === 'paused' ? (
-										<button 
-											onClick={() => handleResume(t.info_hash)}
-											className="btn btn--sm"
-											style={{ background: 'rgba(34, 197, 94, 0.1)', color: '#22c55e', borderColor: 'rgba(34, 197, 94, 0.2)' }}
-											title="Resume"
-										>
-											<FiPlay size={13} />
-										</button>
-									) : (
-										<button 
-											onClick={() => handlePause(t.info_hash)}
-											className="btn btn--sm"
-											style={{ background: 'rgba(234, 88, 12, 0.1)', color: '#ea580c', borderColor: 'rgba(234, 88, 12, 0.2)' }}
-											title="Pause"
-										>
-											<FiPause size={13} />
-										</button>
-									)}
 
-									<button 
-										onClick={() => setTorrentToDelete(t)}
-										className="btn btn--sm"
-										style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.2)' }}
-										title="Delete"
-									>
-										<FiTrash2 size={13} />
-									</button>
+								{/* Progress Bar Component */}
+								<TorrentProgressBar progress={t.progress} status={t.status} />
+
+								{/* Download status / details footer */}
+								<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: 12 }}>
+									<div style={{ display: 'flex', gap: 16 }}>
+										<span style={{
+											textTransform: 'uppercase',
+											fontSize: 10,
+											fontWeight: 700,
+											padding: '2px 6px',
+											borderRadius: 4,
+											background: t.status === 'downloading' ? 'rgba(56, 189, 248, 0.1)' : t.status === 'completed' || t.status === 'seeding' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
+											color: t.status === 'downloading' ? '#0284c7' : t.status === 'completed' || t.status === 'seeding' ? '#16a34a' : '#4b5563'
+										}}>
+											{t.status}
+										</span>
+										{t.status === 'downloading' && (
+											<>
+												<span>DL: <strong style={{ color: '#ea580c' }}>{formatSpeed(t.download_speed)}</strong></span>
+												<span>UL: <strong style={{ color: '#3b82f6' }}>{formatSpeed(t.upload_speed)}</strong></span>
+											</>
+										)}
+										{t.status === 'seeding' && (
+											<span>UL: <strong style={{ color: '#22c55e' }}>{formatSpeed(t.upload_speed)}</strong></span>
+										)}
+									</div>
+									<div>
+										{t.total_bytes > 0 ? (
+											<span>{formatBytes(t.downloaded)} of {formatBytes(t.total_bytes)} ({t.progress.toFixed(1)}%)</span>
+										) : (
+											<span>Connecting to trackers...</span>
+										)}
+									</div>
 								</div>
 							</div>
-
-							{/* Progress Bar Component */}
-							<TorrentProgressBar progress={t.progress} status={t.status} />
-
-							{/* Download status / details footer */}
-							<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: 12 }}>
-								<div style={{ display: 'flex', gap: 16 }}>
-									<span style={{
-										textTransform: 'uppercase',
-										fontSize: 10,
-										fontWeight: 700,
-										padding: '2px 6px',
-										borderRadius: 4,
-										background: t.status === 'downloading' ? 'rgba(56, 189, 248, 0.1)' : t.status === 'completed' || t.status === 'seeding' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
-										color: t.status === 'downloading' ? '#0284c7' : t.status === 'completed' || t.status === 'seeding' ? '#16a34a' : '#4b5563'
-									}}>
-										{t.status}
-									</span>
-									{t.status === 'downloading' && (
-										<>
-											<span>DL: <strong style={{ color: '#ea580c' }}>{formatSpeed(t.download_speed)}</strong></span>
-											<span>UL: <strong style={{ color: '#3b82f6' }}>{formatSpeed(t.upload_speed)}</strong></span>
-										</>
-									)}
-									{t.status === 'seeding' && (
-										<span>UL: <strong style={{ color: '#22c55e' }}>{formatSpeed(t.upload_speed)}</strong></span>
-									)}
-								</div>
-								<div>
-									{t.total_bytes > 0 ? (
-										<span>{formatBytes(t.downloaded)} of {formatBytes(t.total_bytes)} ({t.progress.toFixed(1)}%)</span>
-									) : (
-										<span>Connecting to trackers...</span>
-									)}
-								</div>
-							</div>
-						</div>
-					))}
+						);
+					})}
 				</div>
 			)}
 

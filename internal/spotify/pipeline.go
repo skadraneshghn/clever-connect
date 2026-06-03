@@ -29,8 +29,88 @@ import (
 // Replicates the spotDL algorithm: Spotify metadata + YouTube audio + FFmpeg conversion
 // ──────────────────────────────────────────────────────────────────────────────
 
-// searchYouTube performs a keyless search query on YouTube and returns the first matching video ID
+// searchYouTube performs a keyless search query on YouTube using InnerTube API first, falling back to HTML scraping
 func searchYouTube(ctx context.Context, query string) (string, error) {
+	// Attempt InnerTube search first (most stable, captcha resistant)
+	videoID, err := searchYouTubeInnerTube(ctx, query)
+	if err == nil && videoID != "" {
+		return videoID, nil
+	}
+	logger.Warn("Spotify", "InnerTube search failed, falling back to HTML scraping", "query", query, "error", err)
+
+	// Fallback to HTML scraping
+	return searchYouTubeHTML(ctx, query)
+}
+
+// searchYouTubeInnerTube searches YouTube using the internal youtubei POST API
+func searchYouTubeInnerTube(ctx context.Context, query string) (string, error) {
+	apiURL := "https://www.youtube.com/youtubei/v1/search"
+
+	type ClientInfo struct {
+		ClientName    string `json:"clientName"`
+		ClientVersion string `json:"clientVersion"`
+	}
+	type ContextInfo struct {
+		Client ClientInfo `json:"client"`
+	}
+	type Payload struct {
+		Context ContextInfo `json:"context"`
+		Query   string      `json:"query"`
+	}
+
+	payload := Payload{
+		Context: ContextInfo{
+			Client: ClientInfo{
+				ClientName:    "WEB",
+				ClientVersion: "2.20240101",
+			},
+		},
+		Query: query,
+	}
+
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(jsonBytes)))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status code from youtubei search: %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	body := string(bodyBytes)
+
+	// Use regex to get the first videoId
+	re := regexp.MustCompile(`"videoId"\s*:\s*"([a-zA-Z0-9_-]{11})"`)
+	matches := re.FindStringSubmatch(body)
+	if len(matches) > 1 && len(matches[1]) == 11 {
+		return matches[1], nil
+	}
+
+	return "", fmt.Errorf("no videoId found in youtubei search results")
+}
+
+// searchYouTubeHTML is the fallback that performs a raw HTML search on YouTube results
+func searchYouTubeHTML(ctx context.Context, query string) (string, error) {
 	searchURL := "https://www.youtube.com/results?search_query=" + url.QueryEscape(query)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)

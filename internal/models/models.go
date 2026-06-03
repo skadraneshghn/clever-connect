@@ -90,6 +90,7 @@ type LeechJob struct {
 	Password      string    `json:"password"`
 	UsePremium    bool      `json:"use_premium" gorm:"default:false"`
 	ErrorMessage  string    `json:"error_message"`
+	FileExists    bool      `gorm:"-" json:"file_exists"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -111,6 +112,7 @@ type TorrentJob struct {
 	Peers         int       `json:"peers"`
 	SelectedFiles string    `gorm:"type:text" json:"selected_files"` // JSON array of selected file indices
 	ErrorMessage  string    `json:"error_message"`
+	FileExists    bool      `gorm:"-" json:"file_exists"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -246,6 +248,7 @@ type YouTubeJob struct {
 	ConvertToTV      bool      `json:"convert_to_tv" gorm:"default:false"`
 	ConvertStatus    string    `json:"convert_status"` // "", "queued", "converting", "completed", "error"
 	ErrorMessage     string    `json:"error_message"`
+	FileExists       bool      `gorm:"-" json:"file_exists"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -310,6 +313,7 @@ type SpotifyJob struct {
 	Speed          float64   `json:"speed"`                                       // MB/s
 	AlbumJobID     string    `json:"album_job_id"`                                // Group tracks from same album
 	ErrorMessage   string    `json:"error_message"`
+	FileExists     bool      `gorm:"-" json:"file_exists"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }

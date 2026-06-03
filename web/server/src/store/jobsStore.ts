@@ -15,6 +15,7 @@ export interface TorrentJob {
   upload_speed: number;
   peers: number;
   error_message: string;
+  file_exists?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -31,6 +32,7 @@ export interface LeechJob {
   speed: number;
   threads: number;
   error_message: string;
+  file_exists?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -58,6 +60,7 @@ export interface YouTubeJob {
   convert_to_tv: boolean;
   convert_status: string;
   error_message: string;
+  file_exists?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -92,6 +95,7 @@ export interface SpotifyJob {
   speed: number;
   album_job_id: string;
   error_message: string;
+  file_exists?: boolean;
   created_at: string;
   updated_at: string;
 }

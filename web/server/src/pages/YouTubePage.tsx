@@ -44,6 +44,9 @@ export const YouTubePage: React.FC = () => {
 	const initWebSocket = useJobsStore(state => state.initWebSocket);
 	const sendAction = useJobsStore(state => state.sendAction);
 
+	const [hoveredJobId, setHoveredJobId] = useState<string | null>(null);
+	const [dismissedOverlays, setDismissedOverlays] = useState<Record<string, boolean>>({});
+
 	const [config, setConfig] = useState<YouTubeConfig>({
 		default_save_path: './downloads/youtube',
 		max_concurrent: 2,
@@ -393,8 +396,93 @@ export const YouTubePage: React.FC = () => {
 						const isError = job.status === 'error';
 						const isDownloading = job.status === 'downloading';
 
+						const fileMissing = isCompleted && job.file_exists === false;
+						const isHovered = hoveredJobId === job.id;
+						const showOverlay = fileMissing && isHovered && !dismissedOverlays[job.id];
+
 						return (
-							<div className="g-card" key={job.id} style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+							<div 
+								className="g-card" 
+								key={job.id}
+								onMouseEnter={() => setHoveredJobId(job.id)}
+								onMouseLeave={() => {
+									setHoveredJobId(null);
+									if (dismissedOverlays[job.id]) {
+										setDismissedOverlays(prev => ({ ...prev, [job.id]: false }));
+									}
+								}}
+								style={{ 
+									display: 'flex', 
+									gap: 16, 
+									alignItems: 'flex-start',
+									position: 'relative',
+									...(fileMissing ? {
+										filter: 'grayscale(1) contrast(1.1) brightness(0.8)',
+										border: '1px dashed #4b5563',
+										background: '#121212',
+									} : {})
+								}}
+							>
+								{showOverlay && (
+									<div className="missing-file-overlay" style={{
+										position: 'absolute',
+										top: 0,
+										left: 0,
+										right: 0,
+										bottom: 0,
+										background: 'rgba(0, 0, 0, 0.85)',
+										zIndex: 50,
+										display: 'flex',
+										alignItems: 'center',
+										justifyContent: 'center',
+										gap: 12,
+										borderRadius: 8,
+									}}>
+										<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+											<div style={{ color: '#ef4444', fontSize: 13, fontWeight: 'bold' }}>
+												File is missing physically on disk
+											</div>
+											<div style={{ display: 'flex', gap: 12 }}>
+												<button 
+													className="btn btn--primary" 
+													onClick={(e) => {
+														e.stopPropagation();
+														handleDeleteJob(job.id, false);
+													}}
+													style={{ 
+														background: '#dc2626', 
+														borderColor: '#dc2626',
+														color: '#fff',
+														padding: '6px 12px',
+														fontSize: 12,
+														fontWeight: 'bold',
+														display: 'flex',
+														alignItems: 'center',
+														gap: 6
+													}}
+												>
+													<FiTrash2 size={14} /> Delete Database Record
+												</button>
+												<button 
+													className="btn" 
+													onClick={(e) => {
+														e.stopPropagation();
+														setDismissedOverlays(prev => ({ ...prev, [job.id]: true }));
+													}}
+													style={{ 
+														background: '#374151',
+														borderColor: '#4b5563',
+														color: '#fff',
+														padding: '6px 12px',
+														fontSize: 12
+													}}
+												>
+													Cancel / View Info
+												</button>
+											</div>
+										</div>
+									</div>
+								)}
 								{job.thumbnail && (
 									<img 
 										src={job.thumbnail} 

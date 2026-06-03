@@ -146,6 +146,7 @@ func main() {
 
 			// File Manager API Endpoints
 			protected.GET("/files/list", fileHandler.ListDirectory)
+			protected.GET("/files/search", fileHandler.SearchFiles)
 			protected.GET("/files/stream", fileHandler.StreamOrDownload)
 			protected.GET("/files/content", fileHandler.GetContent)
 			protected.POST("/files/save", fileHandler.SaveContent)

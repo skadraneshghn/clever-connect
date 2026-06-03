@@ -48,10 +48,16 @@ const formatBytes = (bytes: number) => {
 };
 
 export const SpotifyJobCard: React.FC<SpotifyJobCardProps> = ({ job, token, onCancel, onDelete, onRetry }) => {
+  const [isHovered, setIsHovered] = React.useState(false);
+  const [dismissed, setDismissed] = React.useState(false);
+
   const sc = statusColors[job.status] || statusColors.pending;
   const isActive = ['downloading', 'converting', 'tagging', 'matching', 'fetching_meta'].includes(job.status);
   const isCompleted = job.status === 'completed';
   const isError = job.status === 'error';
+
+  const fileMissing = isCompleted && job.file_exists === false;
+  const showOverlay = fileMissing && isHovered && !dismissed;
 
   // Progress bar gradient based on pipeline phase
   const getProgressGradient = () => {
@@ -66,7 +72,86 @@ export const SpotifyJobCard: React.FC<SpotifyJobCardProps> = ({ job, token, onCa
   };
 
   return (
-    <div className="g-card" style={{ display: 'flex', gap: 14, alignItems: 'flex-start', transition: 'all 0.2s' }}>
+    <div 
+      className="g-card" 
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => {
+        setIsHovered(false);
+        setDismissed(false);
+      }}
+      style={{ 
+        display: 'flex', 
+        gap: 14, 
+        alignItems: 'flex-start', 
+        transition: 'all 0.2s',
+        position: 'relative',
+        ...(fileMissing ? {
+          filter: 'grayscale(1) contrast(1.1) brightness(0.8)',
+          border: '1px dashed #4b5563',
+          background: '#121212',
+        } : {})
+      }}
+    >
+      {showOverlay && (
+        <div className="missing-file-overlay" style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.85)',
+          zIndex: 50,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 12,
+          borderRadius: 8,
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+            <div style={{ color: '#ef4444', fontSize: 13, fontWeight: 'bold' }}>
+              File is missing physically on disk
+            </div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button 
+                className="btn btn--primary" 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(job.id, false);
+                }}
+                style={{ 
+                  background: '#dc2626', 
+                  borderColor: '#dc2626',
+                  color: '#fff',
+                  padding: '6px 12px',
+                  fontSize: 12,
+                  fontWeight: 'bold',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6
+                }}
+              >
+                <FiTrash2 size={14} /> Delete Database Record
+              </button>
+              <button 
+                className="btn" 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDismissed(true);
+                }}
+                style={{ 
+                  background: '#374151',
+                  borderColor: '#4b5563',
+                  color: '#fff',
+                  padding: '6px 12px',
+                  fontSize: 12
+                }}
+              >
+                Cancel / View Info
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Cover Art */}
       <div style={{ position: 'relative', width: 64, height: 64, borderRadius: 8, overflow: 'hidden', flexShrink: 0, background: 'var(--color-brand-bg)' }}>
         {job.cover_url ? (

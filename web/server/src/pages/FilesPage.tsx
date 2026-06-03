@@ -6,7 +6,7 @@ import {
 	FiImage, FiVideo, FiZoomIn, FiZoomOut, FiRotateCw, FiX, FiCheck,
 	FiChevronRight, FiChevronDown, FiScissors, FiCopy, FiClipboard, FiInfo, FiArchive, FiShare2,
 	FiPlay, FiPause, FiMaximize2, FiChevronLeft, FiExternalLink,
-	FiRotateCcw, FiVolume2, FiVolumeX, FiTv, FiMinimize2
+	FiRotateCcw, FiVolume2, FiVolumeX, FiTv, FiMinimize2, FiEye, FiSend, FiSearch
 } from 'react-icons/fi';
 import Editor from '@monaco-editor/react';
 
@@ -740,6 +740,48 @@ export const FilesPage: React.FC = () => {
 	const [uploading, setUploading] = useState<boolean>(false);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
+	// Global Physical Search Modal States
+	const [showSearchModal, setShowSearchModal] = useState<boolean>(false);
+	const [globalSearchQuery, setGlobalSearchQuery] = useState<string>('');
+	const [globalSearchResults, setGlobalSearchResults] = useState<(FileItem & { path: string })[]>([]);
+	const [globalSearchLoading, setGlobalSearchLoading] = useState<boolean>(false);
+
+	useEffect(() => {
+		if (!showSearchModal) {
+			setGlobalSearchQuery('');
+			setGlobalSearchResults([]);
+			return;
+		}
+	}, [showSearchModal]);
+
+	useEffect(() => {
+		if (globalSearchQuery.trim().length <= 3) {
+			setGlobalSearchResults([]);
+			return;
+		}
+
+		const delayDebounce = setTimeout(async () => {
+			setGlobalSearchLoading(true);
+			try {
+				const res = await fetch(`/api/files/search?path=${encodeURIComponent(currentPath)}&q=${encodeURIComponent(globalSearchQuery.trim())}`, {
+					headers: {
+						'Authorization': `Bearer ${token}`
+					}
+				});
+				if (res.ok) {
+					const data = await res.json();
+					setGlobalSearchResults(data || []);
+				}
+			} catch (err) {
+				console.error("Global search failed:", err);
+			} finally {
+				setGlobalSearchLoading(false);
+			}
+		}, 300);
+
+		return () => clearTimeout(delayDebounce);
+	}, [globalSearchQuery, currentPath, token]);
+
 	// Fetch current directory contents
 	const fetchFiles = async (path: string) => {
 		setLoading(true);
@@ -1031,6 +1073,124 @@ export const FilesPage: React.FC = () => {
 		setClipboard({ action: 'cut', srcParent: currentPath, items: [file] });
 	};
 
+	// Bulk operations (one-by-one execution)
+	const handleSendToTelegramBulk = async () => {
+		if (selectedItems.length === 0) return;
+		setLoading(true);
+		try {
+			for (const name of selectedItems) {
+				const file = files.find(f => f.name === name);
+				if (file && !file.is_dir) {
+					const targetPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+					const res = await fetch('/api/telegram/send-file', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'Authorization': `Bearer ${token}`
+						},
+						body: JSON.stringify({ file_path: targetPath })
+					});
+					if (!res.ok) {
+						const errData = await res.json();
+						console.error(`Failed to send ${name}: ${errData.error}`);
+					}
+				}
+			}
+			alert(`Successfully queued ${selectedItems.length} send jobs to Telegram!`);
+		} catch (err: any) {
+			alert(`Error sending files to Telegram: ${err.message}`);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const handleDownloadBulk = () => {
+		if (selectedItems.length === 0) return;
+		selectedItems.forEach((name, index) => {
+			const targetPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
+			const downloadUrl = `/api/files/stream?path=${encodeURIComponent(targetPath)}&download=true&token=${encodeURIComponent(token || '')}`;
+			setTimeout(() => {
+				const link = document.createElement('a');
+				link.href = downloadUrl;
+				link.download = name;
+				document.body.appendChild(link);
+				link.click();
+				document.body.removeChild(link);
+			}, index * 800);
+		});
+	};
+
+	const handleRenameBulk = async () => {
+		if (selectedItems.length === 0) return;
+		setLoading(true);
+		try {
+			for (const name of selectedItems) {
+				const file = files.find(f => f.name === name);
+				if (!file) continue;
+				const newName = prompt(`Enter new name for "${file.name}":`, file.name);
+				if (!newName || newName.trim() === '' || newName === file.name) continue;
+
+				const src = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+				const dst = currentPath === '/' ? `/${newName.trim()}` : `${currentPath}/${newName.trim()}`;
+
+				await fetch('/api/files/move', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${token}`
+					},
+					body: JSON.stringify({ src_path: src, dst_path: dst })
+				});
+			}
+			fetchFiles(currentPath);
+		} catch (err) {
+			console.error("Bulk rename failed:", err);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const handleExtractBulk = async () => {
+		const zipFiles = selectedItems.filter(name => name.endsWith('.zip'));
+		if (zipFiles.length === 0) return;
+		setLoading(true);
+		try {
+			for (const name of zipFiles) {
+				const targetPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
+				await fetch('/api/files/decompress', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${token}`
+					},
+					body: JSON.stringify({ path: targetPath })
+				});
+			}
+			fetchFiles(currentPath);
+		} catch (err) {
+			console.error("Bulk extract failed:", err);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const handleSearchResultClick = (result: FileItem & { path: string }) => {
+		const idx = result.path.lastIndexOf('/');
+		const parentPath = idx <= 0 ? '/' : result.path.substring(0, idx);
+
+		setCurrentPath(parentPath);
+		setShowSearchModal(false);
+
+		setTimeout(() => {
+			if (result.is_dir) {
+				setCurrentPath(result.path);
+			} else {
+				openPreview(result);
+				setSelectedItems([result.name]);
+			}
+		}, 150);
+	};
+
 	// Create Folder
 	const handleCreateFolder = async (e: React.FormEvent) => {
 		e.preventDefault();
@@ -1284,21 +1444,32 @@ export const FilesPage: React.FC = () => {
 					)}
 
 					{/* Search */}
-					<input 
-						type="text" 
-						placeholder="Search current folder..."
-						value={searchQuery}
-						onChange={(e) => setSearchQuery(e.target.value)}
-						style={{
-							padding: '6px 10px',
-							fontSize: 12,
-							borderRadius: 6,
-							border: '1px solid var(--color-brand-border)',
-							background: 'var(--color-brand-bg)',
-							color: 'var(--color-brand-heading)',
-							width: 150
-						}}
-					/>
+					<div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+						<input 
+							type="text" 
+							placeholder="Search current folder..."
+							value={searchQuery}
+							onChange={(e) => setSearchQuery(e.target.value)}
+							style={{
+								padding: '6px 10px',
+								fontSize: 12,
+								borderRadius: 6,
+								border: '1px solid var(--color-brand-border)',
+								background: 'var(--color-brand-bg)',
+								color: 'var(--color-brand-heading)',
+								width: 150
+							}}
+						/>
+						<button 
+							type="button"
+							className="btn btn--sm" 
+							onClick={() => setShowSearchModal(true)} 
+							style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', color: 'var(--color-brand)', background: 'var(--color-brand-light)', border: '1px solid var(--color-brand)', height: '28px' }}
+							title="Global Physical Disk Search"
+						>
+							<FiSearch size={14} />
+						</button>
+					</div>
 
 					{/* Sorting Dropdowns */}
 					<div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -1422,30 +1593,7 @@ export const FilesPage: React.FC = () => {
 				</div>
 			</div>
 
-			{/* Bulk toolbar shown when files selected */}
-			{selectedItems.length > 0 && (
-				<div 
-					className="g-card animate-slide-in" 
-					style={{ 
-						padding: '10px 18px', 
-						background: 'rgba(99,102,241,0.06)', 
-						border: '1px solid var(--color-brand-border)',
-						display: 'flex', 
-						justifyContent: 'space-between', 
-						alignItems: 'center' 
-					}}
-				>
-					<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
-						{selectedItems.length} items selected
-					</span>
-					<div style={{ display: 'flex', gap: 8 }}>
-						<button className="btn btn--sm" onClick={handleCopy} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiCopy size={13} /> Copy</button>
-						<button className="btn btn--sm" onClick={handleCut} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiScissors size={13} /> Cut</button>
-						<button className="btn btn--sm" onClick={() => setShowArchiveModal(true)} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiArchive size={13} /> Zip Compress</button>
-						<button className="btn btn--sm" onClick={handleDeleteSelected} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(239,68,68,0.1)', color: '#ef4444', borderColor: '#ef4444' }}><FiTrash2 size={13} /> Delete</button>
-					</div>
-				</div>
-			)}
+
 
 			{/* Main Workspace Pane split into Sidebar Directory Tree and File Cards Grid */}
 			<div style={{ flex: 1, display: 'flex', gap: 14, overflow: 'hidden' }}>
@@ -1503,12 +1651,241 @@ export const FilesPage: React.FC = () => {
 					className="g-card" 
 					style={{ 
 						flex: 1, 
-						padding: '16px 18px', 
-						overflowY: 'auto',
+						display: 'flex',
+						flexDirection: 'column',
+						padding: 0, 
+						overflow: 'hidden',
 						boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.04)'
 					}}
 				>
-					{loading ? (
+					{/* Actions Header of the File List */}
+					<div style={{
+						display: 'flex',
+						alignItems: 'center',
+						justifyContent: 'space-between',
+						padding: '10px 14px',
+						borderBottom: '1px solid var(--color-brand-border)',
+						background: 'var(--color-brand-card)',
+						minHeight: '48px',
+						flexShrink: 0
+					}}>
+						{/* Left section: Title or selected info */}
+						<div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+							<span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
+								{selectedItems.length > 0 ? `${selectedItems.length} items selected` : 'File List Actions'}
+							</span>
+						</div>
+						
+						{/* Right section: Action Icons */}
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+							{/* Preview Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={() => {
+									const firstFile = files.find(f => f.name === selectedItems[0]);
+									if (firstFile) openPreview(firstFile);
+								}}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Preview first selected file"
+							>
+								<FiEye size={14} /> Preview
+							</button>
+
+							{/* Send to Telegram Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleSendToTelegramBulk}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-green, #22c55e)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Send selected files to Telegram one by one"
+							>
+								<FiSend size={14} /> Send Telegram
+							</button>
+
+							{/* Share Link / Download Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleDownloadBulk}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-blue, #3b82f6)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Download selected files one by one"
+							>
+								<FiDownload size={14} /> Download
+							</button>
+
+							{/* Rename Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleRenameBulk}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-indigo, #6366f1)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Rename selected files one by one"
+							>
+								<FiEdit3 size={14} /> Rename
+							</button>
+
+							{/* Copy Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleCopy}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-heading)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Copy selected items to clipboard"
+							>
+								<FiCopy size={14} /> Copy
+							</button>
+
+							{/* Cut Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleCut}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-heading)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Cut selected items to clipboard"
+							>
+								<FiScissors size={14} /> Cut
+							</button>
+
+							{/* Extract ZIP Button */}
+							{selectedItems.some(name => name.endsWith('.zip')) && (
+								<button 
+									type="button"
+									onClick={handleExtractBulk}
+									style={{
+										padding: '6px 10px',
+										borderRadius: 6,
+										border: '1px solid var(--color-brand-border)',
+										background: 'rgba(59,130,246,0.1)',
+										color: '#3b82f6',
+										cursor: 'pointer',
+										display: 'flex',
+										alignItems: 'center',
+										gap: 4,
+										fontSize: 12,
+										fontWeight: 600,
+										transition: 'all 0.15s'
+									}}
+									title="Extract selected ZIPs one by one"
+								>
+									<FiArchive size={14} /> Extract
+								</button>
+							)}
+
+							{/* Delete Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleDeleteSelected}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'rgba(239,68,68,0.1)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-red)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Delete selected files one by one"
+							>
+								<FiTrash2 size={14} /> Delete
+							</button>
+						</div>
+					</div>
+
+					{/* File grid/list scroll wrapper */}
+					<div style={{ flex: 1, padding: '16px 18px', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+						{loading ? (
 						<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
 							<div style={{ width: 28, height: 28, border: '3px solid var(--color-brand-border)', borderTopColor: 'var(--color-brand)', borderRadius: '50%', animation: 'spin .6s linear infinite' }} />
 						</div>
@@ -1632,6 +2009,7 @@ export const FilesPage: React.FC = () => {
 							})}
 						</div>
 					)}
+					</div>
 				</div>
 
 				{/* Right Info Details & Previews Panel */}
@@ -1919,6 +2297,101 @@ export const FilesPage: React.FC = () => {
 					</div>
 				)}
 			</div>
+
+			{/* Global Physical Search Modal */}
+			{showSearchModal && (
+				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(10,12,18,0.6)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
+					<div className="g-card animate-zoom-in" style={{ width: 650, maxHeight: '80vh', display: 'flex', flexDirection: 'column', padding: 22, boxShadow: '0 20px 45px rgba(0,0,0,0.3)', border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)' }}>
+						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+							<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+								<FiSearch size={18} style={{ color: 'var(--color-brand)' }} />
+								<h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Physical Disk Search</h3>
+							</div>
+							<button onClick={() => setShowSearchModal(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 4, color: 'var(--color-brand-heading)', display: 'flex' }}><FiX size={18} /></button>
+						</div>
+						
+						<div style={{ position: 'relative', marginBottom: 14 }}>
+							<input 
+								type="text" 
+								required
+								autoFocus
+								value={globalSearchQuery}
+								onChange={(e) => setGlobalSearchQuery(e.target.value)}
+								placeholder="Search files physically on disk (type more than 3 characters)..."
+								style={{ width: '100%', padding: '10px 14px 10px 36px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13, outline: 'none', transition: 'border-color 0.2s' }}
+							/>
+							<FiSearch size={14} style={{ position: 'absolute', left: 12, top: 13, color: 'var(--color-brand-muted)' }} />
+							{globalSearchLoading && (
+								<div style={{ position: 'absolute', right: 12, top: 12 }}>
+									<div style={{ width: 14, height: 14, border: '2px solid var(--color-brand-border)', borderTopColor: 'var(--color-brand)', borderRadius: '50%', animation: 'spin .6s linear infinite' }} />
+								</div>
+							)}
+						</div>
+
+						{/* Results Area */}
+						<div style={{ flex: 1, overflowY: 'auto', minHeight: 250, maxHeight: 400, display: 'flex', flexDirection: 'column', gap: 6 }}>
+							{globalSearchQuery.trim().length <= 3 ? (
+								<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 8, color: 'var(--color-brand-muted)', padding: '40px 0' }}>
+									<FiInfo size={24} />
+									<span style={{ fontSize: 13 }}>Please enter more than 3 characters to search physically.</span>
+								</div>
+							) : globalSearchLoading ? (
+								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: '40px 0' }}>
+									<div style={{ width: 24, height: 24, border: '2.5px solid var(--color-brand-border)', borderTopColor: 'var(--color-brand)', borderRadius: '50%', animation: 'spin .6s linear infinite' }} />
+								</div>
+							) : globalSearchResults.length === 0 ? (
+								<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 8, color: 'var(--color-brand-muted)', padding: '40px 0' }}>
+									<FiFolder size={24} />
+									<span style={{ fontSize: 13 }}>No files found matching "{globalSearchQuery}".</span>
+								</div>
+							) : (
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', paddingBottom: 6, borderBottom: '1px solid var(--color-brand-border)', display: 'flex', justifyContent: 'space-between' }}>
+										<span>Found {globalSearchResults.length} results</span>
+										<span>Click to open location</span>
+									</div>
+									{globalSearchResults.map((result) => (
+										<div 
+											key={result.path}
+											onClick={() => handleSearchResultClick(result)}
+											style={{
+												display: 'flex',
+												alignItems: 'center',
+												justifyContent: 'space-between',
+												padding: '8px 12px',
+												borderRadius: 8,
+												background: 'var(--color-brand-card)',
+												border: '1px solid var(--color-brand-border)',
+												cursor: 'pointer',
+												transition: 'all 0.12s'
+											}}
+											className="file-row-hover"
+										>
+											<div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+												<div style={{ display: 'flex', flexShrink: 0 }}>
+													{result.is_dir ? <FiFolder style={{ color: '#eab308', fontSize: 18 }} /> : <FiFile style={{ color: '#64748b', fontSize: 18 }} />}
+												</div>
+												<div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+													<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+														{result.name}
+													</span>
+													<span style={{ fontSize: 10, color: 'var(--color-brand-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+														{result.path}
+													</span>
+												</div>
+											</div>
+											<div style={{ display: 'flex', alignItems: 'center', gap: 16, fontSize: 11, color: 'var(--color-brand-text)', flexShrink: 0 }}>
+												<span>{result.is_dir ? 'DIR' : formatSize(result.size)}</span>
+												<span style={{ color: 'var(--color-brand)', fontWeight: 600 }}>Open →</span>
+											</div>
+										</div>
+									))}
+								</div>
+							)}
+						</div>
+					</div>
+				</div>
+			)}
 
 			{/* Create Folder Modal */}
 			{showFolderModal && (
