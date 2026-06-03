@@ -2,6 +2,7 @@ package youtube
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -449,7 +450,7 @@ func (e *Engine) convertForTV(ctx context.Context, jobID, inputPath, outputPath 
 		"-maxrate", "20M",            // Max bitrate for TV compatibility
 		"-bufsize", "25M",            // Buffer size
 		"-pix_fmt", "yuv420p",        // Pixel format for maximum compatibility
-		"-vf", "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2", // Scale down to 1080p max
+		"-vf", "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,pad='w=2*ceil(iw/2):h=2*ceil(ih/2):x=(ow-iw)/2:y=(oh-ih)/2'", // Scale down to 1080p max and center pad to even dimensions
 		"-c:a", "aac",                // AAC audio codec
 		"-ac", "2",                    // Stereo (AAC-LC stereo for max compatibility)
 		"-b:a", "192k",              // Audio bitrate
@@ -460,8 +461,9 @@ func (e *Engine) convertForTV(ctx context.Context, jobID, inputPath, outputPath 
 		outputPath,                    // Output file
 	}
 
+	var stderrBuf bytes.Buffer
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
-	cmd.Stderr = nil // Suppress stderr
+	cmd.Stderr = &stderrBuf
 
 	// Capture stdout for progress parsing
 	stdout, err := cmd.StdoutPipe()
@@ -495,7 +497,7 @@ func (e *Engine) convertForTV(ctx context.Context, jobID, inputPath, outputPath 
 	}()
 
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("ffmpeg conversion failed: %w", err)
+		return fmt.Errorf("ffmpeg conversion failed: %w (stderr: %s)", err, strings.TrimSpace(stderrBuf.String()))
 	}
 
 	return nil
