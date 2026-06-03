@@ -894,23 +894,12 @@ func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn
 	}
 
 	// 6. Download with progress callback
-	// Use a merged context: cancels if either the scheduler job ctx OR the engine ctx is cancelled.
-	// This ensures the scheduler can cancel downloads, and engine shutdown also stops them.
-	dlCtx, dlCancel := context.WithCancel(ctx)
-	defer dlCancel()
-	go func() {
-		select {
-		case <-eng.gotdCtx.Done():
-			dlCancel() // Engine shutting down
-		case <-dlCtx.Done():
-			// Already cancelled by scheduler or completion
-		}
-	}()
-
+	// Use eng.gotdCtx directly — exactly like uploads do. The scheduler's ctx is only
+	// used for job lifecycle tracking, not for the actual Telegram API call.
 	lastUpdate := time.Now()
 	startTime := time.Now()
 
-	err = FastDownloadFile(dlCtx, eng.gotdClient, fileLocation, safePath, fileSize, func(downloaded, total int64) {
+	err = FastDownloadFile(eng.gotdCtx, eng.gotdClient, fileLocation, safePath, fileSize, func(downloaded, total int64) {
 		percent := int(100 * float64(downloaded) / float64(total))
 		if percent > 100 {
 			percent = 100

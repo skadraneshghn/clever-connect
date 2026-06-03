@@ -64,6 +64,8 @@ export const YouTubePage: React.FC = () => {
 	const [selectedFormatItag, setSelectedFormatItag] = useState<number | null>(null);
 	const [saveDir, setSaveDir] = useState('Downloads/youtube');
 	const [convertToTV, setConvertToTV] = useState(false);
+	const [isAdding, setIsAdding] = useState(false);
+	const [addingProgress, setAddingProgress] = useState('');
 
 	// Directory picker state
 	const [currentPath, setCurrentPath] = useState('/');
@@ -103,7 +105,13 @@ export const YouTubePage: React.FC = () => {
 		setFetchedInfo(null);
 		setSelectedFormatItag(null);
 
-		if (!url.trim() || (!url.includes('youtube.com/') && !url.includes('youtu.be/'))) {
+		const urls = url.split(/[\r\n]+/).map(u => u.trim()).filter(Boolean);
+		if (urls.length !== 1) {
+			return;
+		}
+
+		const singleUrl = urls[0];
+		if (!singleUrl.includes('youtube.com/') && !singleUrl.includes('youtu.be/')) {
 			return;
 		}
 
@@ -115,7 +123,7 @@ export const YouTubePage: React.FC = () => {
 					'Content-Type': 'application/json',
 					'Authorization': `Bearer ${token}`
 				},
-				body: JSON.stringify({ url })
+				body: JSON.stringify({ url: singleUrl })
 			});
 			
 			if (res.ok) {
@@ -202,33 +210,108 @@ export const YouTubePage: React.FC = () => {
 
 	// Actions
 	const handleAddJob = async () => {
-		if (!fetchedInfo || !selectedFormatItag) return;
-		const format = fetchedInfo.formats.find(f => f.itag === selectedFormatItag);
-		
-		try {
-			const res = await fetch('/api/youtube/add', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${token}`
-				},
-				body: JSON.stringify({
-					url: videoUrl,
-					save_directory: saveDir,
-					selected_itag: selectedFormatItag,
-					quality_label: format?.quality_label || '',
-					mime_type: format?.mime_type || '',
-					convert_to_tv: convertToTV,
-					video_id: fetchedInfo.video_id,
-					title: fetchedInfo.title,
-					author: fetchedInfo.author,
-					duration: fetchedInfo.duration,
-					duration_seconds: fetchedInfo.duration_seconds,
-					thumbnail: fetchedInfo.thumbnail
-				})
-			});
+		const urls = videoUrl.split(/[\r\n]+/).map(u => u.trim()).filter(Boolean);
+		if (urls.length === 0) return;
 
-			if (res.ok) {
+		setIsAdding(true);
+		try {
+			if (urls.length === 1) {
+				if (!fetchedInfo || !selectedFormatItag) {
+					setIsAdding(false);
+					return;
+				}
+				const format = fetchedInfo.formats.find(f => f.itag === selectedFormatItag);
+				setAddingProgress('Adding video...');
+				const res = await fetch('/api/youtube/add', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${token}`
+					},
+					body: JSON.stringify({
+						url: urls[0],
+						save_directory: saveDir,
+						selected_itag: selectedFormatItag,
+						quality_label: format?.quality_label || '',
+						mime_type: format?.mime_type || '',
+						convert_to_tv: convertToTV,
+						video_id: fetchedInfo.video_id,
+						title: fetchedInfo.title,
+						author: fetchedInfo.author,
+						duration: fetchedInfo.duration,
+						duration_seconds: fetchedInfo.duration_seconds,
+						thumbnail: fetchedInfo.thumbnail
+					})
+				});
+
+				if (res.ok) {
+					setShowAddModal(false);
+					setVideoUrl('');
+					setFetchedInfo(null);
+					setConvertToTV(false);
+				} else {
+					const err = await res.json();
+					alert(err.details || 'Failed to add YouTube video');
+				}
+			} else {
+				for (let i = 0; i < urls.length; i++) {
+					const url = urls[i];
+					setAddingProgress(`Fetching details for ${i + 1}/${urls.length}...`);
+					
+					try {
+						const infoRes = await fetch('/api/youtube/info', {
+							method: 'POST',
+							headers: {
+								'Content-Type': 'application/json',
+								'Authorization': `Bearer ${token}`
+							},
+							body: JSON.stringify({ url })
+						});
+						
+						if (!infoRes.ok) {
+							console.error(`Failed to fetch info for ${url}`);
+							continue;
+						}
+						
+						const info: VideoInfo = await infoRes.json();
+						const videoFormats = info.formats.filter(f => f.has_video);
+						let itag = 0;
+						let format = null;
+						if (videoFormats.length > 0) {
+							itag = videoFormats[0].itag;
+							format = videoFormats[0];
+						} else if (info.formats.length > 0) {
+							itag = info.formats[0].itag;
+							format = info.formats[0];
+						}
+						
+						setAddingProgress(`Adding ${i + 1}/${urls.length}...`);
+						await fetch('/api/youtube/add', {
+							method: 'POST',
+							headers: {
+								'Content-Type': 'application/json',
+								'Authorization': `Bearer ${token}`
+							},
+							body: JSON.stringify({
+								url,
+								save_directory: saveDir,
+								selected_itag: itag,
+								quality_label: format?.quality_label || '',
+								mime_type: format?.mime_type || '',
+								convert_to_tv: convertToTV,
+								video_id: info.video_id,
+								title: info.title,
+								author: info.author,
+								duration: info.duration,
+								duration_seconds: info.duration_seconds,
+								thumbnail: info.thumbnail
+							})
+						});
+					} catch (e) {
+						console.error(`Error processing URL ${url}:`, e);
+					}
+				}
+
 				setShowAddModal(false);
 				setVideoUrl('');
 				setFetchedInfo(null);
@@ -236,6 +319,9 @@ export const YouTubePage: React.FC = () => {
 			}
 		} catch (err) {
 			console.error(err);
+		} finally {
+			setIsAdding(false);
+			setAddingProgress('');
 		}
 	};
 
@@ -442,14 +528,15 @@ export const YouTubePage: React.FC = () => {
 						<div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 							{/* Link Input */}
 							<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-								<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)' }}>YouTube Video Link</label>
+								<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)' }}>YouTube Video Link(s) (One link per line)</label>
 								<div style={{ position: 'relative' }}>
-									<input 
-										type="text" 
-										placeholder="https://www.youtube.com/watch?v=..." 
+									<textarea 
+										placeholder="https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/watch?v=..." 
 										value={videoUrl} 
 										onChange={(e) => handleUrlChange(e.target.value)}
-										style={{ width: '100%', padding: '10px 14px', paddingRight: isFetchingInfo ? 40 : 14, borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', outline: 'none', color: 'var(--color-brand-heading)' }}
+										disabled={isAdding}
+										rows={4}
+										style={{ width: '100%', padding: '10px 14px', paddingRight: isFetchingInfo ? 40 : 14, borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', outline: 'none', color: 'var(--color-brand-heading)', resize: 'vertical', fontFamily: 'monospace', fontSize: 13 }}
 									/>
 									{isFetchingInfo && (
 										<FiLoader className="spin" style={{ position: 'absolute', right: 14, top: 12, color: 'var(--color-brand)' }} />
@@ -459,6 +546,23 @@ export const YouTubePage: React.FC = () => {
 									<span style={{ fontSize: 11, color: '#ef4444', marginTop: 2 }}>{fetchError}</span>
 								)}
 							</div>
+
+							{/* Multi-link Bulk Notice */}
+							{videoUrl.split(/[\r\n]+/).map(u => u.trim()).filter(Boolean).length > 1 && (
+								<div style={{ 
+									background: 'rgba(59,130,246,0.1)', 
+									border: '1px solid rgba(59,130,246,0.2)', 
+									borderRadius: 8, 
+									padding: '8px 12px', 
+									fontSize: 11,
+									color: 'var(--color-brand)',
+									display: 'flex',
+									alignItems: 'center',
+									gap: 6
+								}}>
+									<FiInfo size={14} /> Bulk Mode: Details and format selection will be auto-resolved for each video in the background using their best available format.
+								</div>
+							)}
 
 							{/* Video Details Preview */}
 							{fetchedInfo && (
@@ -499,7 +603,7 @@ export const YouTubePage: React.FC = () => {
 										value={saveDir} 
 										style={{ flex: 1, padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', color: 'var(--color-brand-heading)', outline: 'none' }}
 									/>
-									<button className="btn" onClick={openFolderPicker} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FiFolder size={16} /></button>
+									<button className="btn" onClick={openFolderPicker} disabled={isAdding} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FiFolder size={16} /></button>
 								</div>
 							</div>
 
@@ -513,11 +617,12 @@ export const YouTubePage: React.FC = () => {
 									borderRadius: 8, 
 									border: convertToTV ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid var(--color-brand-border)', 
 									background: convertToTV ? 'rgba(239, 68, 68, 0.05)' : 'var(--color-brand-bg)',
-									cursor: 'pointer',
+									cursor: isAdding ? 'not-allowed' : 'pointer',
 									transition: 'all 0.2s ease',
-									marginTop: 4
+									marginTop: 4,
+									opacity: isAdding ? 0.7 : 1
 								}}
-								onClick={() => setConvertToTV(!convertToTV)}
+								onClick={() => !isAdding && setConvertToTV(!convertToTV)}
 							>
 								<div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginRight: 16 }}>
 									<span style={{ fontSize: 13, fontWeight: 700, color: convertToTV ? '#ef4444' : 'var(--color-brand-heading)' }}>
@@ -552,8 +657,10 @@ export const YouTubePage: React.FC = () => {
 						</div>
 
 						<div style={{ display: 'flex', justifyContent: 'end', gap: 12, marginTop: 12 }}>
-							<button className="btn" onClick={() => setShowAddModal(false)}>Cancel</button>
-							<button className="btn btn--primary" onClick={handleAddJob} disabled={!fetchedInfo || !selectedFormatItag}>Start Download</button>
+							<button className="btn" onClick={() => setShowAddModal(false)} disabled={isAdding}>Cancel</button>
+							<button className="btn btn--primary" onClick={handleAddJob} disabled={(!fetchedInfo || !selectedFormatItag) && videoUrl.split(/[\r\n]+/).map(u => u.trim()).filter(Boolean).length <= 1 || isAdding}>
+								{isAdding ? addingProgress : 'Start Download'}
+							</button>
 						</div>
 					</div>
 				</div>

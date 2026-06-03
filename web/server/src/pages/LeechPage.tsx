@@ -196,6 +196,8 @@ export const LeechPage: React.FC = () => {
 	const [downloadUsername, setDownloadUsername] = useState('');
 	const [downloadPassword, setDownloadPassword] = useState('');
 	const [usePremium, setUsePremium] = useState(false);
+	const [isAdding, setIsAdding] = useState(false);
+	const [addingProgress, setAddingProgress] = useState('');
 
 	// Directory Picker State
 	const [currentPath, setCurrentPath] = useState('/');
@@ -297,34 +299,50 @@ export const LeechPage: React.FC = () => {
 
 	// Start a download job
 	const handleAddJob = async () => {
-		if (!downloadUrl.trim()) return;
+		const urls = downloadUrl.split(/[\r\n]+/).map(u => u.trim()).filter(Boolean);
+		if (urls.length === 0) return;
+
+		setIsAdding(true);
 		try {
-			const res = await fetch('/api/leech/add', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${token}`
-				},
-				body: JSON.stringify({
-					url: downloadUrl,
+			for (let i = 0; i < urls.length; i++) {
+				const url = urls[i];
+				setAddingProgress(`Adding ${i + 1}/${urls.length}...`);
+				const body: any = {
+					url: url,
 					save_directory: saveDir,
-					filename: filename,
 					threads: threads,
 					username: downloadUsername,
 					password: downloadPassword,
 					use_premium: usePremium
-				})
-			});
-			if (res.ok) {
-				setShowAddModal(false);
-				setDownloadUrl('');
-				setFilename('');
-				setDownloadUsername('');
-				setDownloadPassword('');
-				setUsePremium(false);
+				};
+				if (urls.length === 1 && filename.trim()) {
+					body.filename = filename;
+				}
+
+				const res = await fetch('/api/leech/add', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${token}`
+					},
+					body: JSON.stringify(body)
+				});
+				if (!res.ok) {
+					const data = await res.json();
+					console.error(`Failed to add URL ${url}:`, data.error || 'Unknown error');
+				}
 			}
+			setShowAddModal(false);
+			setDownloadUrl('');
+			setFilename('');
+			setDownloadUsername('');
+			setDownloadPassword('');
+			setUsePremium(false);
 		} catch (err) {
 			console.error(err);
+		} finally {
+			setIsAdding(false);
+			setAddingProgress('');
 		}
 	};
 
@@ -618,13 +636,14 @@ export const LeechPage: React.FC = () => {
 						{/* Form inputs */}
 						<div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 							<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-								<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)' }}>Source Link URL</label>
-								<input 
-									type="text" 
-									placeholder="https://example.com/archive.zip" 
+								<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)' }}>Source Link URL(s) (One link per line)</label>
+								<textarea 
+									placeholder="https://example.com/archive1.zip&#10;https://example.com/archive2.zip" 
 									value={downloadUrl} 
 									onChange={(e) => setDownloadUrl(e.target.value)}
-									style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', outline: 'none', color: 'var(--color-brand-heading)' }}
+									disabled={isAdding}
+									rows={4}
+									style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', outline: 'none', color: 'var(--color-brand-heading)', resize: 'vertical', fontFamily: 'monospace', fontSize: 13 }}
 								/>
 							</div>
 
@@ -637,6 +656,7 @@ export const LeechPage: React.FC = () => {
 										autoComplete="new-password"
 										value={downloadUsername} 
 										onChange={(e) => setDownloadUsername(e.target.value)}
+										disabled={isAdding}
 										style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', outline: 'none', color: 'var(--color-brand-heading)' }}
 									/>
 								</div>
@@ -648,19 +668,23 @@ export const LeechPage: React.FC = () => {
 										autoComplete="new-password"
 										value={downloadPassword} 
 										onChange={(e) => setDownloadPassword(e.target.value)}
+										disabled={isAdding}
 										style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', outline: 'none', color: 'var(--color-brand-heading)' }}
 									/>
 								</div>
 							</div>
 
 							<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-								<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)' }}>Custom Filename (Optional)</label>
+								<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)' }}>
+									Custom Filename (Optional) {downloadUrl.split(/[\r\n]+/).map(u => u.trim()).filter(Boolean).length > 1 && <span style={{ color: '#f59e0b' }}>- Ignored for multi-links</span>}
+								</label>
 								<input 
 									type="text" 
 									placeholder="leave blank to auto-detect" 
 									value={filename} 
 									onChange={(e) => setFilename(e.target.value)}
-									style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', outline: 'none', color: 'var(--color-brand-heading)' }}
+									disabled={isAdding || downloadUrl.split(/[\r\n]+/).map(u => u.trim()).filter(Boolean).length > 1}
+									style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', outline: 'none', color: 'var(--color-brand-heading)', opacity: downloadUrl.split(/[\r\n]+/).map(u => u.trim()).filter(Boolean).length > 1 ? 0.5 : 1 }}
 								/>
 							</div>
 
@@ -673,7 +697,7 @@ export const LeechPage: React.FC = () => {
 										value={saveDir} 
 										style={{ flex: 1, padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', color: 'var(--color-brand-heading)', outline: 'none' }}
 									/>
-									<button className="btn" onClick={openFolderPicker} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FiFolder size={16} /></button>
+									<button className="btn" onClick={openFolderPicker} disabled={isAdding} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FiFolder size={16} /></button>
 								</div>
 							</div>
 
@@ -688,6 +712,7 @@ export const LeechPage: React.FC = () => {
 									max="32" 
 									value={threads} 
 									onChange={(e) => setThreads(parseInt(e.target.value))}
+									disabled={isAdding}
 									style={{ width: '100%', accentColor: 'var(--color-brand)' }}
 								/>
 							</div>
@@ -700,11 +725,12 @@ export const LeechPage: React.FC = () => {
 									borderRadius: 8, 
 									border: usePremium ? '1px solid rgba(234, 88, 12, 0.4)' : '1px solid var(--color-brand-border)', 
 									background: usePremium ? 'rgba(234, 88, 12, 0.05)' : 'var(--color-brand-bg)',
-									cursor: 'pointer',
+									cursor: isAdding ? 'not-allowed' : 'pointer',
 									transition: 'all 0.2s ease',
-									marginTop: 4
+									marginTop: 4,
+									opacity: isAdding ? 0.7 : 1
 								}}
-								onClick={() => setUsePremium(!usePremium)}
+								onClick={() => !isAdding && setUsePremium(!usePremium)}
 							>
 								<div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
 									<span style={{ fontSize: 13, fontWeight: 700, color: usePremium ? 'var(--color-brand)' : 'var(--color-brand-heading)' }}>
@@ -739,8 +765,10 @@ export const LeechPage: React.FC = () => {
 
 						{/* Action footer */}
 						<div style={{ display: 'flex', justifyContent: 'end', gap: 12, marginTop: 12 }}>
-							<button className="btn" onClick={() => setShowAddModal(false)}>Cancel</button>
-							<button className="btn btn--primary" onClick={handleAddJob} disabled={!downloadUrl}>Fetch Download</button>
+							<button className="btn" onClick={() => setShowAddModal(false)} disabled={isAdding}>Cancel</button>
+							<button className="btn btn--primary" onClick={handleAddJob} disabled={!downloadUrl.trim() || isAdding}>
+								{isAdding ? addingProgress : 'Fetch Download'}
+							</button>
 						</div>
 					</div>
 				</div>

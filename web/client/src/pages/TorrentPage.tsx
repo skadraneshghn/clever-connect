@@ -272,6 +272,7 @@ export const TorrentPage: React.FC = () => {
 	const [selectedModalFileIndices, setSelectedModalFileIndices] = useState<number[]>([]);
 	const [fileSearchQuery, setFileSearchQuery] = useState('');
 	const [selectFilesEnabled, setSelectFilesEnabled] = useState(false);
+	const magnetsCount = magnetUri.split(/[\r\n]+/).map(m => m.trim()).filter(Boolean).length;
 
 	const fetchConfig = async () => {
 		try {
@@ -455,56 +456,101 @@ export const TorrentPage: React.FC = () => {
 		e.preventDefault();
 		if (!torrentFile && !magnetUri.trim()) return;
 
+		const magnets = magnetUri.split(/[\r\n]+/).map(m => m.trim()).filter(Boolean);
+
 		setAddStep('submitting');
 		try {
-			let res;
 			if (torrentFile) {
 				const formData = new FormData();
 				formData.append('file', torrentFile);
 				formData.append('save_directory', saveDir);
 				formData.append('select_files', selectFilesEnabled ? 'true' : 'false');
-				res = await fetch('/api/torrent/add', {
+				const res = await fetch('/api/torrent/add', {
 					method: 'POST',
 					headers: { 'Authorization': `Bearer ${token}` },
 					body: formData
 				});
-			} else {
-				res = await fetch('/api/torrent/add', {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						'Authorization': `Bearer ${token}`
-					},
-					body: JSON.stringify({
-						magnet_uri: magnetUri,
-						save_directory: saveDir,
-						select_files: selectFilesEnabled
-					})
-				});
-			}
-
-			if (res && res.ok) {
-				const data = await res.json();
-				if (data.info_hash) {
-					if (selectFilesEnabled) {
-						setAddedInfoHash(data.info_hash);
-						setAddStep('fetching_metadata');
+				if (res && res.ok) {
+					const data = await res.json();
+					if (data.info_hash) {
+						if (selectFilesEnabled) {
+							setAddedInfoHash(data.info_hash);
+							setAddStep('fetching_metadata');
+						} else {
+							setAddStep('input');
+							setTorrentFile(null);
+							setMagnetUri('');
+							setSelectFilesEnabled(false);
+							setShowAddModal(false);
+						}
 					} else {
-						// Immediately start downloading and close modal
 						setAddStep('input');
-						setTorrentFile(null);
-						setMagnetUri('');
-						setSelectFilesEnabled(false);
-						setShowAddModal(false);
+						alert('Failed to add torrent: info hash missing');
 					}
 				} else {
+					const data = res ? await res.json() : {};
 					setAddStep('input');
-					alert('Failed to add torrent: info hash missing');
+					alert(data.error || 'Failed to add torrent');
 				}
 			} else {
-				const data = res ? await res.json() : {};
-				setAddStep('input');
-				alert(data.error || 'Failed to add torrent');
+				const isBulk = magnets.length > 1;
+
+				for (let i = 0; i < magnets.length; i++) {
+					const magnet = magnets[i];
+					const selectFiles = isBulk ? false : selectFilesEnabled;
+
+					const res = await fetch('/api/torrent/add', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'Authorization': `Bearer ${token}`
+						},
+						body: JSON.stringify({
+							magnet_uri: magnet,
+							save_directory: saveDir,
+							select_files: selectFiles
+						})
+					});
+
+					if (res && res.ok) {
+						const data = await res.json();
+						if (!isBulk) {
+							if (data.info_hash) {
+								if (selectFiles) {
+									setAddedInfoHash(data.info_hash);
+									setAddStep('fetching_metadata');
+									return;
+								} else {
+									setAddStep('input');
+									setTorrentFile(null);
+									setMagnetUri('');
+									setSelectFilesEnabled(false);
+									setShowAddModal(false);
+								}
+							} else {
+								setAddStep('input');
+								alert('Failed to add torrent: info hash missing');
+							}
+						}
+					} else {
+						const data = res ? await res.json() : {};
+						if (!isBulk) {
+							setAddStep('input');
+							alert(data.error || 'Failed to add torrent');
+							return;
+						} else {
+							console.error(`Failed to add magnet: ${magnet}`, data.error);
+						}
+					}
+				}
+
+				if (isBulk) {
+					setAddStep('input');
+					setTorrentFile(null);
+					setMagnetUri('');
+					setSelectFilesEnabled(false);
+					setShowAddModal(false);
+				}
 			}
 		} catch (err) {
 			console.error(err);
@@ -798,18 +844,35 @@ export const TorrentPage: React.FC = () => {
 							<form onSubmit={handleAddTorrent}>
 								{/* Magnet Link */}
 								<div style={{ marginBottom: 16 }}>
-									<label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Magnet Link URI</label>
+									<label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Magnet Link URI(s) (One link per line)</label>
 									<div style={{ position: 'relative' }}>
 										<FiLink size={16} style={{ position: 'absolute', left: 12, top: 12, color: 'var(--color-brand-muted)' }} />
-										<input 
-											type="text" 
-											placeholder="magnet:?xt=urn:btih:..." 
+										<textarea 
+											placeholder="magnet:?xt=urn:btih:...&#10;magnet:?xt=urn:btih:..." 
 											value={magnetUri} 
 											onChange={(e) => { setMagnetUri(e.target.value); setTorrentFile(null); }}
-											style={{ width: '100%', padding: '10px 12px 10px 38px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit' }}
+											rows={3}
+											style={{ width: '100%', padding: '10px 12px 10px 38px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', resize: 'vertical', fontFamily: 'monospace', fontSize: 12 }}
 										/>
 									</div>
 								</div>
+
+								{magnetsCount > 1 && (
+									<div style={{ 
+										background: 'rgba(245,158,11,0.1)', 
+										border: '1px solid rgba(245,158,11,0.2)', 
+										borderRadius: 8, 
+										padding: '8px 12px', 
+										marginBottom: 16,
+										fontSize: 11,
+										color: '#f59e0b',
+										display: 'flex',
+										alignItems: 'center',
+										gap: 6
+									}}>
+										<FiInfo size={14} /> Bulk download: File selection will be skipped and default settings will be used.
+									</div>
+								)}
 
 								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '12px 0', fontSize: 12, color: 'var(--color-brand-muted)', fontWeight: 500 }}>
 									<span>— OR —</span>
@@ -889,28 +952,33 @@ export const TorrentPage: React.FC = () => {
 									padding: '12px 16px', 
 									borderRadius: 12, 
 									border: '1px solid var(--color-brand-border)',
-									marginBottom: 24 
+									marginBottom: 24,
+									opacity: magnetsCount > 1 ? 0.5 : 1,
+									pointerEvents: magnetsCount > 1 ? 'none' : 'auto'
 								}}>
 									<div>
 										<span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Select files to download</span>
-										<span style={{ display: 'block', fontSize: 11, color: 'var(--color-brand-muted)', marginTop: 2 }}>Fetch metadata first to check/uncheck files</span>
+										<span style={{ display: 'block', fontSize: 11, color: 'var(--color-brand-muted)', marginTop: 2 }}>
+											{magnetsCount > 1 ? 'Disabled for multiple magnet links' : 'Fetch metadata first to check/uncheck files'}
+										</span>
 									</div>
 									<label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 22 }}>
 										<input 
 											type="checkbox" 
-											checked={selectFilesEnabled} 
+											disabled={magnetsCount > 1}
+											checked={magnetsCount > 1 ? false : selectFilesEnabled} 
 											onChange={(e) => setSelectFilesEnabled(e.target.checked)} 
 											style={{ opacity: 0, width: 0, height: 0 }} 
 										/>
 										<span style={{ 
 											position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0, 
-											backgroundColor: selectFilesEnabled ? '#ea580c' : 'rgba(255,255,255,0.1)', 
+											backgroundColor: (magnetsCount > 1 ? false : selectFilesEnabled) ? '#ea580c' : 'rgba(255,255,255,0.1)', 
 											transition: '.3s', borderRadius: 22 
 										}}>
 											<span style={{ 
 												position: 'absolute', content: '""', height: 16, width: 16, left: 3, bottom: 3, 
 												backgroundColor: 'white', transition: '.3s', borderRadius: '50%',
-												transform: selectFilesEnabled ? 'translateX(22px)' : 'translateX(0)' 
+												transform: (magnetsCount > 1 ? false : selectFilesEnabled) ? 'translateX(22px)' : 'translateX(0)' 
 											}} />
 										</span>
 									</label>
@@ -919,7 +987,7 @@ export const TorrentPage: React.FC = () => {
 								<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
 									<button type="button" onClick={handleCancelAdd} className="btn">Cancel</button>
 									<button type="submit" className="btn btn--primary" style={{ background: '#ea580c', borderColor: '#ea580c', color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }} disabled={!magnetUri.trim() && !torrentFile}>
-										{selectFilesEnabled ? (
+										{selectFilesEnabled && magnetsCount <= 1 ? (
 											<>Next <FiChevronLeft size={16} style={{ transform: 'rotate(180deg)' }} /></>
 										) : (
 											'Start Downloading'
@@ -934,7 +1002,12 @@ export const TorrentPage: React.FC = () => {
 								<div className="spinner" style={{ width: 40, height: 40, border: '3px solid rgba(234,88,12,0.1)', borderTopColor: '#ea580c', borderRadius: '50%' }} />
 								<div>
 									<h4 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: 'var(--color-brand-heading)' }}>Submitting to Server</h4>
-									<p style={{ fontSize: 12, color: 'var(--color-brand-muted)', marginTop: 6 }}>Uploading torrent payload and registering job metadata...</p>
+									<p style={{ fontSize: 12, color: 'var(--color-brand-muted)', marginTop: 6 }}>
+										{magnetsCount > 1 
+											? `Registering torrent jobs...` 
+											: 'Uploading torrent payload and registering job metadata...'
+										}
+									</p>
 								</div>
 							</div>
 						)}
