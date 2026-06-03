@@ -88,7 +88,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 	if DB.Dialector.Name() == "mysql" {
 		migrateDB = DB.Set("gorm:table_options", "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
 	}
-	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}); err != nil {
+	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}, &models.SchedulerJob{}, &models.SchedulerJobLog{}, &models.SchedulerConfig{}); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
 	
@@ -110,11 +110,28 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		})
 	}
 
+	// Seed default SchedulerConfig
+	var schedCfg models.SchedulerConfig
+	if err := DB.First(&schedCfg).Error; err != nil {
+		logger.Info("DB", "Seeding default job scheduler configuration")
+		DB.Create(&models.SchedulerConfig{
+			MaxConcurrentJobs:   4,
+			DefaultPriority:     5,
+			RetryLimit:          3,
+			RetryDelaySeconds:   30,
+			JobTimeoutSeconds:   3600,
+			PurgeAfterDays:      30,
+			EnableCronJobs:      true,
+			EnableNotifications: false,
+		})
+	}
+
 	// Seed Admin User
 	seedAdmin(cfg)
 
 	return DB
 }
+
 
 func seedAdmin(cfg *config.Config) {
 	var admin models.User

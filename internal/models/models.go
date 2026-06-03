@@ -141,4 +141,59 @@ type TorrentConfig struct {
 	CustomTrackers             string  `json:"custom_trackers" gorm:"type:text"`
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Enterprise Job Scheduler Models
+// ──────────────────────────────────────────────────────────────────────────────
 
+// Job status constants
+const (
+	JobStatusQueued    = "queued"
+	JobStatusRunning   = "running"
+	JobStatusCompleted = "completed"
+	JobStatusFailed    = "failed"
+	JobStatusCancelled = "cancelled"
+	JobStatusScheduled = "scheduled" // For cron-scheduled jobs
+)
+
+// SchedulerJob is the central model tracking each unit of work in the scheduler.
+type SchedulerJob struct {
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	UUID        string     `gorm:"size:36;uniqueIndex" json:"uuid"`
+	Type        string     `gorm:"size:100;not null;index" json:"type"`                      // e.g., file_compress, leech_download, custom_task
+	Name        string     `gorm:"size:255;not null" json:"name"`                             // Human-readable name
+	Description string     `gorm:"type:text" json:"description"`                              // Extended description
+	Category    string     `gorm:"size:100;index;default:'general'" json:"category"`           // Grouping: general, files, download, system, cron
+	Status      string     `gorm:"size:50;not null;index;default:'queued'" json:"status"`      // queued, running, completed, failed, cancelled, scheduled
+	Priority    int        `gorm:"default:5;index" json:"priority"`                            // 1=highest, 10=lowest
+	Progress    int        `gorm:"default:0" json:"progress"`                                  // 0-100
+	Message     string     `gorm:"type:text" json:"message"`                                   // Status message or error details
+	Payload     string     `gorm:"type:text" json:"payload"`                                   // JSON payload for the job handler
+	CronExpr    string     `gorm:"size:100" json:"cron_expr"`                                  // Optional cron expression (robfig/cron format)
+	RetryCount  int        `gorm:"default:0" json:"retry_count"`
+	StartedAt   *time.Time `json:"started_at"`
+	FinishedAt  *time.Time `json:"finished_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// SchedulerJobLog stores granular execution logs for each job run.
+type SchedulerJobLog struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	SchedulerJobID uint      `gorm:"index;not null" json:"scheduler_job_id"`
+	Level          string    `gorm:"size:20;not null" json:"level"` // INFO, WARN, ERROR, DEBUG
+	Message        string    `gorm:"type:text;not null" json:"message"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// SchedulerConfig stores admin-configurable scheduler parameters.
+type SchedulerConfig struct {
+	gorm.Model
+	MaxConcurrentJobs   int  `json:"max_concurrent_jobs" gorm:"default:4"`
+	DefaultPriority     int  `json:"default_priority" gorm:"default:5"`
+	RetryLimit          int  `json:"retry_limit" gorm:"default:3"`
+	RetryDelaySeconds   int  `json:"retry_delay_seconds" gorm:"default:30"`
+	JobTimeoutSeconds   int  `json:"job_timeout_seconds" gorm:"default:3600"`
+	PurgeAfterDays      int  `json:"purge_after_days" gorm:"default:30"`
+	EnableCronJobs      bool `json:"enable_cron_jobs" gorm:"default:true"`
+	EnableNotifications bool `json:"enable_notifications" gorm:"default:false"`
+}

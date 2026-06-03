@@ -5,11 +5,10 @@ import {
 	FiGrid, FiList, FiRefreshCw, FiArrowLeft, FiEdit3, 
 	FiImage, FiVideo, FiZoomIn, FiZoomOut, FiRotateCw, FiX, FiCheck,
 	FiChevronRight, FiChevronDown, FiScissors, FiCopy, FiClipboard, FiInfo, FiArchive, FiShare2,
-	FiPlay, FiPause, FiMaximize2, FiChevronLeft, FiExternalLink
+	FiPlay, FiPause, FiMaximize2, FiChevronLeft, FiExternalLink,
+	FiRotateCcw, FiVolume2, FiVolumeX, FiTv, FiMinimize2
 } from 'react-icons/fi';
 import Editor from '@monaco-editor/react';
-import videojs from 'video.js';
-import 'video.js/dist/video-js.css';
 
 interface FileItem {
 	name: string;
@@ -85,45 +84,528 @@ const formatSize = (bytes: number): string => {
 	return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
-interface VideoJSPlayerProps {
-	options: any;
-	onReady?: (player: any) => void;
+interface CustomVideoPlayerProps {
+	src: string;
+	title: string;
+	onClose: () => void;
 }
 
-const VideoJSPlayer: React.FC<VideoJSPlayerProps> = ({ options, onReady }) => {
-	const videoRef = useRef<HTMLDivElement | null>(null);
-	const playerRef = useRef<any>(null);
+const CustomVideoPlayer: React.FC<CustomVideoPlayerProps> = ({ src, title, onClose }) => {
+	const videoRef = useRef<HTMLVideoElement | null>(null);
+	const playerRef = useRef<HTMLDivElement | null>(null);
+	const [isPlaying, setIsPlaying] = useState(false);
+	const [currentTime, setCurrentTime] = useState(0);
+	const [duration, setDuration] = useState(0);
+	const [volume, setVolume] = useState(0); // 0 by default (muted)
+	const [isMuted, setIsMuted] = useState(true);
+	const [playbackSpeed, setPlaybackSpeed] = useState(1);
+	const [isFullscreen, setIsFullscreen] = useState(false);
+	const [showControls, setShowControls] = useState(true);
+	const [isLoading, setIsLoading] = useState(true);
+	const [hasError, setHasError] = useState(false);
+	const controlsTimeoutRef = useRef<any>(null);
 
-	useEffect(() => {
-		if (!playerRef.current && videoRef.current) {
-			const videoElement = document.createElement("video-js");
-			videoElement.classList.add('vjs-big-play-centered');
-			videoElement.classList.add('vjs-theme-vod-modal');
-			videoRef.current.appendChild(videoElement);
-
-			const player = playerRef.current = videojs(videoElement, options, () => {
-				onReady && onReady(player);
-			});
-		} else if (playerRef.current) {
-			const player = playerRef.current;
-			player.autoplay(options.autoplay);
-			player.src(options.sources);
+	// Sync play/pause state
+	const togglePlay = () => {
+		if (!videoRef.current) return;
+		if (isPlaying) {
+			videoRef.current.pause();
+		} else {
+			videoRef.current.play().catch(err => console.error("Play failed:", err));
 		}
-	}, [options]);
+	};
 
-	useEffect(() => {
-		const player = playerRef.current;
-		return () => {
-			if (player && !player.isDisposed()) {
-				player.dispose();
-				playerRef.current = null;
+	// Skip back/forward
+	const skip = (seconds: number) => {
+		if (!videoRef.current) return;
+		videoRef.current.currentTime = Math.max(0, Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + seconds));
+	};
+
+	// Format time helper (e.g. 1:05 or 0:35)
+	const formatTime = (time: number) => {
+		if (isNaN(time)) return '0:00';
+		const mins = Math.floor(time / 60);
+		const secs = Math.floor(time % 60);
+		return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+	};
+
+	// Handle progress slider change
+	const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+		if (!videoRef.current) return;
+		const newTime = parseFloat(e.target.value);
+		videoRef.current.currentTime = newTime;
+		setCurrentTime(newTime);
+	};
+
+	// Handle volume slider change
+	const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+		if (!videoRef.current) return;
+		const newVolume = parseFloat(e.target.value);
+		setVolume(newVolume);
+		videoRef.current.volume = newVolume;
+		setIsMuted(newVolume === 0);
+		videoRef.current.muted = newVolume === 0;
+	};
+
+	// Toggle Mute
+	const toggleMute = () => {
+		if (!videoRef.current) return;
+		const nextMute = !isMuted;
+		setIsMuted(nextMute);
+		videoRef.current.muted = nextMute;
+		if (!nextMute && volume === 0) {
+			setVolume(0.5);
+			videoRef.current.volume = 0.5;
+		}
+	};
+
+	// Cycle playback speed
+	const cycleSpeed = () => {
+		if (!videoRef.current) return;
+		const speeds = [0.5, 1, 1.25, 1.5, 2];
+		const nextIdx = (speeds.indexOf(playbackSpeed) + 1) % speeds.length;
+		const nextSpeed = speeds[nextIdx];
+		setPlaybackSpeed(nextSpeed);
+		videoRef.current.playbackRate = nextSpeed;
+	};
+
+	// Toggle Picture-in-Picture
+	const togglePiP = async () => {
+		if (!videoRef.current) return;
+		try {
+			if (document.pictureInPictureElement) {
+				await document.exitPictureInPicture();
+			} else {
+				await videoRef.current.requestPictureInPicture();
 			}
+		} catch (err) {
+			console.error("PiP error:", err);
+		}
+	};
+
+	// Toggle Fullscreen
+	const toggleFullscreen = () => {
+		if (!playerRef.current) return;
+		if (!document.fullscreenElement) {
+			playerRef.current.requestFullscreen().catch(err => console.error("Fullscreen error:", err));
+			setIsFullscreen(true);
+		} else {
+			document.exitFullscreen();
+			setIsFullscreen(false);
+		}
+	};
+
+	// Detect fullscreen change (e.g. Escape key pressed)
+	useEffect(() => {
+		const handleFsChange = () => {
+			setIsFullscreen(!!document.fullscreenElement);
 		};
+		document.addEventListener('fullscreenchange', handleFsChange);
+		return () => document.removeEventListener('fullscreenchange', handleFsChange);
 	}, []);
 
+	// Auto-hide controls loop
+	const resetControlsTimeout = () => {
+		setShowControls(true);
+		if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+		if (isPlaying) {
+			controlsTimeoutRef.current = setTimeout(() => {
+				setShowControls(false);
+			}, 2500);
+		}
+	};
+
+	useEffect(() => {
+		resetControlsTimeout();
+		return () => {
+			if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+		};
+	}, [isPlaying]);
+
+	// Handle video events
+	const onPlay = () => setIsPlaying(true);
+	const onPause = () => setIsPlaying(false);
+	const onTimeUpdate = () => {
+		if (videoRef.current) {
+			setCurrentTime(videoRef.current.currentTime);
+		}
+	};
+	const onDurationChange = () => {
+		if (videoRef.current) {
+			setDuration(videoRef.current.duration);
+		}
+	};
+	const onWaiting = () => setIsLoading(true);
+	const onPlaying = () => setIsLoading(false);
+	const onError = () => {
+		setIsLoading(false);
+		setHasError(true);
+	};
+
+	// Keyboard shortcut listeners
+	useEffect(() => {
+		const handleKeyDown = (e: KeyboardEvent) => {
+			if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') {
+				return;
+			}
+			switch (e.key.toLowerCase()) {
+				case ' ':
+					e.preventDefault();
+					togglePlay();
+					break;
+				case 'arrowleft':
+					e.preventDefault();
+					skip(-10);
+					break;
+				case 'arrowright':
+					e.preventDefault();
+					skip(10);
+					break;
+				case 'arrowup':
+					e.preventDefault();
+					setVolume(prev => {
+						const next = Math.min(1, prev + 0.1);
+						if (videoRef.current) {
+							videoRef.current.volume = next;
+							videoRef.current.muted = false;
+						}
+						setIsMuted(false);
+						return next;
+					});
+					break;
+				case 'arrowdown':
+					e.preventDefault();
+					setVolume(prev => {
+						const next = Math.max(0, prev - 0.1);
+						if (videoRef.current) {
+							videoRef.current.volume = next;
+							if (next === 0) {
+								videoRef.current.muted = true;
+								setIsMuted(true);
+							}
+						}
+						return next;
+					});
+					break;
+				case 'f':
+					e.preventDefault();
+					toggleFullscreen();
+					break;
+				case 'm':
+					e.preventDefault();
+					toggleMute();
+					break;
+				case 'escape':
+					if (!document.fullscreenElement) {
+						onClose();
+					}
+					break;
+			}
+		};
+
+		window.addEventListener('keydown', handleKeyDown);
+		return () => window.removeEventListener('keydown', handleKeyDown);
+	}, [isPlaying, isMuted, volume, playbackSpeed, onClose]);
+
+	// Auto-mute sync on mount
+	useEffect(() => {
+		if (videoRef.current) {
+			videoRef.current.muted = true;
+			videoRef.current.volume = 0;
+		}
+	}, [src]);
+
 	return (
-		<div data-vjs-player style={{ width: '100%', height: '100%' }}>
-			<div ref={videoRef} style={{ width: '100%', height: '100%' }} />
+		<div 
+			ref={playerRef}
+			className="custom-video-player"
+			style={{
+				position: 'relative',
+				width: '100%',
+				height: '100%',
+				background: '#000',
+				overflow: 'hidden',
+				display: 'flex',
+				alignItems: 'center',
+				justifyContent: 'center',
+				userSelect: 'none',
+				fontFamily: 'system-ui, -apple-system, sans-serif'
+			}}
+			onMouseMove={resetControlsTimeout}
+			onMouseLeave={() => isPlaying && setShowControls(false)}
+		>
+			<video
+				ref={videoRef}
+				src={src}
+				onClick={togglePlay}
+				onDoubleClick={toggleFullscreen}
+				onPlay={onPlay}
+				onPause={onPause}
+				onTimeUpdate={onTimeUpdate}
+				onDurationChange={onDurationChange}
+				onWaiting={onWaiting}
+				onPlaying={onPlaying}
+				onError={onError}
+				autoPlay
+				style={{
+					width: '100%',
+					height: '100%',
+					maxHeight: '100%',
+					objectFit: 'contain',
+					cursor: 'pointer'
+				}}
+			/>
+
+			{isLoading && (
+				<div style={{ position: 'absolute', display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+					<div className="spin-anim" style={{ width: 48, height: 48, border: '4px solid rgba(255,255,255,0.2)', borderTopColor: '#fff', borderRadius: '50%' }} />
+				</div>
+			)}
+
+			{hasError && (
+				<div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.9)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20, textAlign: 'center', color: '#fff' }}>
+					<FiVideo size={48} style={{ color: '#ef4444', marginBottom: 12 }} />
+					<h3 style={{ fontSize: 16, fontWeight: 700, margin: '0 0 8px 0' }}>Unsupported Video Format or Network Failure</h3>
+					<p style={{ fontSize: 13, color: '#aaa', maxWidth: 400, margin: '0 0 16px 0' }}>The browser cannot play this video. It may be using an unsupported codec (like HEVC/H.265 or AC3 audio). You can download the file to play it locally.</p>
+					<button onClick={() => { setHasError(false); setIsLoading(true); if (videoRef.current) { videoRef.current.load(); } }} className="btn btn--primary" style={{ padding: '8px 16px', fontSize: 12 }}>
+						Retry Playback
+					</button>
+				</div>
+			)}
+
+			<div 
+				style={{
+					position: 'absolute',
+					top: 0,
+					left: 0,
+					right: 0,
+					padding: '20px 24px 40px 24px',
+					background: 'linear-gradient(to bottom, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 100%)',
+					display: 'flex',
+					justifyContent: 'space-between',
+					alignItems: 'center',
+					transition: 'opacity 0.3s ease, transform 0.3s ease',
+					opacity: showControls ? 1 : 0,
+					transform: showControls ? 'translateY(0)' : 'translateY(-10px)',
+					pointerEvents: showControls ? 'auto' : 'none'
+				}}
+			>
+				<span style={{ color: '#fff', fontSize: 14, fontWeight: 600, textShadow: '0 1px 3px rgba(0,0,0,0.6)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '80%' }}>
+					{title}
+				</span>
+				<button 
+					onClick={onClose}
+					style={{
+						background: 'rgba(255,255,255,0.1)',
+						border: 'none',
+						color: '#fff',
+						padding: 8,
+						borderRadius: '50%',
+						cursor: 'pointer',
+						display: 'flex',
+						alignItems: 'center',
+						justifyContent: 'center',
+						backdropFilter: 'blur(4px)',
+						transition: 'background 0.2s'
+					}}
+					onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.2)'}
+					onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
+				>
+					<FiX size={18} />
+				</button>
+			</div>
+
+			{showControls && !isLoading && !hasError && (
+				<div 
+					onClick={togglePlay}
+					style={{
+						position: 'absolute',
+						cursor: 'pointer',
+						width: 72,
+						height: 72,
+						borderRadius: '50%',
+						background: 'rgba(0,0,0,0.5)',
+						border: '1px solid rgba(255,255,255,0.15)',
+						display: 'flex',
+						alignItems: 'center',
+						justifyContent: 'center',
+						color: '#fff',
+						backdropFilter: 'blur(8px)',
+						transition: 'transform 0.2s, opacity 0.2s',
+						opacity: 0.95
+					}}
+					onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+					onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+				>
+					{isPlaying ? <FiPause size={28} /> : <FiPlay size={28} style={{ marginLeft: 4 }} />}
+				</div>
+			)}
+
+			<div 
+				style={{
+					position: 'absolute',
+					bottom: 16,
+					left: 16,
+					right: 16,
+					height: 48,
+					background: 'rgba(15, 15, 15, 0.65)',
+					backdropFilter: 'blur(16px)',
+					border: '1px solid rgba(255,255,255,0.08)',
+					borderRadius: 30,
+					display: 'flex',
+					alignItems: 'center',
+					padding: '0 16px',
+					gap: 12,
+					color: '#fff',
+					transition: 'opacity 0.3s ease, transform 0.3s ease',
+					opacity: showControls ? 1 : 0,
+					transform: showControls ? 'translateY(0)' : 'translateY(10px)',
+					pointerEvents: showControls ? 'auto' : 'none',
+					boxShadow: '0 10px 30px rgba(0,0,0,0.5)'
+				}}
+				onClick={(e) => e.stopPropagation()}
+			>
+				<button 
+					onClick={togglePlay} 
+					style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 4 }}
+				>
+					{isPlaying ? <FiPause size={16} /> : <FiPlay size={16} />}
+				</button>
+
+				<button 
+					onClick={() => skip(-10)} 
+					title="Back 10s"
+					style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 4 }}
+				>
+					<FiRotateCcw size={16} />
+				</button>
+
+				<button 
+					onClick={() => skip(10)} 
+					title="Forward 10s"
+					style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 4 }}
+				>
+					<FiRotateCw size={16} />
+				</button>
+
+				<span style={{ fontSize: 12, fontWeight: 500, minWidth: 32, textAlign: 'center', opacity: 0.9, fontFamily: 'monospace' }}>
+					{formatTime(currentTime)}
+				</span>
+
+				<div style={{ flex: 1, display: 'flex', alignItems: 'center', position: 'relative' }}>
+					<input 
+						type="range"
+						min={0}
+						max={duration || 100}
+						value={currentTime}
+						onChange={handleProgressChange}
+						className="video-scrubber"
+						style={{
+							width: '100%',
+							cursor: 'pointer',
+							height: 4,
+							borderRadius: 2,
+							background: `linear-gradient(to right, var(--color-brand, #ea580c) 0%, var(--color-brand, #ea580c) ${(currentTime / (duration || 1)) * 100}%, rgba(255,255,255,0.2) ${(currentTime / (duration || 1)) * 100}%, rgba(255,255,255,0.2) 100%)`,
+							outline: 'none',
+							WebkitAppearance: 'none',
+						}}
+					/>
+				</div>
+
+				<span style={{ fontSize: 12, fontWeight: 500, minWidth: 32, textAlign: 'center', opacity: 0.9, fontFamily: 'monospace' }}>
+					{formatTime(duration)}
+				</span>
+
+				<button 
+					onClick={cycleSpeed}
+					title="Playback Speed"
+					style={{
+						background: 'rgba(255,255,255,0.08)',
+						border: '1px solid rgba(255,255,255,0.1)',
+						borderRadius: 6,
+						color: 'inherit',
+						fontSize: 11,
+						fontWeight: 600,
+						padding: '2px 6px',
+						cursor: 'pointer',
+						display: 'flex',
+						alignItems: 'center',
+						minWidth: 28,
+						justifyContent: 'center'
+					}}
+				>
+					{playbackSpeed}x
+				</button>
+
+				<div 
+					className="volume-control-container"
+					style={{ display: 'flex', alignItems: 'center', gap: 6, position: 'relative' }}
+				>
+					<button 
+						onClick={toggleMute}
+						style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 4 }}
+					>
+						{isMuted || volume === 0 ? <FiVolumeX size={16} /> : <FiVolume2 size={16} />}
+					</button>
+					<input 
+						type="range"
+						min={0}
+						max={1}
+						step={0.05}
+						value={isMuted ? 0 : volume}
+						onChange={handleVolumeChange}
+						className="volume-slider"
+						style={{
+							width: 60,
+							cursor: 'pointer',
+							height: 4,
+							borderRadius: 2,
+							background: `linear-gradient(to right, #fff 0%, #fff ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,0.2) ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,0.2) 100%)`,
+							outline: 'none',
+							WebkitAppearance: 'none'
+						}}
+					/>
+				</div>
+
+				<button 
+					onClick={togglePiP}
+					title="Picture in Picture"
+					style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 4 }}
+				>
+					<FiTv size={16} />
+				</button>
+
+				<button 
+					onClick={toggleFullscreen}
+					title="Fullscreen"
+					style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 4 }}
+				>
+					{isFullscreen ? <FiMinimize2 size={16} /> : <FiMaximize2 size={16} />}
+				</button>
+			</div>
+
+			<style>{`
+				.video-scrubber::-webkit-slider-thumb {
+					-webkit-appearance: none;
+					appearance: none;
+					width: 10px;
+					height: 10px;
+					border-radius: 50%;
+					background: #fff;
+					transition: transform 0.1s;
+				}
+				.video-scrubber:hover::-webkit-slider-thumb {
+					transform: scale(1.3);
+				}
+				.volume-slider::-webkit-slider-thumb {
+					-webkit-appearance: none;
+					appearance: none;
+					width: 8px;
+					height: 8px;
+					border-radius: 50%;
+					background: #fff;
+				}
+			`}</style>
 		</div>
 	);
 };
@@ -1750,7 +2232,7 @@ export const FilesPage: React.FC = () => {
 						className="g-card animate-zoom-in" 
 						style={{ 
 							width: detectedMetadata ? Math.max(480, Math.min(window.innerWidth * 0.9, detectedMetadata.width / 2)) : 640,
-							height: detectedMetadata ? Math.max(360, Math.min(window.innerHeight * 0.9, detectedMetadata.height / 2 + 50)) : 410,
+							height: detectedMetadata ? Math.max(360, Math.min(window.innerHeight * 0.9, detectedMetadata.height / 2)) : 360,
 							padding: 0, 
 							background: '#000',
 							border: '1px solid rgba(255,255,255,0.15)',
@@ -1762,35 +2244,11 @@ export const FilesPage: React.FC = () => {
 						}}
 						onClick={(e) => e.stopPropagation()}
 					>
-						{/* Cinema Modal Header */}
-						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', background: '#111', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-							<span style={{ fontSize: 13, fontWeight: 700, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '80%' }}>
-								Cinema Mode: {videoModalFile.name}
-							</span>
-							<button 
-								onClick={() => setShowVideoModal(false)} 
-								style={{ border: 'none', background: 'none', color: '#fff', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-							>
-								<FiX size={18} />
-							</button>
-						</div>
-
-						{/* VideoJS Container */}
-						<div style={{ flex: 1, position: 'relative', background: '#000' }}>
-							<VideoJSPlayer 
-								options={{
-									autoplay: true,
-									controls: true,
-									responsive: true,
-									fluid: false,
-									muted: true, // MUTE BY DEFAULT
-									sources: [{
-										src: `/api/files/stream?path=${encodeURIComponent(currentPath === '/' ? `/${videoModalFile.name}` : `${currentPath}/${videoModalFile.name}`)}&token=${encodeURIComponent(token || '')}`,
-										type: 'video/mp4'
-									}]
-								}}
-							/>
-						</div>
+						<CustomVideoPlayer 
+							src={`/api/files/stream?path=${encodeURIComponent(currentPath === '/' ? `/${videoModalFile.name}` : `${currentPath}/${videoModalFile.name}`)}&token=${encodeURIComponent(token || '')}`}
+							title={videoModalFile.name}
+							onClose={() => setShowVideoModal(false)}
+						/>
 					</div>
 				</div>
 			)}

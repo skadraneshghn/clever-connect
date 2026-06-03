@@ -13,6 +13,7 @@ import (
 	"clever-connect/internal/handlers"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
+	"clever-connect/internal/scheduler"
 	"clever-connect/internal/telegram"
 	"clever-connect/internal/torrent"
 
@@ -50,6 +51,9 @@ func main() {
 		} else {
 			defer torrent.Manager.Close()
 		}
+
+		// Initialize Enterprise Job Scheduler Engine
+		scheduler.Init()
 	}
 
 	// Auto-start active tunnel engine on bootstrap
@@ -102,6 +106,7 @@ func main() {
 	leechHandler := handlers.NewLeechHandler(cfg)
 	torrentHandler := handlers.NewTorrentHandler(cfg)
 	telegramHandler := handlers.NewTelegramHandler(cfg)
+	schedulerHandler := handlers.NewSchedulerHandler(cfg)
 
 	// API Group
 	api := router.Group("/api")
@@ -170,6 +175,20 @@ func main() {
 			protected.POST("/telegram/stop", telegramHandler.StopBot)
 			protected.GET("/telegram/status", telegramHandler.GetStatus)
 			protected.POST("/telegram/send-file", telegramHandler.SendFile)
+
+			// Enterprise Job Scheduler API Endpoints
+			protected.GET("/scheduler/jobs", schedulerHandler.ListJobs)
+			protected.POST("/scheduler/jobs", schedulerHandler.CreateJob)
+			protected.POST("/scheduler/jobs/:id/cancel", schedulerHandler.CancelJob)
+			protected.POST("/scheduler/jobs/:id/retry", schedulerHandler.RetryJob)
+			protected.POST("/scheduler/jobs/:id/force", schedulerHandler.ForceRunJob)
+			protected.POST("/scheduler/jobs/:id/delete", schedulerHandler.DeleteJob)
+			protected.POST("/scheduler/jobs/reorder", schedulerHandler.ReorderJobs)
+			protected.GET("/scheduler/jobs/:id/logs", schedulerHandler.GetJobLogs)
+			protected.GET("/scheduler/config", schedulerHandler.GetConfig)
+			protected.POST("/scheduler/config", schedulerHandler.SaveConfig)
+			protected.GET("/scheduler/stats", schedulerHandler.GetStats)
+			protected.POST("/scheduler/purge", schedulerHandler.PurgeJobs)
 		}
 	}
 
