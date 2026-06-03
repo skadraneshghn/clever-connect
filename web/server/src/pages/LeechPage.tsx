@@ -30,6 +30,8 @@ interface LeechConfig {
 	proxy_url: string;
 	premium_user_id?: string;
 	premium_api_key?: string;
+	auto_upload_to_telegram?: boolean;
+	auto_upload_chat_id?: number;
 }
 
 const GameProgressBar: React.FC<{ progress: number; status: string }> = ({ progress, status }) => {
@@ -176,7 +178,9 @@ export const LeechPage: React.FC = () => {
 		max_concurrent: 3,
 		threads_per_job: 8,
 		user_agent: 'CleverConnect/1.0',
-		proxy_url: ''
+		proxy_url: '',
+		auto_upload_to_telegram: false,
+		auto_upload_chat_id: 0
 	});
 
 	// Modals State
@@ -932,6 +936,64 @@ export const LeechPage: React.FC = () => {
 									/>
 								</div>
 							</div>
+
+							<div 
+								style={{ 
+									display: 'flex', 
+									alignItems: 'center', 
+									justifyContent: 'space-between', 
+									padding: '12px 16px', 
+									borderRadius: 8, 
+									border: config.auto_upload_to_telegram ? '1px solid rgba(14, 165, 233, 0.4)' : '1px solid var(--color-brand-border)', 
+									background: config.auto_upload_to_telegram ? 'rgba(14, 165, 233, 0.05)' : 'var(--color-brand-bg)',
+									cursor: 'pointer',
+									transition: 'all 0.2s ease',
+									marginTop: 4
+								}}
+								onClick={() => setConfig({ ...config, auto_upload_to_telegram: !config.auto_upload_to_telegram })}
+							>
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+									<span style={{ fontSize: 13, fontWeight: 700, color: config.auto_upload_to_telegram ? 'var(--color-brand)' : 'var(--color-brand-heading)' }}>
+										Auto-Upload to Telegram
+									</span>
+									<span style={{ fontSize: 10, color: 'var(--color-brand-muted)' }}>
+										Automatically queue parallel upload to Telegram when a leech job finishes
+									</span>
+								</div>
+								
+								<div style={{
+									width: 40,
+									height: 20,
+									borderRadius: 20,
+									background: config.auto_upload_to_telegram ? 'var(--color-brand)' : '#334155',
+									position: 'relative',
+									transition: 'background 0.2s'
+								}}>
+									<div style={{
+										width: 14,
+										height: 14,
+										borderRadius: '50%',
+										background: '#fff',
+										position: 'absolute',
+										top: 3,
+										left: config.auto_upload_to_telegram ? 23 : 3,
+										transition: 'left 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
+									}} />
+								</div>
+							</div>
+
+							{config.auto_upload_to_telegram && (
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)' }}>Target Telegram Chat ID (Optional)</label>
+									<input 
+										type="number" 
+										placeholder="e.g. -100123456789 (leave 0 for default admin chat)" 
+										value={config.auto_upload_chat_id || ''} 
+										onChange={(e) => setConfig({ ...config, auto_upload_chat_id: parseInt(e.target.value) || 0 })}
+										style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', outline: 'none', color: 'var(--color-brand-heading)' }}
+									/>
+								</div>
+							)}
 						</div>
 
 						{/* Save configurations */}

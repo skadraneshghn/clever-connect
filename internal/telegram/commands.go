@@ -286,6 +286,18 @@ func (e *Engine) registerCommands() {
 		return c.Send("ℹ️ Send a valid HTTP/HTTPS link to download it directly to the server file manager.")
 	}))
 
+	// Media message handlers (admin only)
+	mediaHandler := e.AdminOnly(func(c tele.Context) error {
+		return e.handleMediaMessage(c)
+	})
+
+	e.Bot.Handle(tele.OnDocument, mediaHandler)
+	e.Bot.Handle(tele.OnVideo, mediaHandler)
+	e.Bot.Handle(tele.OnAudio, mediaHandler)
+	e.Bot.Handle(tele.OnPhoto, mediaHandler)
+	e.Bot.Handle(tele.OnVoice, mediaHandler)
+	e.Bot.Handle(tele.OnAnimation, mediaHandler)
+
 	// Seed default Telegram config if none exists
 	seedTelegramConfig()
 }
@@ -655,11 +667,6 @@ func (e *Engine) handleUserMessage(ctx context.Context, entities tg.Entities, up
 		return nil
 	}
 
-	text := strings.TrimSpace(m.Message)
-	if text == "" {
-		return nil
-	}
-
 	// Extract sender details
 	var senderID int64
 	switch p := m.PeerID.(type) {
@@ -669,6 +676,22 @@ func (e *Engine) handleUserMessage(ctx context.Context, entities tg.Entities, up
 		senderID = p.ChatID
 	case *tg.PeerChannel:
 		senderID = p.ChannelID
+	}
+
+	// Intercept media files from admin
+	if m.Media != nil && e.IsAdmin(senderID) {
+		e.messagesProcessed.Add(1)
+		e.Dispatch(func() {
+			if err := e.handleMediaMessageUser(ctx, entities, m.PeerID, m); err != nil {
+				logger.Error("Telegram", "Failed to handle media message user", "error", err)
+			}
+		})
+		return nil
+	}
+
+	text := strings.TrimSpace(m.Message)
+	if text == "" {
+		return nil
 	}
 
 	e.messagesProcessed.Add(1)
@@ -872,4 +895,152 @@ func (e *Engine) handleUserMessage(ctx context.Context, entities tg.Entities, up
 		}
 	}
 	return nil
+}
+
+// handleMediaMessage is the telebot (bot-mode) media file handler.
+func (e *Engine) handleMediaMessage(c tele.Context) error {
+	msg := c.Message()
+	if msg == nil {
+		return nil
+	}
+
+	var fileName string
+	var fileSize int64
+	var hasFile bool
+
+	if msg.Document != nil {
+		fileName = msg.Document.FileName
+		fileSize = msg.Document.FileSize
+		hasFile = true
+	} else if msg.Video != nil {
+		fileName = msg.Video.FileName
+		if fileName == "" {
+			fileName = fmt.Sprintf("video_%d.mp4", msg.ID)
+		}
+		fileSize = msg.Video.FileSize
+		hasFile = true
+	} else if msg.Audio != nil {
+		fileName = msg.Audio.FileName
+		if fileName == "" {
+			fileName = fmt.Sprintf("audio_%d.mp3", msg.ID)
+		}
+		fileSize = msg.Audio.FileSize
+		hasFile = true
+	} else if msg.Voice != nil {
+		fileName = fmt.Sprintf("voice_%d.ogg", msg.ID)
+		fileSize = msg.Voice.FileSize
+		hasFile = true
+	} else if msg.Photo != nil {
+		fileName = fmt.Sprintf("photo_%d.jpg", msg.ID)
+		fileSize = msg.Photo.FileSize
+		hasFile = true
+	} else if msg.Animation != nil {
+		fileName = msg.Animation.FileName
+		if fileName == "" {
+			fileName = fmt.Sprintf("animation_%d.mp4", msg.ID)
+		}
+		fileSize = msg.Animation.FileSize
+		hasFile = true
+	}
+
+	if !hasFile {
+		return nil
+	}
+
+	if fileName == "" {
+		fileName = fmt.Sprintf("file_%d", msg.ID)
+	}
+
+	if QueueDownloadJob == nil {
+		return c.Send("❌ Scheduler is not initialized to handle download queue.")
+	}
+
+	err := QueueDownloadJob(c.Chat().ID, msg.ID, fileName, fileSize)
+	if err != nil {
+		return c.Send("❌ Failed to add download job: " + err.Error())
+	}
+
+	return c.Send(fmt.Sprintf("📥 *Download Queued!*\n\n📄 *File:* `%s`\n📏 *Size:* %s\n\nUse `/status` to monitor progress.", fileName, FormatFileSize(fileSize)), &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+}
+
+// handleMediaMessageUser is the MTProto (user-mode) media file handler.
+func (e *Engine) handleMediaMessageUser(ctx context.Context, entities tg.Entities, peer tg.PeerClass, m *tg.Message) error {
+	if m.Media == nil {
+		return nil
+	}
+
+	var fileName string
+	var fileSize int64
+	var hasFile bool
+
+	switch media := m.Media.(type) {
+	case *tg.MessageMediaDocument:
+		if doc, ok := media.Document.(*tg.Document); ok {
+			fileSize = doc.Size
+			hasFile = true
+			for _, attr := range doc.Attributes {
+				if fAttr, ok := attr.(*tg.DocumentAttributeFilename); ok {
+					fileName = fAttr.FileName
+					break
+				}
+			}
+			if fileName == "" {
+				ext := "bin"
+				if mimeType := doc.MimeType; mimeType != "" {
+					if exts, err := mime.ExtensionsByType(mimeType); err == nil && len(exts) > 0 {
+						ext = strings.TrimPrefix(exts[0], ".")
+					}
+				}
+				fileName = fmt.Sprintf("document_%d.%s", doc.ID, ext)
+			}
+		}
+	case *tg.MessageMediaPhoto:
+		if photo, ok := media.Photo.(*tg.Photo); ok {
+			hasFile = true
+			fileName = fmt.Sprintf("photo_%d.jpg", photo.ID)
+			for _, size := range photo.Sizes {
+				switch s := size.(type) {
+				case *tg.PhotoSize:
+					if s.Size > int(fileSize) {
+						fileSize = int64(s.Size)
+					}
+				case *tg.PhotoSizeProgressive:
+					if len(s.Sizes) > 0 {
+						last := s.Sizes[len(s.Sizes)-1]
+						if last > int(fileSize) {
+							fileSize = int64(last)
+						}
+					}
+				}
+			}
+			if fileSize == 0 {
+				fileSize = 1024 * 1024 // 1MB estimate
+			}
+		}
+	}
+
+	if !hasFile {
+		return nil
+	}
+
+	var chatID int64
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		chatID = p.UserID
+	case *tg.PeerChat:
+		chatID = p.ChatID
+	case *tg.PeerChannel:
+		chatID = p.ChannelID
+	}
+
+	if QueueDownloadJob == nil {
+		return e.sendUserMessage(ctx, entities, peer, "❌ Scheduler is not initialized to handle download queue.")
+	}
+
+	err := QueueDownloadJob(chatID, m.ID, fileName, fileSize)
+	if err != nil {
+		return e.sendUserMessage(ctx, entities, peer, "❌ Failed to add download job: "+err.Error())
+	}
+
+	return e.sendUserMessage(ctx, entities, peer, fmt.Sprintf("📥 *Download Queued!*\n\n📄 *File:* `%s`\n📏 *Size:* %s\n\nUse `/status` to monitor progress.", fileName, FormatFileSize(fileSize)))
 }

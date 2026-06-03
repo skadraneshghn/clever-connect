@@ -253,6 +253,8 @@ func (h *LeechHandler) SaveConfig(c *gin.Context) {
 		cfg.ProxyURL = input.ProxyURL
 		cfg.PremiumUserID = input.PremiumUserID
 		cfg.PremiumAPIKey = input.PremiumAPIKey
+		cfg.AutoUploadToTelegram = input.AutoUploadToTelegram
+		cfg.AutoUploadChatID = input.AutoUploadChatID
 		db.DB.Save(&cfg)
 	} else {
 		db.DB.Create(&input)

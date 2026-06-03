@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"clever-connect/internal/logger"
 
@@ -22,6 +23,36 @@ import (
 
 // QueueUploadJob is a callback registered by the scheduler engine to queue Telegram upload jobs.
 var QueueUploadJob func(filePath string, chatID int64) error
+
+// QueueDownloadJob is a callback registered by the scheduler engine to queue Telegram download jobs.
+var QueueDownloadJob func(chatID int64, messageID int, fileName string, fileSize int64) error
+
+type progressWriterAt struct {
+	writer     io.WriterAt
+	total      int64
+	downloaded int64
+	onProgress func(downloaded, total int64)
+	mu         sync.Mutex
+}
+
+func (p *progressWriterAt) WriteAt(b []byte, off int64) (int, error) {
+	n, err := p.writer.WriteAt(b, off)
+	if n > 0 {
+		p.mu.Lock()
+		p.downloaded += int64(n)
+		downloaded := p.downloaded
+		p.mu.Unlock()
+		if p.onProgress != nil {
+			p.onProgress(downloaded, p.total)
+		}
+	}
+	return n, err
+}
+
+// FormatFileSize formats file size in bytes to human-readable string.
+func FormatFileSize(bytes int64) string {
+	return formatFileSize(bytes)
+}
 
 // fileManagerRoot is the base directory for the server file manager.
 // This matches the FileHandler's rootDir in handlers/files.go.
@@ -386,7 +417,7 @@ func FastUploadFile(ctx context.Context, client *telegram.Client, filePath strin
 
 // FastDownloadFile downloads a file from Telegram using concurrent goroutines via the
 // gotd MTProto downloader. It streams chunks directly to the local filesystem.
-func FastDownloadFile(ctx context.Context, client *telegram.Client, fileLocation tg.InputFileLocationClass, destPath string, fileSize int64) error {
+func FastDownloadFile(ctx context.Context, client *telegram.Client, fileLocation tg.InputFileLocationClass, destPath string, fileSize int64, onProgress func(downloaded, total int64)) error {
 	api := tg.NewClient(client)
 	threads := calculateOptimalThreads(fileSize)
 
@@ -402,7 +433,26 @@ func FastDownloadFile(ctx context.Context, client *telegram.Client, fileLocation
 		return fmt.Errorf("failed to create download directory: %w", err)
 	}
 
-	_, err := dl.Download(api, fileLocation).ToPath(ctx, destPath)
+	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open destination file: %w", err)
+	}
+	defer f.Close()
+
+	if err := f.Truncate(fileSize); err != nil {
+		logger.Warn("Telegram", "Failed to preallocate file space", "error", err)
+	}
+
+	var writer io.WriterAt = f
+	if onProgress != nil {
+		writer = &progressWriterAt{
+			writer:     f,
+			total:      fileSize,
+			onProgress: onProgress,
+		}
+	}
+
+	_, err = dl.Download(api, fileLocation).WithThreads(threads).Parallel(ctx, writer)
 	if err != nil {
 		return fmt.Errorf("parallel download failed: %w", err)
 	}

@@ -440,6 +440,350 @@ func resolveInputPeer(ctx context.Context, api *tg.Client, chatID int64) (tg.Inp
 	return &tg.InputPeerChat{ChatID: absID}, nil
 }
 
+// TelegramDownloadPayload represents the JSON payload for a Telegram download job.
+type TelegramDownloadPayload struct {
+	ChatID    int64 `json:"chat_id"`
+	MessageID int   `json:"message_id"`
+}
+
+// getMessage retrieves a specific message from Telegram by its ID.
+func (e *Engine) getMessage(ctx context.Context, api *tg.Client, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
+	var messagesSlice []tg.MessageClass
+
+	switch p := peer.(type) {
+	case *tg.InputPeerChannel:
+		channelInput := &tg.InputChannel{
+			ChannelID:  p.ChannelID,
+			AccessHash: p.AccessHash,
+		}
+		res, err := api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: channelInput,
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		switch val := res.(type) {
+		case *tg.MessagesMessagesSlice:
+			messagesSlice = val.Messages
+		case *tg.MessagesMessages:
+			messagesSlice = val.Messages
+		case *tg.MessagesChannelMessages:
+			messagesSlice = val.Messages
+		}
+	default:
+		res, err := api.MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}})
+		if err != nil {
+			return nil, err
+		}
+		switch val := res.(type) {
+		case *tg.MessagesMessagesSlice:
+			messagesSlice = val.Messages
+		case *tg.MessagesMessages:
+			messagesSlice = val.Messages
+		}
+	}
+
+	if len(messagesSlice) == 0 {
+		return nil, fmt.Errorf("message not found")
+	}
+
+	msg, ok := messagesSlice[0].(*tg.Message)
+	if !ok {
+		return nil, fmt.Errorf("not a message type")
+	}
+
+	return msg, nil
+}
+
+// RunTelegramDownloadJob executes a parallel multi-connection file download from Telegram.
+func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn func(level, message string)) error {
+	logFn("INFO", "Telegram download job started")
+
+	var payload TelegramDownloadPayload
+	if err := json.Unmarshal([]byte(job.Payload), &payload); err != nil {
+		return fmt.Errorf("invalid payload: %w", err)
+	}
+
+	eng := GetEngine()
+	if eng == nil {
+		return fmt.Errorf("telegram bot engine is not initialized or running")
+	}
+
+
+	if eng.gotdClient == nil {
+		return fmt.Errorf("MTProto client is not initialized")
+	}
+
+	api := tg.NewClient(eng.gotdClient)
+
+	// 1. Resolve peer
+	peer, err := resolveInputPeer(eng.gotdCtx, api, payload.ChatID)
+	if err != nil {
+		return fmt.Errorf("failed to resolve peer for chat ID: %w", err)
+	}
+
+	// 2. Fetch the Telegram message containing the file
+	logFn("INFO", fmt.Sprintf("Fetching message ID %d from chat %d", payload.MessageID, payload.ChatID))
+	msg, err := eng.getMessage(eng.gotdCtx, api, peer, payload.MessageID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch message: %w", err)
+	}
+
+	// 3. Inspect message media
+	if msg.Media == nil {
+		return fmt.Errorf("message does not contain any media/file")
+	}
+
+	var fileLocation tg.InputFileLocationClass
+	var fileSize int64
+	var fileName string
+	var hasFile bool
+
+	switch media := msg.Media.(type) {
+	case *tg.MessageMediaDocument:
+		if doc, ok := media.Document.(*tg.Document); ok {
+			fileSize = doc.Size
+			hasFile = true
+			fileLocation = &tg.InputDocumentFileLocation{
+				ID:            doc.ID,
+				AccessHash:    doc.AccessHash,
+				FileReference: doc.FileReference,
+			}
+			for _, attr := range doc.Attributes {
+				if fAttr, ok := attr.(*tg.DocumentAttributeFilename); ok {
+					fileName = fAttr.FileName
+					break
+				}
+			}
+			if fileName == "" {
+				ext := "bin"
+				if mimeType := doc.MimeType; mimeType != "" {
+					if exts, err := mime.ExtensionsByType(mimeType); err == nil && len(exts) > 0 {
+						ext = strings.TrimPrefix(exts[0], ".")
+					}
+				}
+				fileName = fmt.Sprintf("document_%d.%s", doc.ID, ext)
+			}
+		}
+	case *tg.MessageMediaPhoto:
+		if photo, ok := media.Photo.(*tg.Photo); ok {
+			hasFile = true
+			fileName = fmt.Sprintf("photo_%d.jpg", photo.ID)
+			fileLocation = &tg.InputPhotoFileLocation{
+				ID:            photo.ID,
+				AccessHash:    photo.AccessHash,
+				FileReference: photo.FileReference,
+				ThumbSize:     "x",
+			}
+			for _, size := range photo.Sizes {
+				switch s := size.(type) {
+				case *tg.PhotoSize:
+					if s.Size > int(fileSize) {
+						fileSize = int64(s.Size)
+					}
+				case *tg.PhotoSizeProgressive:
+					if len(s.Sizes) > 0 {
+						last := s.Sizes[len(s.Sizes)-1]
+						if last > int(fileSize) {
+							fileSize = int64(last)
+						}
+					}
+				}
+			}
+			if fileSize == 0 {
+				fileSize = 1024 * 1024
+			}
+		}
+	}
+
+	if !hasFile || fileLocation == nil {
+		return fmt.Errorf("no downloadable document or photo found in message media")
+	}
+
+	// 4. Determine save path
+	relPath := filepath.Join("Downloads/telegram/files", fileName)
+	safePath, err := securePath(relPath)
+	if err != nil {
+		return fmt.Errorf("invalid save path: %w", err)
+	}
+
+	logFn("INFO", fmt.Sprintf("Downloading %s (size %s) to %s", fileName, FormatFileSize(fileSize), safePath))
+
+	// 5. Send initial progress message
+	var progressMsg *tele.Message
+	var pMsgID int
+	pBar := makeProgressBar(0, 20)
+	initialText := fmt.Sprintf("📥 *Starting Download*\n\n📄 *File:* `%s`\n📏 *Size:* %s\n\n%s `0%%`",
+		fileName, FormatFileSize(fileSize), pBar)
+
+	if eng.Bot != nil {
+		msg, err := eng.Bot.Send(tele.ChatID(payload.ChatID), initialText, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+		if err != nil {
+			logFn("WARN", fmt.Sprintf("Failed to send initial download progress message to Telegram: %v", err))
+		} else {
+			progressMsg = msg
+		}
+	} else {
+		sender := message.NewSender(api)
+		htmlText := mdToHTML(initialText)
+		msg, err := sender.To(peer).StyledText(eng.gotdCtx, html.String(nil, htmlText))
+		if err == nil {
+			if upd, ok := msg.(*tg.UpdateShortSentMessage); ok {
+				pMsgID = upd.ID
+			} else if updates, ok := msg.(*tg.Updates); ok {
+				for _, u := range updates.Updates {
+					if newMessage, ok := u.(*tg.UpdateNewMessage); ok {
+						pMsgID = newMessage.Message.GetID()
+						break
+					}
+				}
+			}
+		} else {
+			logFn("WARN", fmt.Sprintf("Failed to send initial progress message to Telegram (MTProto): %v", err))
+		}
+	}
+
+	// 6. Download with progress callback
+	lastUpdate := time.Now()
+	startTime := time.Now()
+
+	err = FastDownloadFile(eng.gotdCtx, eng.gotdClient, fileLocation, safePath, fileSize, func(downloaded, total int64) {
+		percent := int(100 * float64(downloaded) / float64(total))
+		if percent > 100 {
+			percent = 100
+		}
+
+		// Update job progress in database
+		db.DB.Model(job).Updates(map[string]interface{}{
+			"progress": percent,
+			"message":  fmt.Sprintf("Downloading: %s / %s (%d%%)", FormatFileSize(downloaded), FormatFileSize(total), percent),
+		})
+
+		// Throttle updates
+		if time.Since(lastUpdate) > 1500*time.Millisecond {
+			lastUpdate = time.Now()
+			elapsed := time.Since(startTime).Seconds()
+			speed := 0.0
+			if elapsed > 0 {
+				speed = float64(downloaded) / elapsed / (1024 * 1024) // MB/s
+			}
+			pBar := makeProgressBar(percent, 20)
+			progressText := fmt.Sprintf(
+				"📥 *Downloading File*\n\n"+
+					"📄 *File:* `%s`\n"+
+					"📏 *Downloaded:* %s of %s (%d%%)\n"+
+					"⚡ *Speed:* %.2f MB/s\n\n"+
+					"%s",
+				fileName,
+				FormatFileSize(downloaded),
+				FormatFileSize(total),
+				percent,
+				speed,
+				pBar,
+			)
+
+			if progressMsg != nil && eng.Bot != nil {
+				_, _ = eng.Bot.Edit(progressMsg, progressText, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+			} else if pMsgID != 0 {
+				htmlText := mdToHTML(progressText)
+				_, _ = api.MessagesEditMessage(eng.gotdCtx, &tg.MessagesEditMessageRequest{
+					Peer:    peer,
+					ID:      pMsgID,
+					Message: htmlText,
+				})
+			}
+		}
+	})
+
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to download file: %v", err)
+		if progressMsg != nil && eng.Bot != nil {
+			_, _ = eng.Bot.Edit(progressMsg, fmt.Sprintf("❌ *Download Failed*\n\nReason: %s", errMsg), &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+		} else if pMsgID != 0 {
+			_, _ = api.MessagesEditMessage(eng.gotdCtx, &tg.MessagesEditMessageRequest{
+				Peer:    peer,
+				ID:      pMsgID,
+				Message: fmt.Sprintf("❌ <b>Download Failed</b>\n\nReason: %s", errMsg),
+			})
+		}
+		return err
+	}
+
+	// 7. Success! Generate download URL
+	appCfg := config.LoadConfig()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"username": "admin",
+		"role":     "admin",
+		"exp":      time.Now().Add(7 * 24 * time.Hour).Unix(),
+	})
+	tokenString, err := token.SignedString(appCfg.JWTSecret)
+	if err != nil {
+		logFn("WARN", fmt.Sprintf("Failed to sign JWT download token: %v", err))
+	}
+
+	var absoluteDownloadURL string
+	downloadPath := fmt.Sprintf("/api/files/stream?path=%s&download=true", url.QueryEscape(relPath))
+	if tokenString != "" {
+		downloadPath += fmt.Sprintf("&token=%s", url.QueryEscape(tokenString))
+	}
+
+	var ehcoCfg models.EhcoClientConfig
+	if err := db.DB.First(&ehcoCfg).Error; err == nil && ehcoCfg.RemoteURL != "" {
+		domain := ehcoCfg.RemoteURL
+		domain = strings.Replace(domain, "wss://", "https://", 1)
+		domain = strings.Replace(domain, "ws://", "http://", 1)
+		domain = strings.TrimSuffix(domain, "/ws")
+		domain = strings.TrimSuffix(domain, "/tunnel")
+		domain = strings.TrimSuffix(domain, "/")
+		absoluteDownloadURL = fmt.Sprintf("%s%s", domain, downloadPath)
+	} else {
+		absoluteDownloadURL = fmt.Sprintf("https://ondata.ir%s", downloadPath)
+	}
+
+	successText := fmt.Sprintf(
+		"✅ *Download Completed!*\n\n"+
+			"📄 *File Name:* `%s`\n"+
+			"📏 *File Size:* `%s`\n"+
+			"📁 *Saved Path:* `%s`\n\n"+
+			"⚡ _Powered by CleverConnect Job Scheduler_",
+		fileName,
+		FormatFileSize(fileSize),
+		relPath,
+	)
+
+	logFn("INFO", "File downloaded successfully. Updating Telegram message with download link...")
+
+	if progressMsg != nil && eng.Bot != nil {
+		kb := &tele.ReplyMarkup{}
+		btn := kb.URL("📥 Download Direct Link", absoluteDownloadURL)
+		kb.Inline(kb.Row(btn))
+		_, _ = eng.Bot.Edit(progressMsg, successText, &tele.SendOptions{ParseMode: tele.ModeMarkdown, ReplyMarkup: kb})
+	} else if pMsgID != 0 {
+		kbMarkup := &tg.ReplyInlineMarkup{
+			Rows: []tg.KeyboardButtonRow{
+				{
+					Buttons: []tg.KeyboardButtonClass{
+						&tg.KeyboardButtonURL{
+							Text: "📥 Download Direct Link",
+							URL:  absoluteDownloadURL,
+						},
+					},
+				},
+			},
+		}
+		htmlText := mdToHTML(successText)
+		_, _ = api.MessagesEditMessage(eng.gotdCtx, &tg.MessagesEditMessageRequest{
+			Peer:        peer,
+			ID:          pMsgID,
+			Message:     htmlText,
+			ReplyMarkup: kbMarkup,
+		})
+	}
+
+	return nil
+}
+
 // makeProgressBar creates a sleek visual progress bar
 func makeProgressBar(percent int, width int) string {
 	completed := percent * width / 100

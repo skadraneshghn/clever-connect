@@ -100,6 +100,28 @@ func Init() {
 			return err
 		}
 
+		// Initialize QueueDownloadJob in telegram package
+		telegram.QueueDownloadJob = func(chatID int64, messageID int, fileName string, fileSize int64) error {
+			payload := telegram.TelegramDownloadPayload{
+				ChatID:    chatID,
+				MessageID: messageID,
+			}
+			payloadBytes, err := json.Marshal(payload)
+			if err != nil {
+				return err
+			}
+			_, err = Engine.SubmitJob(
+				"telegram_download",
+				fmt.Sprintf("Download %s", fileName),
+				fmt.Sprintf("Parallel download of %s (size %s) from Telegram", fileName, telegram.FormatFileSize(fileSize)),
+				"download",
+				5,
+				string(payloadBytes),
+				"",
+			)
+			return err
+		}
+
 		// Register auto-upload callback for the downloader bridge
 		downloader.RegisterAutoUploadFunc(func(filePath string, chatID int64) error {
 			payload := telegram.TelegramUploadPayload{
@@ -767,6 +789,11 @@ func (s *Scheduler) registerBuiltinJobs() {
 	// Telegram parallel multi-connection file upload
 	s.RegisterJob("telegram_upload", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
 		return telegram.RunTelegramUploadJob(ctx, job, logFn)
+	})
+
+	// Telegram parallel multi-connection file download
+	s.RegisterJob("telegram_download", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
+		return telegram.RunTelegramDownloadJob(ctx, job, logFn)
 	})
 }
 
