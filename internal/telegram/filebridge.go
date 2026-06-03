@@ -1,7 +1,10 @@
 package telegram
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"math"
 	"mime"
 	"os"
 	"path/filepath"
@@ -10,6 +13,10 @@ import (
 
 	"clever-connect/internal/logger"
 
+	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/downloader"
+	"github.com/gotd/td/telegram/uploader"
+	"github.com/gotd/td/tg"
 	tele "gopkg.in/telebot.v4"
 )
 
@@ -297,4 +304,127 @@ func formatFileSize(bytes int64) string {
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}
+}
+
+// ──────────────────────────────────────────────────────────────
+// High-Performance MTProto Transfer Functions
+// Inspired by devgagantools ParallelTransferrer
+// ──────────────────────────────────────────────────────────────
+
+// calculateOptimalThreads determines the optimal number of concurrent upload/download
+// goroutines based on file size. This mirrors devgagantools' get_appropriated_part_size logic:
+//   - Files < 100MB  → 1 thread  (no parallelism needed)
+//   - Files 100-500MB → 4 threads
+//   - Files 500MB-1GB → 8 threads
+//   - Files 1-2GB    → 16 threads
+//   - Files > 2GB    → 20 threads (maximum for MTProto)
+func calculateOptimalThreads(fileSize int64) int {
+	const (
+		MB100 = 100 * 1024 * 1024
+		MB500 = 500 * 1024 * 1024
+		GB1   = 1024 * 1024 * 1024
+		GB2   = 2 * GB1
+	)
+
+	switch {
+	case fileSize < MB100:
+		return 1
+	case fileSize < MB500:
+		return 4
+	case fileSize < GB1:
+		return 8
+	case fileSize < GB2:
+		return 16
+	default:
+		// Cap at 20 — the practical limit before Telegram rate-limits
+		threads := int(math.Ceil(float64(fileSize) / float64(MB100)))
+		if threads > 20 {
+			threads = 20
+		}
+		return threads
+	}
+}
+
+// FastUploadFile uploads a file using concurrent goroutines via the gotd MTProto uploader.
+// It automatically calculates optimal threads based on file size.
+// The progress parameter is optional — pass nil to skip progress tracking.
+func FastUploadFile(ctx context.Context, client *telegram.Client, filePath string, progress uploader.Progress) (tg.InputFileClass, error) {
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("file not found: %w", err)
+	}
+
+	threads := calculateOptimalThreads(info.Size())
+	api := tg.NewClient(client)
+
+	up := uploader.NewUploader(api).
+		WithThreads(threads).
+		WithPartSize(512 * 1024) // 512KB chunks — maximum for speed
+
+	if progress != nil {
+		up = up.WithProgress(progress)
+	}
+
+	logger.Info("Telegram", "Starting fast parallel upload",
+		"file", filepath.Base(filePath),
+		"size", formatFileSize(info.Size()),
+		"threads", threads,
+	)
+
+	inputFile, err := up.FromPath(ctx, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("parallel upload failed: %w", err)
+	}
+
+	logger.Info("Telegram", "Fast parallel upload completed",
+		"file", filepath.Base(filePath),
+		"threads", threads,
+	)
+
+	return inputFile, nil
+}
+
+// FastDownloadFile downloads a file from Telegram using concurrent goroutines via the
+// gotd MTProto downloader. It streams chunks directly to the local filesystem.
+func FastDownloadFile(ctx context.Context, client *telegram.Client, fileLocation tg.InputFileLocationClass, destPath string, fileSize int64) error {
+	api := tg.NewClient(client)
+	threads := calculateOptimalThreads(fileSize)
+
+	dl := downloader.NewDownloader().WithPartSize(512 * 1024)
+
+	logger.Info("Telegram", "Starting fast parallel download",
+		"dest", filepath.Base(destPath),
+		"threads", threads,
+	)
+
+	// Ensure destination directory exists
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("failed to create download directory: %w", err)
+	}
+
+	_, err := dl.Download(api, fileLocation).ToPath(ctx, destPath)
+	if err != nil {
+		return fmt.Errorf("parallel download failed: %w", err)
+	}
+
+	logger.Info("Telegram", "Fast parallel download completed", "dest", filepath.Base(destPath))
+	return nil
+}
+
+// ProgressReader wraps an io.Reader to track bytes read and report progress.
+// This is useful for streaming uploads with real-time progress bars in the Web UI.
+type ProgressReader struct {
+	Reader    io.Reader
+	Total     int64
+	Read_     int64
+	OnUpdate  func(bytesRead, totalBytes int64) // Called periodically
+}
+
+func (pr *ProgressReader) Read(p []byte) (int, error) {
+	n, err := pr.Reader.Read(p)
+	pr.Read_ += int64(n)
+	if pr.OnUpdate != nil {
+		pr.OnUpdate(pr.Read_, pr.Total)
+	}
+	return n, err
 }

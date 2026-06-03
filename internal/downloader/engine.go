@@ -22,7 +22,25 @@ import (
 var (
 	Manager  *Engine
 	initOnce sync.Once
+
+	// autoUploadFunc is a callback registered by the scheduler to queue Telegram upload jobs.
+	autoUploadFunc func(filePath string, chatID int64) error
+	autoUploadMu   sync.RWMutex
 )
+
+// RegisterAutoUploadFunc registers a callback that the downloader calls when a
+// leech job completes and auto-upload to Telegram is enabled.
+func RegisterAutoUploadFunc(fn func(filePath string, chatID int64) error) {
+	autoUploadMu.Lock()
+	defer autoUploadMu.Unlock()
+	autoUploadFunc = fn
+}
+
+func getAutoUploadFunc() func(filePath string, chatID int64) error {
+	autoUploadMu.RLock()
+	defer autoUploadMu.RUnlock()
+	return autoUploadFunc
+}
 
 // getAbsoluteSavePath resolves any relative or absolute download folder path
 // to ensure it is sandboxed and located inside the File Manager's root folder ("./data/manager")
@@ -342,6 +360,34 @@ func (e *Engine) monitorProgress(resp *grab.Response, jobID string, ctx context.
 				"error_message": errMsg,
 				"filename":      finalName,
 			})
+
+			// Auto-upload to Telegram if enabled and download succeeded
+			if status == "completed" {
+				var leechCfg models.LeechConfig
+				if err := db.DB.First(&leechCfg).Error; err == nil && leechCfg.AutoUploadToTelegram {
+					absSaveDir := getAbsoluteSavePath(job.SaveDirectory)
+					destPath := filepath.Join(absSaveDir, finalName)
+
+					// Convert absolute path to relative path within file manager sandbox
+					absBase, _ := filepath.Abs("./data/manager")
+					relPath := strings.TrimPrefix(destPath, absBase)
+					if relPath == "" {
+						relPath = "/"
+					}
+
+					// Use the registered QueueUploadJob callback from the scheduler
+					if queueFn := getAutoUploadFunc(); queueFn != nil {
+						chatID := leechCfg.AutoUploadChatID
+						if err := queueFn(relPath, chatID); err != nil {
+							logger.Error("Downloader", "Failed to queue auto-upload to Telegram",
+								"id", jobID, "file", finalName, "error", err)
+						} else {
+							logger.Info("Downloader", "Auto-upload queued to Telegram",
+								"id", jobID, "file", finalName, "chat_id", chatID)
+						}
+					}
+				}
+			}
 
 			e.mu.Lock()
 			delete(e.activeJobs, jobID)

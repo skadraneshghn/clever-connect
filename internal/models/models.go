@@ -63,13 +63,15 @@ type EhcoClientConfig struct {
 // LeechConfig stores the advanced settings for the download manager
 type LeechConfig struct {
 	gorm.Model
-	DefaultSavePath string `json:"default_save_path" gorm:"default:'/downloads'"`
-	MaxConcurrent   int    `json:"max_concurrent" gorm:"default:3"`
-	ThreadsPerJob   int    `json:"threads_per_job" gorm:"default:8"`
-	UserAgent       string `json:"user_agent" gorm:"default:'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0'"`
-	ProxyURL        string `json:"proxy_url"` // Optional HTTP/SOCKS5 proxy
-	PremiumUserID   string `json:"premium_user_id"`
-	PremiumAPIKey   string `json:"premium_api_key"`
+	DefaultSavePath     string `json:"default_save_path" gorm:"default:'/downloads'"`
+	MaxConcurrent       int    `json:"max_concurrent" gorm:"default:3"`
+	ThreadsPerJob       int    `json:"threads_per_job" gorm:"default:8"`
+	UserAgent           string `json:"user_agent" gorm:"default:'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0'"`
+	ProxyURL            string `json:"proxy_url"`           // Optional HTTP/SOCKS5 proxy
+	PremiumUserID       string `json:"premium_user_id"`
+	PremiumAPIKey       string `json:"premium_api_key"`
+	AutoUploadToTelegram bool  `json:"auto_upload_to_telegram" gorm:"default:false"` // Auto-upload completed downloads to Telegram
+	AutoUploadChatID    int64  `json:"auto_upload_chat_id"`                          // Target chat ID for auto-uploads (0 = first admin)
 }
 
 // LeechJob tracks individual remote download tasks

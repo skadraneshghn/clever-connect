@@ -17,7 +17,6 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gotd/td/telegram"
-	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/html"
 	"github.com/gotd/td/telegram/message/styling"
@@ -179,239 +178,189 @@ func RunTelegramUploadJob(ctx context.Context, job *models.SchedulerJob, logFn f
 		}
 	}
 
-	sessionDir := filepath.Join(fileManagerRoot, ".telegram")
-	_ = os.MkdirAll(sessionDir, 0755)
-	var sessionPath string
-	if cfg.AuthType == "user" {
-		sessionPath = filepath.Join(sessionDir, "session.json")
-	} else {
-		sessionPath = filepath.Join(sessionDir, "session_bot.json")
+	// Reuse the engine's already-running MTProto client instead of creating a new one.
+	// This eliminates cold auth handshakes and halves connection overhead.
+	if eng.gotdClient == nil {
+		return fmt.Errorf("MTProto client is not initialized — cannot upload via MTProto")
 	}
-
-	appID := cfg.AppID
-	if appID == 0 {
-		appID = PublicAppID
-	}
-	appHash := cfg.AppHash
-	if appHash == "" {
-		appHash = PublicAppHash
-	}
-
-	opts := telegram.Options{
-		SessionStorage: &telegram.FileSessionStorage{
-			Path: sessionPath,
-		},
-	}
-	if cfg.MTProtoServer != "" {
-		if strings.Contains(cfg.MTProtoServer, "149.154.167.40") || strings.Contains(strings.ToLower(cfg.MTProtoServer), "test") {
-			opts.DCList = dcs.Test()
-		}
-	}
-
-	// Start gotd client to execute the parallel upload via MTProto
-	client := telegram.NewClient(appID, appHash, opts)
 
 	var mediaSentErr error
 	var pPeer tg.InputPeerClass
 	var pMsgID int
 
-	runErr := client.Run(ctx, func(ctx context.Context) error {
-		api := tg.NewClient(client)
+	// The engine's gotdClient is already running inside client.Run().
+	// We can use the engine's gotdCtx to execute API calls directly.
+	api := tg.NewClient(eng.gotdClient)
 
-		// Auth status
-		status, err := client.Auth().Status(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get auth status: %w", err)
-		}
+	peer, err := resolveInputPeer(eng.gotdCtx, api, chatID)
+	if err != nil {
+		return fmt.Errorf("failed to resolve peer for chat ID: %w", err)
+	}
+	pPeer = peer
 
-		if !status.Authorized {
-			if cfg.AuthType == "user" {
-				return fmt.Errorf("user account session is not authenticated")
-			}
-			logFn("INFO", "Authenticating bot with MTProto servers...")
-			if _, err := client.Auth().Bot(ctx, cfg.BotToken); err != nil {
-				return fmt.Errorf("bot authentication failed: %w", err)
-			}
-		}
+	if eng.Bot == nil {
+		// User mode: send initial progress message via MTProto client
+		pBar := makeProgressBar(0, 20)
+		initialText := fmt.Sprintf("📤 *Starting Upload*\n\n📄 *File:* `%s`\n📏 *Size:* %s\n\n%s `0%%`",
+			fileName, formatFileSize(info.Size()), pBar)
 
-		peer, err := resolveInputPeer(ctx, api, chatID)
-		if err != nil {
-			return fmt.Errorf("failed to resolve peer for chat ID: %w", err)
-		}
-		pPeer = peer
-
-		if eng.Bot == nil {
-			// User mode: send initial progress message via MTProto client
-			pBar := makeProgressBar(0, 20)
-			initialText := fmt.Sprintf("📤 *Starting Upload*\n\n📄 *File:* `%s`\n📏 *Size:* %s\n\n%s `0%%`",
-				fileName, formatFileSize(info.Size()), pBar)
-			
-			sender := message.NewSender(api)
-			htmlText := mdToHTML(initialText)
-			msg, err := sender.To(peer).StyledText(ctx, html.String(nil, htmlText))
-			if err == nil {
-				if upd, ok := msg.(*tg.UpdateShortSentMessage); ok {
-					pMsgID = upd.ID
-				} else if updates, ok := msg.(*tg.Updates); ok {
-					for _, u := range updates.Updates {
-						if newMessage, ok := u.(*tg.UpdateNewMessage); ok {
-							pMsgID = newMessage.Message.GetID()
-							break
-						}
+		sender := message.NewSender(api)
+		htmlText := mdToHTML(initialText)
+		msg, err := sender.To(peer).StyledText(eng.gotdCtx, html.String(nil, htmlText))
+		if err == nil {
+			if upd, ok := msg.(*tg.UpdateShortSentMessage); ok {
+				pMsgID = upd.ID
+			} else if updates, ok := msg.(*tg.Updates); ok {
+				for _, u := range updates.Updates {
+					if newMessage, ok := u.(*tg.UpdateNewMessage); ok {
+						pMsgID = newMessage.Message.GetID()
+						break
 					}
 				}
-			} else {
-				logFn("WARN", fmt.Sprintf("Failed to send initial progress message to Telegram (MTProto): %v", err))
 			}
-		}
-
-		// Initialize uploader with 1 thread for stable single-connection uploading
-		threads := 1
-		
-		// Initialize uploader progress tracker
-		progressTracker := &uploadProgress{
-			job:         job,
-			eng:         eng,
-			progressMsg: progressMsg,
-			fileName:    fileName,
-			startTime:   time.Now(),
-			lastUpdate:  time.Now(),
-			threads:     threads,
-			logFn:       logFn,
-			gotdClient:  client,
-			gotdPeer:    peer,
-			gotdMsgID:   pMsgID,
-		}
-
-		up := uploader.NewUploader(api).WithThreads(threads).WithProgress(progressTracker)
-
-		logFn("INFO", "Uploading file to Telegram servers...")
-		inputFile, err := up.FromPath(ctx, safePath)
-		if err != nil {
-			return fmt.Errorf("file upload failed: %w", err)
-		}
-
-		// Generate a JWT download token for the direct download button
-		appCfg := config.LoadConfig()
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-			"username": "admin",
-			"role":     "admin",
-			"exp":      time.Now().Add(7 * 24 * time.Hour).Unix(),
-		})
-		tokenString, err := token.SignedString(appCfg.JWTSecret)
-		if err != nil {
-			logFn("WARN", fmt.Sprintf("Failed to sign JWT download token: %v", err))
-		}
-
-		// Construct absolute download link
-		var absoluteDownloadURL string
-		downloadPath := fmt.Sprintf("/api/files/stream?path=%s&download=true", url.QueryEscape(payload.FilePath))
-		if tokenString != "" {
-			downloadPath += fmt.Sprintf("&token=%s", url.QueryEscape(tokenString))
-		}
-
-		// Determine base host from Ehco config
-		var ehcoCfg models.EhcoClientConfig
-		if err := db.DB.First(&ehcoCfg).Error; err == nil && ehcoCfg.RemoteURL != "" {
-			domain := ehcoCfg.RemoteURL
-			domain = strings.Replace(domain, "wss://", "https://", 1)
-			domain = strings.Replace(domain, "ws://", "http://", 1)
-			domain = strings.TrimSuffix(domain, "/ws")
-			domain = strings.TrimSuffix(domain, "/tunnel")
-			domain = strings.TrimSuffix(domain, "/")
-			absoluteDownloadURL = fmt.Sprintf("%s%s", domain, downloadPath)
 		} else {
-			// Fall back to public domain
-			absoluteDownloadURL = fmt.Sprintf("https://ondata.ir%s", downloadPath)
+			logFn("WARN", fmt.Sprintf("Failed to send initial progress message to Telegram (MTProto): %v", err))
 		}
+	}
 
-		logFn("INFO", "Assembling media post...")
-		ext := strings.ToLower(filepath.Ext(fileName))
-		caption := fmt.Sprintf("🎬 *CleverConnect Professional Share*\n\n"+
-			"📄 *File Name:* `%s`\n"+
-			"📏 *File Size:* `%s`\n"+
-			"🕒 *Uploaded At:* `%s`\n\n"+
-			"⚡ _Powered by CleverConnect Job Scheduler_",
-			fileName,
-			formatFileSize(info.Size()),
-			time.Now().Format("2006-01-02 15:04:05"),
-		)
+	// Use dynamic thread count based on file size (devgagantools-style)
+	threads := calculateOptimalThreads(info.Size())
 
-		var mediaOption message.MediaOption
-		mimeType := mime.TypeByExtension(ext)
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
-		}
+	// Initialize uploader progress tracker
+	progressTracker := &uploadProgress{
+		job:         job,
+		eng:         eng,
+		progressMsg: progressMsg,
+		fileName:    fileName,
+		startTime:   time.Now(),
+		lastUpdate:  time.Now(),
+		threads:     threads,
+		logFn:       logFn,
+		gotdClient:  eng.gotdClient,
+		gotdPeer:    peer,
+		gotdMsgID:   pMsgID,
+	}
 
-		switch ext {
-		case ".jpg", ".jpeg", ".png", ".gif":
-			mediaOption = message.UploadedPhoto(inputFile, styling.Plain(caption))
-		case ".mp4":
-			doc := message.UploadedDocument(inputFile, styling.Plain(caption))
-			mediaOption = doc.MIME("video/mp4").Filename(fileName).Video().SupportsStreaming()
-		case ".mp3", ".m4a":
-			doc := message.UploadedDocument(inputFile, styling.Plain(caption))
-			mediaOption = doc.MIME(mimeType).Filename(fileName).Audio()
-		case ".ogg", ".opus":
-			doc := message.UploadedDocument(inputFile, styling.Plain(caption))
-			mediaOption = doc.MIME(mimeType).Filename(fileName).Audio().Voice()
-		default:
-			doc := message.UploadedDocument(inputFile, styling.Plain(caption))
-			doc.MIME(mimeType).Filename(fileName)
-			mediaOption = doc
-		}
+	logFn("INFO", fmt.Sprintf("Uploading file with %d parallel threads...", threads))
+	inputFile, err := FastUploadFile(eng.gotdCtx, eng.gotdClient, safePath, progressTracker)
+	if err != nil {
+		return fmt.Errorf("file upload failed: %w", err)
+	}
 
-		// Send media post — only attach download button if URL is a valid public HTTPS link
-		sender := message.NewSender(api)
+	// Generate a JWT download token for the direct download button
+	appCfg := config.LoadConfig()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"username": "admin",
+		"role":     "admin",
+		"exp":      time.Now().Add(7 * 24 * time.Hour).Unix(),
+	})
+	tokenString, err := token.SignedString(appCfg.JWTSecret)
+	if err != nil {
+		logFn("WARN", fmt.Sprintf("Failed to sign JWT download token: %v", err))
+	}
 
-		if strings.HasPrefix(absoluteDownloadURL, "https://") {
-			kbMarkup := &tg.ReplyInlineMarkup{
-				Rows: []tg.KeyboardButtonRow{
-					{
-						Buttons: []tg.KeyboardButtonClass{
-							&tg.KeyboardButtonURL{
-								Text: "📥 Download Direct Link",
-								URL:  absoluteDownloadURL,
-							},
+	// Construct absolute download link
+	var absoluteDownloadURL string
+	downloadPath := fmt.Sprintf("/api/files/stream?path=%s&download=true", url.QueryEscape(payload.FilePath))
+	if tokenString != "" {
+		downloadPath += fmt.Sprintf("&token=%s", url.QueryEscape(tokenString))
+	}
+
+	// Determine base host from Ehco config
+	var ehcoCfg models.EhcoClientConfig
+	if err := db.DB.First(&ehcoCfg).Error; err == nil && ehcoCfg.RemoteURL != "" {
+		domain := ehcoCfg.RemoteURL
+		domain = strings.Replace(domain, "wss://", "https://", 1)
+		domain = strings.Replace(domain, "ws://", "http://", 1)
+		domain = strings.TrimSuffix(domain, "/ws")
+		domain = strings.TrimSuffix(domain, "/tunnel")
+		domain = strings.TrimSuffix(domain, "/")
+		absoluteDownloadURL = fmt.Sprintf("%s%s", domain, downloadPath)
+	} else {
+		// Fall back to public domain
+		absoluteDownloadURL = fmt.Sprintf("https://ondata.ir%s", downloadPath)
+	}
+
+	logFn("INFO", "Assembling media post...")
+	ext := strings.ToLower(filepath.Ext(fileName))
+	caption := fmt.Sprintf("🎬 *CleverConnect Professional Share*\n\n"+
+		"📄 *File Name:* `%s`\n"+
+		"📏 *File Size:* `%s`\n"+
+		"🕒 *Uploaded At:* `%s`\n\n"+
+		"⚡ _Powered by CleverConnect Job Scheduler_",
+		fileName,
+		formatFileSize(info.Size()),
+		time.Now().Format("2006-01-02 15:04:05"),
+	)
+
+	var mediaOption message.MediaOption
+	mimeType := mime.TypeByExtension(ext)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif":
+		mediaOption = message.UploadedPhoto(inputFile, styling.Plain(caption))
+	case ".mp4":
+		doc := message.UploadedDocument(inputFile, styling.Plain(caption))
+		mediaOption = doc.MIME("video/mp4").Filename(fileName).Video().SupportsStreaming()
+	case ".mp3", ".m4a":
+		doc := message.UploadedDocument(inputFile, styling.Plain(caption))
+		mediaOption = doc.MIME(mimeType).Filename(fileName).Audio()
+	case ".ogg", ".opus":
+		doc := message.UploadedDocument(inputFile, styling.Plain(caption))
+		mediaOption = doc.MIME(mimeType).Filename(fileName).Audio().Voice()
+	default:
+		doc := message.UploadedDocument(inputFile, styling.Plain(caption))
+		doc.MIME(mimeType).Filename(fileName)
+		mediaOption = doc
+	}
+
+	// Send media post — only attach download button if URL is a valid public HTTPS link
+	sender := message.NewSender(api)
+
+	if strings.HasPrefix(absoluteDownloadURL, "https://") {
+		kbMarkup := &tg.ReplyInlineMarkup{
+			Rows: []tg.KeyboardButtonRow{
+				{
+					Buttons: []tg.KeyboardButtonClass{
+						&tg.KeyboardButtonURL{
+							Text: "📥 Download Direct Link",
+							URL:  absoluteDownloadURL,
 						},
 					},
 				},
-			}
-			_, mediaSentErr = sender.To(peer).Markup(kbMarkup).Media(ctx, mediaOption)
-		} else {
-			_, mediaSentErr = sender.To(peer).Media(ctx, mediaOption)
+			},
 		}
+		_, mediaSentErr = sender.To(peer).Markup(kbMarkup).Media(eng.gotdCtx, mediaOption)
+	} else {
+		_, mediaSentErr = sender.To(peer).Media(eng.gotdCtx, mediaOption)
+	}
 
-		if mediaSentErr != nil {
-			return fmt.Errorf("failed to send media post: %w", mediaSentErr)
-		}
-
-		logFn("INFO", "Media post sent successfully. Cleaning up progress message...")
-		if progressMsg != nil && eng.Bot != nil {
-			_ = eng.Bot.Delete(progressMsg)
-		} else if pMsgID != 0 {
-			_, _ = api.MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
-				ID:     []int{pMsgID},
-				Revoke: true,
-			})
-		}
-
-		return nil
-	})
-
-	if runErr != nil {
+	if mediaSentErr != nil {
 		// Attempt to update the progress message with error
+		errMsg := fmt.Sprintf("failed to send media post: %v", mediaSentErr)
 		if progressMsg != nil && eng.Bot != nil {
-			_, _ = eng.Bot.Edit(progressMsg, fmt.Sprintf("❌ *Parallel Upload Failed*\n\nReason: %s", runErr.Error()), &tele.SendOptions{ParseMode: tele.ModeMarkdown})
-		} else if pMsgID != 0 && eng.gotdClient != nil && pPeer != nil {
-			api := tg.NewClient(eng.gotdClient)
-			_, _ = api.MessagesEditMessage(ctx, &tg.MessagesEditMessageRequest{
+			_, _ = eng.Bot.Edit(progressMsg, fmt.Sprintf("❌ *Upload Failed*\n\nReason: %s", errMsg), &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+		} else if pMsgID != 0 && pPeer != nil {
+			_, _ = api.MessagesEditMessage(eng.gotdCtx, &tg.MessagesEditMessageRequest{
 				Peer:    pPeer,
 				ID:      pMsgID,
-				Message: fmt.Sprintf("❌ <b>Parallel Upload Failed</b>\n\nReason: %s", runErr.Error()),
+				Message: fmt.Sprintf("❌ <b>Upload Failed</b>\n\nReason: %s", errMsg),
 			})
 		}
-		return runErr
+		return fmt.Errorf("%s", errMsg)
+	}
+
+	logFn("INFO", "Media post sent successfully. Cleaning up progress message...")
+	if progressMsg != nil && eng.Bot != nil {
+		_ = eng.Bot.Delete(progressMsg)
+	} else if pMsgID != 0 {
+		_, _ = api.MessagesDeleteMessages(eng.gotdCtx, &tg.MessagesDeleteMessagesRequest{
+			ID:     []int{pMsgID},
+			Revoke: true,
+		})
 	}
 
 	return nil

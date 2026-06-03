@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"clever-connect/internal/db"
+	"clever-connect/internal/downloader"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/telegram"
@@ -98,6 +99,28 @@ func Init() {
 			)
 			return err
 		}
+
+		// Register auto-upload callback for the downloader bridge
+		downloader.RegisterAutoUploadFunc(func(filePath string, chatID int64) error {
+			payload := telegram.TelegramUploadPayload{
+				FilePath: filePath,
+				ChatID:   chatID,
+			}
+			payloadBytes, err := json.Marshal(payload)
+			if err != nil {
+				return err
+			}
+			_, err = Engine.SubmitJob(
+				"telegram_upload",
+				fmt.Sprintf("Auto-Upload %s", filepath.Base(filePath)),
+				fmt.Sprintf("Auto-upload of %s to Telegram after download completed", filepath.Base(filePath)),
+				"files",
+				5,
+				string(payloadBytes),
+				"",
+			)
+			return err
+		})
 
 		// Reset stale "running" jobs from a previous crash
 		db.DB.Model(&models.SchedulerJob{}).
