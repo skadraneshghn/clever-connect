@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -306,6 +307,12 @@ func (h *TorrentHandler) SelectTorrentFiles(c *gin.Context) {
 						f.Cancel()
 					}
 				}
+
+				// Persist file selection to database
+				if selBytes, err := json.Marshal(input.SelectedFiles); err == nil {
+					db.DB.Model(&models.TorrentJob{}).Where("info_hash = ?", input.InfoHash).Update("selected_files", string(selBytes))
+				}
+
 				c.JSON(http.StatusOK, gin.H{"status": "priorities_updated"})
 				return
 			default:

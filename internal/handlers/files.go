@@ -349,22 +349,29 @@ func (h *FileHandler) StreamOrDownload(c *gin.Context) {
 		return
 	}
 
-	// 1. Check if the file is part of an active torrent and can be streamed live!
+	// Set high-performance HTTP streaming headers
+	c.Header("Accept-Ranges", "bytes")
+	c.Header("Connection", "keep-alive")
+	c.Header("Cache-Control", "public, max-age=3600")
+
+	// 1. Check if the file is part of an active torrent and is still downloading!
 	if tFile, found := h.findActiveTorrentFile(safePath); found {
-		if c.Query("download") == "true" {
-			c.Header("Content-Disposition", "attachment; filename=\""+filepath.Base(safePath)+"\"")
+		if tFile.BytesCompleted() < tFile.Length() {
+			if c.Query("download") == "true" {
+				c.Header("Content-Disposition", "attachment; filename=\""+filepath.Base(safePath)+"\"")
+			}
+
+			reader := tFile.NewReader()
+			reader.SetReadahead(32 * 1024 * 1024) // 32MB aggressive read-ahead buffer for zero stuttering
+			defer reader.Close()
+
+			// Stream content using the torrent client's reader
+			http.ServeContent(c.Writer, c.Request, filepath.Base(safePath), time.Now(), reader)
+			return
 		}
-
-		reader := tFile.NewReader()
-		defer reader.Close()
-
-		// Stream content using the torrent client's reader!
-		// It supports range seeking, so HLS/MP4 seek and fast download works!
-		http.ServeContent(c.Writer, c.Request, filepath.Base(safePath), time.Now(), reader)
-		return
 	}
 
-	// 2. Fall back to standard disk file streaming
+	// 2. Fall back to standard disk file streaming (either non-torrent file, or fully completed torrent file)
 	file, err := os.Open(safePath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})

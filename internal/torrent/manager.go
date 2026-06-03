@@ -1,6 +1,7 @@
 package torrent
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -166,9 +167,10 @@ func Init() error {
 					Manager.InjectTrackers(t)
 					if job.Status == "paused" {
 						t.DisallowDataDownload()
+						go Manager.ApplyFilePriorities(t, job.SelectedFiles)
 					} else {
 						t.AllowDataDownload()
-						t.DownloadAll()
+						go Manager.ApplyFilePriorities(t, job.SelectedFiles)
 					}
 				}
 			} else if job.TorrentPath != "" {
@@ -180,9 +182,10 @@ func Init() error {
 							Manager.InjectTrackers(t)
 							if job.Status == "paused" {
 								t.DisallowDataDownload()
+								go Manager.ApplyFilePriorities(t, job.SelectedFiles)
 							} else {
 								t.AllowDataDownload()
-								t.DownloadAll()
+								go Manager.ApplyFilePriorities(t, job.SelectedFiles)
 							}
 						}
 					}
@@ -535,4 +538,34 @@ func copyFile(src, dst string) error {
 // Client returns the underlying client instance
 func (m *TorrentManager) Client() *torrent.Client {
 	return m.client
+}
+
+// ApplyFilePriorities parses the selected files JSON string and sets the torrent file priorities
+func (m *TorrentManager) ApplyFilePriorities(t *torrent.Torrent, selectedFilesJSON string) {
+	<-t.GotInfo()
+
+	if selectedFilesJSON == "" || selectedFilesJSON == "null" {
+		t.DownloadAll()
+		return
+	}
+
+	var selectedIndices []int
+	if err := json.Unmarshal([]byte(selectedFilesJSON), &selectedIndices); err != nil {
+		t.DownloadAll()
+		return
+	}
+
+	files := t.Files()
+	selectedIndexMap := make(map[int]bool)
+	for _, idx := range selectedIndices {
+		selectedIndexMap[idx] = true
+	}
+
+	for i, f := range files {
+		if selectedIndexMap[i] {
+			f.Download()
+		} else {
+			f.Cancel()
+		}
+	}
 }

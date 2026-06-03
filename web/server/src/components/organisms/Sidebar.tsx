@@ -48,6 +48,16 @@ const navItems = [
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isCollapsed, setIsCollapsed }) => {
   const username = localStorage.getItem('cc_client_username') || 'salman';
 
+  const [openMenu, setOpenMenu] = React.useState<string | null>(() => {
+    const matched = navItems.find(item => item.children && item.children.some(c => c.id === activeTab));
+    return matched ? matched.id : null;
+  });
+
+  React.useEffect(() => {
+    const matched = navItems.find(item => item.children && item.children.some(c => c.id === activeTab));
+    setOpenMenu(matched ? matched.id : null);
+  }, [activeTab]);
+
   return (
     <aside className={`sidebar ${isCollapsed ? 'sidebar--collapsed' : ''}`}>
       {/* Header */}
@@ -91,7 +101,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isCol
               <item.icon className="nav-icon" />
               {!isCollapsed && <span>{item.label}</span>}
             </div>
-            {!isCollapsed && item.children && item.children.length > 0 && (
+            {!isCollapsed && item.children && item.children.length > 0 && openMenu === item.id && (
               <div className="sidebar__submenu">
                 {item.children.map((child) => (
                   <div

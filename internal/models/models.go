@@ -104,6 +104,7 @@ type TorrentJob struct {
 	DownloadSpeed float64   `json:"download_speed"` // MB/s
 	UploadSpeed   float64   `json:"upload_speed"`   // MB/s
 	Peers         int       `json:"peers"`
+	SelectedFiles string    `gorm:"type:text" json:"selected_files"` // JSON array of selected file indices
 	ErrorMessage  string    `json:"error_message"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
