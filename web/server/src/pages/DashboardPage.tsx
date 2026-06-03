@@ -118,39 +118,6 @@ export const DashboardPage: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <SystemMonitor />
           
-          {/* Active Clients */}
-          <div className="g-card" style={{ padding: 0 }}>
-            <div style={{ padding: '18px 20px 0' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Active Clients</div>
-                  <div style={{ fontSize: 12, color: 'var(--color-brand-text)' }}>Track connected users across your nodes.</div>
-                </div>
-              </div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', marginBottom: 8 }}>Top Connected Users</div>
-            </div>
-            <div style={{ padding: '0 20px 16px' }}>
-              {clients.map((c, i) => (
-                <div key={c.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: i < clients.length - 1 ? '1px solid var(--color-brand-border)' : 'none' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-muted)', width: 16 }}>#{i + 1}</span>
-                    <span style={{ fontSize: 18 }}>{c.flag}</span>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>{c.username}</div>
-                      <div style={{ fontSize: 10, color: 'var(--color-brand-muted)' }}>{c.protocol}</div>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>↘{c.downloadSpeed.toFixed(1)} MB/s</div>
-                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                      <button onClick={() => disconnectClient(c.id)} style={{ fontSize: 9, padding: '2px 6px', border: '1px solid var(--color-brand-border)', borderRadius: 4, background: '#fff', cursor: 'pointer' }}>Kick</button>
-                      <button onClick={() => blockClient(c.id)} style={{ fontSize: 9, padding: '2px 6px', border: '1px solid var(--color-brand-border)', borderRadius: 4, background: '#fff', cursor: 'pointer' }}>Block</button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
 
           {/* System Specs & Allocation */}
           <div className="g-card">

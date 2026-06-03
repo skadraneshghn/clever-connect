@@ -620,6 +620,22 @@ export const FilesPage: React.FC = () => {
 	const [sortBy, setSortBy] = useState<'name' | 'size' | 'time' | 'type'>('name');
 	const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
+	// Context Menu State
+	const [contextMenu, setContextMenu] = useState<{
+		visible: boolean;
+		x: number;
+		y: number;
+		file: FileItem | null;
+	}>({ visible: false, x: 0, y: 0, file: null });
+
+	useEffect(() => {
+		const handleWindowClick = () => {
+			setContextMenu(prev => prev.visible ? { ...prev, visible: false } : prev);
+		};
+		window.addEventListener('click', handleWindowClick);
+		return () => window.removeEventListener('click', handleWindowClick);
+	}, []);
+
 	// Multi-Selection State
 	const [selectedItems, setSelectedItems] = useState<string[]>([]);
 
@@ -959,7 +975,50 @@ export const FilesPage: React.FC = () => {
 		setShowShareModal(true);
 	};
 
+	// Context menu handlers
+	const handleContextMenu = (e: React.MouseEvent, file: FileItem) => {
+		e.preventDefault();
+		if (!selectedItems.includes(file.name)) {
+			setSelectedItems([file.name]);
+		}
+		setContextMenu({
+			visible: true,
+			x: e.clientX,
+			y: e.clientY,
+			file
+		});
+	};
 
+	const handleSendToTelegram = async (file: FileItem) => {
+		const targetPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+		try {
+			const res = await fetch('/api/telegram/send-file', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${token}`
+				},
+				body: JSON.stringify({ file_path: targetPath })
+			});
+			if (res.ok) {
+				const data = await res.json();
+				alert(`Upload job queued in scheduler! Job ID: ${data.job_id}`);
+			} else {
+				const errData = await res.json();
+				alert(`Failed to send to Telegram: ${errData.error}`);
+			}
+		} catch (err: any) {
+			alert(`Error sending file to Telegram: ${err.message}`);
+		}
+	};
+
+	const handleCopySingle = (file: FileItem) => {
+		setClipboard({ action: 'copy', srcParent: currentPath, items: [file] });
+	};
+
+	const handleCutSingle = (file: FileItem) => {
+		setClipboard({ action: 'cut', srcParent: currentPath, items: [file] });
+	};
 
 	// Create Folder
 	const handleCreateFolder = async (e: React.FormEvent) => {
@@ -1470,6 +1529,7 @@ export const FilesPage: React.FC = () => {
 										}}
 										onClick={() => handleItemClick(file)}
 										onDoubleClick={() => handleItemDoubleClick(file)}
+										onContextMenu={(e) => handleContextMenu(e, file)}
 										className="file-card-hover"
 									>
 										{/* Selection Checkbox */}
@@ -1533,6 +1593,7 @@ export const FilesPage: React.FC = () => {
 										}}
 										onClick={() => handleItemClick(file)}
 										onDoubleClick={() => handleItemDoubleClick(file)}
+										onContextMenu={(e) => handleContextMenu(e, file)}
 										className="file-row-hover"
 									>
 										<input 
@@ -2253,6 +2314,98 @@ export const FilesPage: React.FC = () => {
 				</div>
 			)}
 
+			{contextMenu.visible && contextMenu.file && (
+				<div 
+					style={{
+						position: 'fixed',
+						top: contextMenu.y,
+						left: contextMenu.x,
+						background: 'var(--color-brand-card, #1e1e2d)',
+						border: '1px solid var(--color-brand-border, #2b2b40)',
+						borderRadius: 8,
+						boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
+						zIndex: 100000,
+						padding: '4px 0',
+						minWidth: 180,
+						fontFamily: 'system-ui, sans-serif'
+					}}
+					onClick={(e) => e.stopPropagation()}
+				>
+					{contextMenu.file.is_dir ? (
+						<div 
+							className="context-menu-item" 
+							onClick={() => { navigateTo(contextMenu.file!.name); setContextMenu({ ...contextMenu, visible: false }); }}
+							style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+						>
+							<FiFolder size={14} style={{ color: '#eab308' }} /> Open Folder
+						</div>
+					) : (
+						<div 
+							className="context-menu-item" 
+							onClick={() => { openPreview(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+							style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+						>
+							<FiZoomIn size={14} style={{ color: 'var(--color-brand, #3b82f6)' }} /> Preview File
+						</div>
+					)}
+					
+					{!contextMenu.file.is_dir && (
+						<>
+							<div 
+								className="context-menu-item" 
+								onClick={() => { handleSendToTelegram(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+								style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+							>
+								<FiShare2 size={14} style={{ color: '#10b981' }} /> Send to Telegram Bot
+							</div>
+							<div 
+								className="context-menu-item" 
+								onClick={() => { handleShareLink(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+								style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+							>
+								<FiDownload size={14} style={{ color: '#a855f7' }} /> Get Download Link
+							</div>
+						</>
+					)}
+
+					<div style={{ height: 1, background: 'var(--color-brand-border, #2b2b40)', margin: '4px 0' }} />
+
+					<div 
+						className="context-menu-item" 
+						onClick={() => { handleRename(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+						style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+					>
+						<FiEdit3 size={14} /> Rename
+					</div>
+
+					<div 
+						className="context-menu-item" 
+						onClick={() => { handleCopySingle(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+						style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+					>
+						<FiCopy size={14} /> Copy
+					</div>
+
+					<div 
+						className="context-menu-item" 
+						onClick={() => { handleCutSingle(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+						style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+					>
+						<FiScissors size={14} /> Cut
+					</div>
+
+					<div style={{ height: 1, background: 'var(--color-brand-border, #2b2b40)', margin: '4px 0' }} />
+
+					<div 
+						className="context-menu-item" 
+						onClick={() => { handleDelete(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+						style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: '#ef4444' }}
+					>
+						<FiTrash2 size={14} /> Delete
+					</div>
+				</div>
+			)}
+
 			<style>{`
 				.spin-anim {
 					animation: spin 1s linear infinite;
@@ -2268,6 +2421,9 @@ export const FilesPage: React.FC = () => {
 				.file-row-hover:hover {
 					background: rgba(99, 102, 241, 0.02) !important;
 					border-color: var(--color-brand-border) !important;
+				}
+				.context-menu-item:hover {
+					background: rgba(99, 102, 241, 0.08) !important;
 				}
 			`}</style>
 		</div>

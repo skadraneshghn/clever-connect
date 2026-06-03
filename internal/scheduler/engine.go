@@ -11,6 +11,7 @@ import (
 	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
+	"clever-connect/internal/telegram"
 
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
@@ -714,6 +715,11 @@ func (s *Scheduler) registerBuiltinJobs() {
 		logFn("INFO", fmt.Sprintf("Custom task executing: %s", job.Description))
 		db.DB.Model(job).Update("progress", 100)
 		return nil
+	})
+
+	// Telegram parallel multi-connection file upload
+	s.RegisterJob("telegram_upload", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
+		return telegram.RunTelegramUploadJob(ctx, job, logFn)
 	})
 }
 

@@ -1,14 +1,18 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
+	"clever-connect/internal/scheduler"
 	"clever-connect/internal/telegram"
 
 	"github.com/gin-gonic/gin"
@@ -335,9 +339,34 @@ func (h *TelegramHandler) SendFile(c *gin.Context) {
 		return
 	}
 
-	eng.Dispatch(func() {
-		logger.Info("Telegram", "Sending file via API", "path", req.FilePath)
+	// Prepare payload for job scheduler
+	payloadBytes, err := json.Marshal(map[string]interface{}{
+		"file_path": req.FilePath,
+		"chat_id":   req.ChatID,
 	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize upload payload"})
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "File send dispatched"})
+	// Submit job to enterprise job scheduler
+	job, err := scheduler.Engine.SubmitJob(
+		"telegram_upload",
+		fmt.Sprintf("Telegram Upload: %s", filepath.Base(req.FilePath)),
+		fmt.Sprintf("Parallel upload of %s to Telegram", req.FilePath),
+		"files", // category
+		5,       // priority
+		string(payloadBytes),
+		"",      // cronExpr
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue upload job in scheduler: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "File upload job queued in scheduler",
+		"job_id":  job.ID,
+	})
 }

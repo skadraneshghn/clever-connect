@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"clever-connect/internal/db"
+	"clever-connect/internal/downloader"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
@@ -88,6 +89,25 @@ func (e *Engine) registerCommands() {
 			e.errors.Load(),
 			e.Bot.Me.Username,
 		)
+
+		// Fetch active downloads
+		var activeDownloads []models.LeechJob
+		if err := db.DB.Where("status = ?", "downloading").Find(&activeDownloads).Error; err == nil && len(activeDownloads) > 0 {
+			stats += "\n\n📥 *Active Downloads:*"
+			for _, job := range activeDownloads {
+				stats += fmt.Sprintf("\n• `%s`: %.1f%% (⚡ %.1f MB/s)", job.Filename, job.Progress, job.Speed)
+			}
+		}
+
+		// Fetch active uploads (telegram parallel uploads)
+		var activeUploads []models.SchedulerJob
+		if err := db.DB.Where("job_type = ? AND status = ?", "telegram_upload", "running").Find(&activeUploads).Error; err == nil && len(activeUploads) > 0 {
+			stats += "\n\n📤 *Active Uploads:*"
+			for _, job := range activeUploads {
+				stats += fmt.Sprintf("\n• `%s`: %d%%", job.Name, job.Progress)
+			}
+		}
+
 		return c.Send(stats, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
 	})
 
@@ -196,8 +216,59 @@ func (e *Engine) registerCommands() {
 		logger.Warn("Telegram", "Failed to set bot commands menu", "error", err)
 	}
 
+	// ────────────────── OnText Message Handler (Admin only) ──────────────────
+	e.Bot.Handle(tele.OnText, e.AdminOnly(func(c tele.Context) error {
+		e.messagesProcessed.Add(1)
+		text := strings.TrimSpace(c.Text())
+		if text == "" {
+			return nil
+		}
+
+		// Ignore standard slash commands
+		if strings.HasPrefix(text, "/") {
+			return nil
+		}
+
+		// Extract any URL starting with http:// or https://
+		var downloadURL string
+		for _, word := range strings.Fields(text) {
+			if strings.HasPrefix(word, "http://") || strings.HasPrefix(word, "https://") {
+				downloadURL = word
+				break
+			}
+		}
+
+		if downloadURL != "" {
+			return e.handleDownloadLink(c, downloadURL)
+		}
+
+		return c.Send("ℹ️ Send a valid HTTP/HTTPS link to download it directly to the server file manager.")
+	}))
+
 	// Seed default Telegram config if none exists
 	seedTelegramConfig()
+}
+
+// handleDownloadLink queues a file download from a given URL via the download manager.
+func (e *Engine) handleDownloadLink(c tele.Context, downloadURL string) error {
+	if downloader.Manager == nil {
+		return c.Send("❌ Downloader engine is not running on the server.")
+	}
+
+	jobID, err := downloader.Manager.AddJob(
+		downloadURL,
+		"",    // default save directory
+		"",    // extract filename from URL
+		"",    // username
+		"",    // password
+		4,     // threads
+		false, // usePremium
+	)
+	if err != nil {
+		return c.Send("❌ Failed to queue download: " + err.Error())
+	}
+
+	return c.Send(fmt.Sprintf("📥 *Download Queued!*\n\nJob ID: `%s`\nLink: %s\n\nUse `/status` to monitor the download progress.", jobID, downloadURL), &tele.SendOptions{ParseMode: tele.ModeMarkdown})
 }
 
 // seedTelegramConfig ensures a default config row exists in the database.
