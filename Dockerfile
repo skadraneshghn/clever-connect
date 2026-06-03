@@ -31,12 +31,11 @@ RUN mkdir -p web/client/dist && touch web/client/dist/index.html
 # Copy the rest of the Go codebase
 COPY . .
 
-# Compile Go backend binary with embedded SPA assets
-RUN go build --ldflags '-extldflags "-Wl,--allow-multiple-definition"' -o bin/clever-connect main.go
+# Compile Go backend binary with embedded SPA assets (optimizing RAM usage with concurrency limit)
+RUN CGO_ENABLED=0 GOGC=50 go build -p 1 -ldflags "-s -w" -o bin/clever-connect main.go
 
-# Populate go.sum dependencies and compile Ehco
-RUN go get github.com/Ehco1996/ehco/cmd/ehco && \
-    go build --ldflags '-extldflags "-Wl,--allow-multiple-definition"' -o bin/ehco github.com/Ehco1996/ehco/cmd/ehco
+# Compile Ehco binary directly
+RUN CGO_ENABLED=0 GOGC=50 go build -p 1 -ldflags "-s -w" -o bin/ehco github.com/Ehco1996/ehco/cmd/ehco
 
 # ==========================================
 # STAGE 3: MINIMAL RUNTIME CONTAINER

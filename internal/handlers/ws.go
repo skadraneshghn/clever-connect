@@ -1,12 +1,20 @@
 package handlers
 
 import (
+	"encoding/json"
 	"math/rand"
 	"net/http"
+	"runtime"
+	"strings"
 	"time"
 
 	"clever-connect/internal/config"
+	"clever-connect/internal/db"
+	"clever-connect/internal/downloader"
 	"clever-connect/internal/logger"
+	"clever-connect/internal/models"
+	"clever-connect/internal/torrent"
+	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -77,10 +85,19 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 				}
 			} else {
 				// Server Telemetry
-				cpu := rand.Intn(20) + 15
-				memory := 44 + rand.Intn(4) - 2
-				disk := 18
-				conns := 4
+				sysStats := GetSystemStatsData()
+				cpu := int(sysStats.CPUPercent)
+				memory := int(sysStats.MemPercent)
+				disk := int(sysStats.DiskPercent)
+
+				var activeLeechCount int64
+				db.DB.Model(&models.LeechJob{}).Where("status = ?", "downloading").Count(&activeLeechCount)
+
+				var activeTorrentCount int64
+				db.DB.Model(&models.TorrentJob{}).Count(&activeTorrentCount)
+
+				var activeSchedulerCount int64
+				db.DB.Model(&models.SchedulerJob{}).Where("status = ?", "running").Count(&activeSchedulerCount)
 
 				downloadSpeed := float64(rand.Intn(120) + 40) // Combined node aggregate speed
 				uploadSpeed := float64(rand.Intn(40) + 10)
@@ -96,16 +113,42 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 				}
 
 				msg = gin.H{
-					"type":          "telemetry",
-					"cpu":           cpu,
-					"memory":        memory,
-					"disk":          disk,
-					"connsCount":    conns,
-					"uploadSpeed":   uploadSpeed,
-					"downloadSpeed": downloadSpeed,
-					"totalDownload": totalDownload,
-					"totalUpload":   totalUpload,
-					"clients":       clients,
+					"type":                  "telemetry",
+					"cpu":                   cpu,
+					"memory":                memory,
+					"disk":                  disk,
+					"connsCount":            len(clients),
+					"uploadSpeed":           uploadSpeed,
+					"downloadSpeed":         downloadSpeed,
+					"totalDownload":         totalDownload,
+					"totalUpload":           totalUpload,
+					"clients":               clients,
+					"cpu_cores_percent":     sysStats.CPUCoresPercent,
+					"cpu_mhz":               sysStats.CPUMhz,
+					"mem_total_gb":          sysStats.MemTotalGB,
+					"mem_used_gb":           sysStats.MemUsedGB,
+					"mem_free_gb":           sysStats.MemFreeGB,
+					"swap_total_gb":         sysStats.SwapTotalGB,
+					"swap_used_gb":          sysStats.SwapUsedGB,
+					"swap_percent":          sysStats.SwapPercent,
+					"disk_total_gb":         sysStats.DiskTotalGB,
+					"disk_used_gb":          sysStats.DiskUsedGB,
+					"disk_free_gb":          sysStats.DiskFreeGB,
+					"disk_read_bytes_sec":   sysStats.DiskReadBytesSec,
+					"disk_write_bytes_sec":  sysStats.DiskWriteBytesSec,
+					"net_recv_bytes_sec":    sysStats.NetRecvBytesSec,
+					"net_sent_bytes_sec":    sysStats.NetSentBytesSec,
+					"cpu_temp":              sysStats.CPUTemp,
+					"uptime_seconds":        sysStats.UptimeSeconds,
+					"boot_time":             sysStats.BootTime,
+					"os_platform":           sysStats.OSPlatform,
+					"os_kernel":             sysStats.OSKernel,
+					"app_mem_mb":            sysStats.AppMemMB,
+					"go_version":            runtime.Version(),
+					"os_runtime":            runtime.GOOS,
+					"active_leeches":        activeLeechCount,
+					"active_torrents":       activeTorrentCount,
+					"active_scheds":         activeSchedulerCount,
 				}
 			}
 
@@ -127,6 +170,186 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 					"totalDown", totalDownload,
 					"totalUp", totalUpload,
 				)
+			}
+		}
+	}
+}
+
+// ServeWSJobs upgraded stream sending and receiving torrent + leech jobs data
+func (h *WSHandler) ServeWSJobs(c *gin.Context) {
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		logger.Error("WS", "WebSocket jobs upgrade failed",
+			"error", err.Error(),
+			"ip", c.ClientIP(),
+		)
+		return
+	}
+	defer conn.Close()
+
+	logger.Info("WS", "Jobs WebSocket connection established",
+		"mode", h.cfg.AppMode,
+		"ip", c.ClientIP(),
+	)
+
+	if h.cfg.AppMode == "client" {
+		// --- CLIENT MODE: PIPE/PROXY TO SERVER ---
+		var remoteURLTarget string
+		var remoteToken string
+		if h.cfg.ServerURL != "" {
+			remoteURLTarget = h.cfg.ServerURL
+			remoteToken = h.cfg.ServerAuthToken
+		} else {
+			var clientCfg models.EhcoClientConfig
+			if err := db.DB.First(&clientCfg).Error; err != nil || clientCfg.RemoteURL == "" {
+				logger.Warn("WS", "No remote server connection configured for jobs proxy")
+				return
+			}
+			remoteURLTarget = clientCfg.RemoteURL
+			remoteToken = clientCfg.AuthToken
+		}
+
+		// Convert http/https to ws/wss if needed
+		remoteWS := remoteURLTarget
+		remoteWS = strings.Replace(remoteWS, "https://", "wss://", 1)
+		remoteWS = strings.Replace(remoteWS, "http://", "ws://", 1)
+		if idx := strings.Index(remoteWS, "/ws"); idx != -1 {
+			remoteWS = remoteWS[:idx]
+		}
+		if idx := strings.Index(remoteWS, "/tunnel"); idx != -1 {
+			remoteWS = remoteWS[:idx]
+		}
+		remoteWS = strings.TrimSuffix(remoteWS, "/")
+		remoteWS += "/ws/jobs?token=" + remoteToken
+
+		// Dial remote server websocket
+		serverConn, _, err := websocket.DefaultDialer.Dial(remoteWS, nil)
+		if err != nil {
+			logger.Error("WS", "Failed to connect to remote server jobs WebSocket", "error", err.Error())
+			return
+		}
+		defer serverConn.Close()
+
+		// Run bidirectional piping
+		errChan := make(chan error, 2)
+		
+		// Copy client -> server
+		go func() {
+			for {
+				msgType, message, err := conn.ReadMessage()
+				if err != nil {
+					errChan <- err
+					return
+				}
+				err = serverConn.WriteMessage(msgType, message)
+				if err != nil {
+					errChan <- err
+					return
+				}
+			}
+		}()
+
+		// Copy server -> client
+		go func() {
+			for {
+				msgType, message, err := serverConn.ReadMessage()
+				if err != nil {
+					errChan <- err
+					return
+				}
+				err = conn.WriteMessage(msgType, message)
+				if err != nil {
+					errChan <- err
+					return
+				}
+			}
+		}()
+
+		// Wait for error/closure
+		<-errChan
+		return
+	}
+
+	// --- SERVER MODE: REAL BUSINESS LOGIC ---
+	// 1. Reader loop to handle incoming actions/commands
+	go func() {
+		for {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			var cmd struct {
+				Action      string `json:"action"`
+				InfoHash    string `json:"info_hash,omitempty"`
+				JobID       string `json:"job_id,omitempty"`
+				DeleteFiles bool   `json:"delete_files,omitempty"`
+			}
+			if err := json.Unmarshal(message, &cmd); err != nil {
+				continue
+			}
+
+			switch cmd.Action {
+			case "pause_torrent":
+				if cmd.InfoHash != "" && torrent.Manager != nil {
+					torrent.Manager.PauseTorrent(cmd.InfoHash)
+				}
+			case "resume_torrent":
+				if cmd.InfoHash != "" && torrent.Manager != nil {
+					torrent.Manager.ResumeTorrent(cmd.InfoHash)
+				}
+			case "delete_torrent":
+				if cmd.InfoHash != "" && torrent.Manager != nil {
+					torrent.Manager.DeleteTorrent(cmd.InfoHash, cmd.DeleteFiles)
+				}
+			case "pause_leech":
+				if cmd.JobID != "" && downloader.Manager != nil {
+					downloader.Manager.PauseJob(cmd.JobID)
+				}
+			case "resume_leech":
+				if cmd.JobID != "" {
+					_ = db.DB.Model(&models.LeechJob{}).Where("id = ?", cmd.JobID).Update("status", "pending")
+				}
+			case "delete_leech":
+				if cmd.JobID != "" && downloader.Manager != nil {
+					downloader.Manager.DeleteJob(cmd.JobID, cmd.DeleteFiles)
+				}
+			case "cancel_youtube":
+				if cmd.JobID != "" && youtube.Manager != nil {
+					youtube.Manager.PauseJob(cmd.JobID)
+				}
+			case "delete_youtube":
+				if cmd.JobID != "" && youtube.Manager != nil {
+					youtube.Manager.DeleteJob(cmd.JobID, cmd.DeleteFiles)
+				}
+			}
+		}
+	}()
+
+	// 2. Ticker loop to push live updates of both lists (every 1 second for seamless fluidity)
+	ticker := time.NewTicker(1000 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			var torrentList []models.TorrentJob
+			var leechList []models.LeechJob
+			var youtubeList []models.YouTubeJob
+
+			// Fetch lists from database
+			_ = db.DB.Order("created_at desc").Find(&torrentList)
+			_ = db.DB.Order("created_at desc").Find(&leechList)
+			_ = db.DB.Order("created_at desc").Find(&youtubeList)
+
+			response := gin.H{
+				"torrents":    torrentList,
+				"leechJobs":   leechList,
+				"youtubeJobs": youtubeList,
+			}
+
+			if err := conn.WriteJSON(response); err != nil {
+				return
 			}
 		}
 	}

@@ -1,0 +1,875 @@
+package telegram
+
+import (
+	"context"
+	"fmt"
+	"mime"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"time"
+
+	"clever-connect/internal/db"
+	"clever-connect/internal/downloader"
+	"clever-connect/internal/logger"
+	"clever-connect/internal/models"
+
+	"github.com/gotd/td/telegram/message"
+	"github.com/gotd/td/telegram/message/html"
+	"github.com/gotd/td/telegram/message/styling"
+	"github.com/gotd/td/telegram/uploader"
+	"github.com/gotd/td/tg"
+	tele "gopkg.in/telebot.v4"
+)
+
+// registerCommands wires all bot commands and callback handlers.
+func (e *Engine) registerCommands() {
+
+	// ────────────────── /start ──────────────────
+	e.Bot.Handle("/start", func(c tele.Context) error {
+		e.commandsProcessed.Add(1)
+
+		// Register or activate subscriber
+		var sub models.TelegramSubscriber
+		if err := db.DB.Where("chat_id = ?", c.Chat().ID).First(&sub).Error; err != nil {
+			sub = models.TelegramSubscriber{
+				ChatID:    c.Chat().ID,
+				Username:  c.Sender().Username,
+				FirstName: c.Sender().FirstName,
+				Active:    true,
+			}
+			db.DB.Create(&sub)
+		} else {
+			db.DB.Model(&sub).Updates(map[string]interface{}{
+				"active":     true,
+				"username":   c.Sender().Username,
+				"first_name": c.Sender().FirstName,
+			})
+		}
+
+		e.mu.RLock()
+		welcome := e.Config.WelcomeMessage
+		e.mu.RUnlock()
+
+		if welcome == "" {
+			welcome = "👋 Welcome to *CleverConnect Bot*!\n\nUse /help to see available commands."
+		}
+
+		// Replace placeholders
+		welcome = strings.ReplaceAll(welcome, "{name}", c.Sender().FirstName)
+		welcome = strings.ReplaceAll(welcome, "{username}", c.Sender().Username)
+
+		return c.Send(welcome, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+	})
+
+	// ────────────────── /stop ──────────────────
+	e.Bot.Handle("/stop", func(c tele.Context) error {
+		e.commandsProcessed.Add(1)
+
+		var sub models.TelegramSubscriber
+		if err := db.DB.Where("chat_id = ?", c.Chat().ID).First(&sub).Error; err == nil {
+			db.DB.Model(&sub).Update("active", false)
+		}
+
+		return c.Send("❌ *You have stopped the bot.*\n\nYou will no longer receive system notification broadcasts. Use `/start` to resubscribe at any time.", &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+	})
+
+	// ────────────────── /help ──────────────────
+	e.Bot.Handle("/help", func(c tele.Context) error {
+		e.commandsProcessed.Add(1)
+
+		isAdmin := e.IsAdmin(c.Sender().ID)
+
+		help := "🤖 *CleverConnect Bot Commands*\n\n"
+		help += "📌 `/start` — Welcome message & subscribe\n"
+		help += "🛑 `/stop` — Unsubscribe from broadcasts\n"
+		help += "❓ `/help` — This help menu\n"
+		help += "📊 `/status` — Bot & server status\n"
+		help += "🆔 `/myid` — Get your Telegram user ID\n"
+
+		if isAdmin {
+			help += "\n🔐 *Admin Commands:*\n"
+			help += "📁 `/files` — Browse server files\n"
+			help += "⚙️ `/settings` — View bot configuration\n"
+			help += "🔄 `/reload` — Hot-reload config from DB\n"
+		}
+
+		return c.Send(help, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+	})
+
+	// ────────────────── /myid ──────────────────
+	e.Bot.Handle("/myid", func(c tele.Context) error {
+		e.commandsProcessed.Add(1)
+		msg := fmt.Sprintf("🆔 Your Telegram User ID: `%d`\n👤 Username: @%s",
+			c.Sender().ID, c.Sender().Username)
+		return c.Send(msg, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+	})
+
+	// ────────────────── /status ──────────────────
+	e.Bot.Handle("/status", func(c tele.Context) error {
+		e.commandsProcessed.Add(1)
+
+		uptime := time.Since(e.startedAt)
+		stats := fmt.Sprintf(
+			"📊 *CleverConnect Bot Status*\n\n"+
+				"🟢 *Status:* Online\n"+
+				"⏱ *Uptime:* %s\n"+
+				"🧵 *Workers:* %d (all CPU cores)\n"+
+				"📨 *Messages Processed:* %d\n"+
+				"⚡ *Commands Processed:* %d\n"+
+				"📁 *Files Sent:* %d\n"+
+				"❌ *Errors:* %d\n"+
+				"🤖 *Bot:* @%s",
+			formatUptime(uptime),
+			runtime.NumCPU(),
+			e.messagesProcessed.Load(),
+			e.commandsProcessed.Load(),
+			e.filesSent.Load(),
+			e.errors.Load(),
+			e.Bot.Me.Username,
+		)
+
+		// Fetch active downloads
+		var activeDownloads []models.LeechJob
+		if err := db.DB.Where("status = ?", "downloading").Find(&activeDownloads).Error; err == nil && len(activeDownloads) > 0 {
+			stats += "\n\n📥 *Active Downloads:*"
+			for _, job := range activeDownloads {
+				stats += fmt.Sprintf("\n• `%s`: %.1f%% (⚡ %.1f MB/s)", job.Filename, job.Progress, job.Speed)
+			}
+		}
+
+		// Fetch active uploads (telegram parallel uploads)
+		var activeUploads []models.SchedulerJob
+		if err := db.DB.Where("job_type = ? AND status = ?", "telegram_upload", "running").Find(&activeUploads).Error; err == nil && len(activeUploads) > 0 {
+			stats += "\n\n📤 *Active Uploads:*"
+			for _, job := range activeUploads {
+				stats += fmt.Sprintf("\n• `%s`: %d%%", job.Name, job.Progress)
+			}
+		}
+
+		return c.Send(stats, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+	})
+
+	// ────────────────── /settings (Admin only) ──────────────────
+	e.Bot.Handle("/settings", e.AdminOnly(func(c tele.Context) error {
+		e.commandsProcessed.Add(1)
+
+		e.mu.RLock()
+		cfg := e.Config
+		e.mu.RUnlock()
+
+		adminIDs := cfg.AdminUserIDs
+		if adminIDs == "" {
+			adminIDs = "(none configured)"
+		}
+
+		features := []string{}
+		if cfg.EnableFileSharing {
+			features = append(features, "📁 File Sharing")
+		}
+		if cfg.EnableNotifications {
+			features = append(features, "🔔 Notifications")
+		}
+		if len(features) == 0 {
+			features = append(features, "None enabled")
+		}
+
+		msg := fmt.Sprintf(
+			"⚙️ *Bot Configuration*\n\n"+
+				"🤖 *Bot Username:* @%s\n"+
+				"👥 *Admin IDs:* `%s`\n"+
+				"⏱ *Polling Interval:* %ds\n"+
+				"🎯 *Enabled Features:*\n%s\n"+
+				"📝 *Welcome Message:*\n_%s_",
+			e.Bot.Me.Username,
+			adminIDs,
+			cfg.PollingInterval,
+			strings.Join(features, "\n"),
+			truncate(cfg.WelcomeMessage, 100),
+		)
+		return c.Send(msg, &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+	}))
+
+	// ────────────────── /reload (Admin only) ──────────────────
+	e.Bot.Handle("/reload", e.AdminOnly(func(c tele.Context) error {
+		e.commandsProcessed.Add(1)
+
+		if err := e.ReloadConfig(); err != nil {
+			logger.Error("Telegram", "Config reload failed", "error", err)
+			return c.Send("❌ Failed to reload configuration: " + err.Error())
+		}
+		return c.Send("✅ Configuration reloaded successfully from database.")
+	}))
+
+	// ────────────────── /files (Admin only) ──────────────────
+	e.Bot.Handle("/files", e.AdminOnly(func(c tele.Context) error {
+		e.commandsProcessed.Add(1)
+		return e.handleFileBrowse(c, "/")
+	}))
+
+	// ────────────────── Callback query router (for inline keyboards) ──────────────────
+	e.Bot.Handle(tele.OnCallback, func(c tele.Context) error {
+		data := c.Callback().Data
+		logger.Info("Telegram", "Callback received", "data", data, "user_id", c.Sender().ID)
+
+		switch {
+		case strings.HasPrefix(data, "fb:"):
+			// File browser navigation
+			if !e.IsAdmin(c.Sender().ID) {
+				return c.Respond(&tele.CallbackResponse{Text: "⛔ Admin only"})
+			}
+			path := strings.TrimPrefix(data, "fb:")
+			return e.handleFileBrowse(c, path)
+
+		case strings.HasPrefix(data, "send:"):
+			// Send file to chat
+			if !e.IsAdmin(c.Sender().ID) {
+				return c.Respond(&tele.CallbackResponse{Text: "⛔ Admin only"})
+			}
+			filePath := strings.TrimPrefix(data, "send:")
+			// Dispatch file sending to worker pool for parallel processing
+			e.Dispatch(func() {
+				if err := e.sendFileToChat(c, filePath); err != nil {
+					logger.Error("Telegram", "Failed to send file", "path", filePath, "error", err)
+				}
+			})
+			return c.Respond(&tele.CallbackResponse{Text: "📤 Sending file..."})
+
+		default:
+			return c.Respond(&tele.CallbackResponse{Text: "Unknown action"})
+		}
+	})
+
+	// ────────────────── Register bot commands menu ──────────────────
+	commands := []tele.Command{
+		{Text: "start", Description: "Welcome message"},
+		{Text: "help", Description: "Show available commands"},
+		{Text: "status", Description: "Bot & server status"},
+		{Text: "myid", Description: "Get your Telegram user ID"},
+		{Text: "files", Description: "Browse server files (admin)"},
+		{Text: "settings", Description: "View bot config (admin)"},
+		{Text: "reload", Description: "Reload config from DB (admin)"},
+	}
+
+	if err := e.Bot.SetCommands(commands); err != nil {
+		logger.Warn("Telegram", "Failed to set bot commands menu", "error", err)
+	}
+
+	// ────────────────── OnText Message Handler (Admin only) ──────────────────
+	e.Bot.Handle(tele.OnText, e.AdminOnly(func(c tele.Context) error {
+		e.messagesProcessed.Add(1)
+		text := strings.TrimSpace(c.Text())
+		if text == "" {
+			return nil
+		}
+
+		// Ignore standard slash commands
+		if strings.HasPrefix(text, "/") {
+			return nil
+		}
+
+		// Extract any URL starting with http:// or https://
+		var downloadURL string
+		for _, word := range strings.Fields(text) {
+			if strings.HasPrefix(word, "http://") || strings.HasPrefix(word, "https://") {
+				downloadURL = word
+				break
+			}
+		}
+
+		if downloadURL != "" {
+			return e.handleDownloadLink(c, downloadURL)
+		}
+
+		return c.Send("ℹ️ Send a valid HTTP/HTTPS link to download it directly to the server file manager.")
+	}))
+
+	// Seed default Telegram config if none exists
+	seedTelegramConfig()
+}
+
+// handleDownloadLink queues a file download from a given URL via the download manager.
+func (e *Engine) handleDownloadLink(c tele.Context, downloadURL string) error {
+	if downloader.Manager == nil {
+		return c.Send("❌ Downloader engine is not running on the server.")
+	}
+
+	jobID, err := downloader.Manager.AddJob(
+		downloadURL,
+		"",    // default save directory
+		"",    // extract filename from URL
+		"",    // username
+		"",    // password
+		4,     // threads
+		false, // usePremium
+	)
+	if err != nil {
+		return c.Send("❌ Failed to queue download: " + err.Error())
+	}
+
+	return c.Send(fmt.Sprintf("📥 *Download Queued!*\n\nJob ID: `%s`\nLink: %s\n\nUse `/status` to monitor the download progress.", jobID, downloadURL), &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+}
+
+// seedTelegramConfig ensures a default config row exists in the database.
+func seedTelegramConfig() {
+	var cfg models.TelegramConfig
+	if err := db.DB.First(&cfg).Error; err != nil {
+		logger.Info("Telegram", "Seeding default Telegram bot configuration")
+		db.DB.Create(&models.TelegramConfig{
+			PollingInterval:     10,
+			MaxFileSize:         2000,
+			EnableFileSharing:   true,
+			EnableNotifications: true,
+			WelcomeMessage:      "👋 Welcome to *CleverConnect Bot*, {name}!\n\nUse /help to see available commands.",
+		})
+	} else if cfg.MaxFileSize == 50 {
+		logger.Info("Telegram", "Upgrading default MaxFileSize from 50MB to 2000MB")
+		db.DB.Model(&cfg).Update("max_file_size", 2000)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
+// User Account / MTProto Command Handlers and Helpers
+// ──────────────────────────────────────────────────────────────
+
+func mdToHTML(s string) string {
+	s = replacePair(s, "`", "<code>", "</code>")
+	s = replacePair(s, "*", "<b>", "</b>")
+	s = replacePair(s, "_", "<i>", "</i>")
+	return s
+}
+
+func replacePair(s, placeholder, startTag, endTag string) string {
+	for {
+		i1 := strings.Index(s, placeholder)
+		if i1 == -1 {
+			break
+		}
+		rest := s[i1+len(placeholder):]
+		i2 := strings.Index(rest, placeholder)
+		if i2 == -1 {
+			break
+		}
+		s = s[:i1] + startTag + rest[:i2] + endTag + rest[i2+len(placeholder):]
+	}
+	return s
+}
+
+func getPeerInput(peer tg.PeerClass, entities tg.Entities) tg.InputPeerClass {
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		if user, ok := entities.Users[p.UserID]; ok {
+			return &tg.InputPeerUser{
+				UserID:     user.ID,
+				AccessHash: user.AccessHash,
+			}
+		}
+		return &tg.InputPeerUser{UserID: p.UserID}
+	case *tg.PeerChat:
+		return &tg.InputPeerChat{ChatID: p.ChatID}
+	case *tg.PeerChannel:
+		if ch, ok := entities.Channels[p.ChannelID]; ok {
+			return &tg.InputPeerChannel{
+				ChannelID:  ch.ID,
+				AccessHash: ch.AccessHash,
+			}
+		}
+		return &tg.InputPeerChannel{ChannelID: p.ChannelID}
+	}
+	return &tg.InputPeerSelf{}
+}
+
+func (e *Engine) sendUserMessage(ctx context.Context, entities tg.Entities, peer tg.PeerClass, text string) error {
+	inputPeer := getPeerInput(peer, entities)
+	sender := message.NewSender(tg.NewClient(e.gotdClient))
+	htmlText := mdToHTML(text)
+	_, err := sender.To(inputPeer).StyledText(ctx, html.String(nil, htmlText))
+	return err
+}
+
+func (e *Engine) handleUserCallbackQuery(ctx context.Context, entities tg.Entities, u *tg.UpdateBotCallbackQuery) error {
+	api := tg.NewClient(e.gotdClient)
+	_, _ = api.MessagesSetBotCallbackAnswer(ctx, &tg.MessagesSetBotCallbackAnswerRequest{
+		QueryID: u.QueryID,
+	})
+
+	data := string(u.Data)
+	logger.Info("Telegram", "Callback received (MTProto)", "data", data, "user_id", u.UserID)
+
+	switch {
+	case strings.HasPrefix(data, "fb:"):
+		if !e.IsAdmin(u.UserID) {
+			return nil
+		}
+		path := strings.TrimPrefix(data, "fb:")
+		return e.handleFileBrowseUser(ctx, entities, u.Peer, u.MsgID, path)
+
+	case strings.HasPrefix(data, "send:"):
+		if !e.IsAdmin(u.UserID) {
+			return nil
+		}
+		filePath := strings.TrimPrefix(data, "send:")
+		e.Dispatch(func() {
+			if err := e.sendFileToChatUser(ctx, entities, u.Peer, filePath); err != nil {
+				logger.Error("Telegram", "Failed to send file", "path", filePath, "error", err)
+			}
+		})
+		return nil
+	}
+
+	return nil
+}
+
+func (e *Engine) handleFileBrowseUser(ctx context.Context, entities tg.Entities, peer tg.PeerClass, messageID int, dirPath string) error {
+	safePath, err := securePath(dirPath)
+	if err != nil {
+		return e.sendUserMessage(ctx, entities, peer, "⛔ Access denied: invalid path.")
+	}
+
+	entries, err := os.ReadDir(safePath)
+	if err != nil {
+		return e.sendUserMessage(ctx, entities, peer, "❌ Failed to read directory: "+err.Error())
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].IsDir() != entries[j].IsDir() {
+			return entries[i].IsDir()
+		}
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	displayPath := filepath.Clean("/" + dirPath)
+	if displayPath == "." {
+		displayPath = "/"
+	}
+
+	text := fmt.Sprintf("📁 *File Browser*\n📂 `%s`\n\n", displayPath)
+	if len(entries) == 0 {
+		text += "_Empty directory_"
+	} else {
+		text += fmt.Sprintf("_%d items_", len(entries))
+	}
+
+	var kbRows []tg.KeyboardButtonRow
+
+	if dirPath != "/" && dirPath != "" {
+		parentPath := filepath.Dir(dirPath)
+		if parentPath == "." {
+			parentPath = "/"
+		}
+		kbRows = append(kbRows, tg.KeyboardButtonRow{
+			Buttons: []tg.KeyboardButtonClass{
+				&tg.KeyboardButtonCallback{
+					Text: "⬆️ Parent Directory",
+					Data: []byte("fb:" + parentPath),
+				},
+			},
+		})
+	}
+
+	maxItems := 30
+	if len(entries) < maxItems {
+		maxItems = len(entries)
+	}
+
+	for _, entry := range entries[:maxItems] {
+		name := entry.Name()
+		entryPath := filepath.Join(dirPath, name)
+		if dirPath == "/" {
+			entryPath = "/" + name
+		}
+
+		if entry.IsDir() {
+			kbRows = append(kbRows, tg.KeyboardButtonRow{
+				Buttons: []tg.KeyboardButtonClass{
+					&tg.KeyboardButtonCallback{
+						Text: "📂 " + name,
+						Data: []byte("fb:" + entryPath),
+					},
+				},
+			})
+		} else {
+			info, _ := entry.Info()
+			sizeStr := formatFileSize(info.Size())
+			icon := getFileIcon(name)
+			kbRows = append(kbRows, tg.KeyboardButtonRow{
+				Buttons: []tg.KeyboardButtonClass{
+					&tg.KeyboardButtonCallback{
+						Text: fmt.Sprintf("%s %s (%s)", icon, name, sizeStr),
+						Data: []byte("send:" + entryPath),
+					},
+				},
+			})
+		}
+	}
+
+	if len(entries) > 30 {
+		text += fmt.Sprintf("\n\n⚠️ _Showing first 30 of %d items_", len(entries))
+	}
+
+	inputPeer := getPeerInput(peer, entities)
+	kbMarkup := &tg.ReplyInlineMarkup{Rows: kbRows}
+	htmlText := mdToHTML(text)
+
+	api := tg.NewClient(e.gotdClient)
+	if messageID != 0 {
+		_, err = api.MessagesEditMessage(ctx, &tg.MessagesEditMessageRequest{
+			Peer:        inputPeer,
+			ID:          messageID,
+			Message:     htmlText,
+			ReplyMarkup: kbMarkup,
+		})
+	} else {
+		sender := message.NewSender(api)
+		_, err = sender.To(inputPeer).Markup(kbMarkup).StyledText(ctx, html.String(nil, htmlText))
+	}
+
+	return err
+}
+
+func (e *Engine) sendFileToChatUser(ctx context.Context, entities tg.Entities, peer tg.PeerClass, filePath string) error {
+	safePath, err := securePath(filePath)
+	if err != nil {
+		return e.sendUserMessage(ctx, entities, peer, "⛔ Access denied.")
+	}
+
+	info, err := os.Stat(safePath)
+	if err != nil {
+		return e.sendUserMessage(ctx, entities, peer, "❌ File not found: "+filepath.Base(filePath))
+	}
+
+	if info.IsDir() {
+		return e.sendUserMessage(ctx, entities, peer, "📂 That's a directory, not a file.")
+	}
+
+	e.mu.RLock()
+	maxSizeMB := e.Config.MaxFileSize
+	e.mu.RUnlock()
+	if maxSizeMB <= 0 {
+		maxSizeMB = 2000
+	}
+	maxBytes := int64(maxSizeMB) * 1024 * 1024
+
+	if info.Size() > maxBytes {
+		return e.sendUserMessage(ctx, entities, peer, fmt.Sprintf("❌ File too large (%s). Maximum allowed: %dMB.",
+			formatFileSize(info.Size()), maxSizeMB))
+	}
+
+	var chatID int64
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		chatID = p.UserID
+	case *tg.PeerChat:
+		chatID = p.ChatID
+	case *tg.PeerChannel:
+		chatID = p.ChannelID
+	}
+
+	if info.Size() > 10*1024*1024 {
+		if QueueUploadJob != nil {
+			err := QueueUploadJob(filePath, chatID)
+			if err != nil {
+				return e.sendUserMessage(ctx, entities, peer, "❌ Failed to queue background upload: "+err.Error())
+			}
+			return nil
+		}
+	}
+
+	inputPeer := getPeerInput(peer, entities)
+	api := tg.NewClient(e.gotdClient)
+	up := uploader.NewUploader(api)
+	
+	fileObj, err := up.FromPath(ctx, safePath)
+	if err != nil {
+		return e.sendUserMessage(ctx, entities, peer, "❌ Failed to upload file: "+err.Error())
+	}
+
+	fileName := filepath.Base(safePath)
+	caption := fmt.Sprintf("📁 %s\n📏 %s", filePath, formatFileSize(info.Size()))
+	ext := strings.ToLower(filepath.Ext(fileName))
+	sender := message.NewSender(api)
+	
+	var sendErr error
+	var mediaOption message.MediaOption
+	mimeType := mime.TypeByExtension(ext)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif":
+		mediaOption = message.UploadedPhoto(fileObj, styling.Plain(caption))
+	case ".mp4":
+		doc := message.UploadedDocument(fileObj, styling.Plain(caption))
+		mediaOption = doc.MIME("video/mp4").Filename(fileName).Video().SupportsStreaming()
+	case ".mp3", ".m4a":
+		doc := message.UploadedDocument(fileObj, styling.Plain(caption))
+		mediaOption = doc.MIME(mimeType).Filename(fileName).Audio()
+	case ".ogg", ".opus":
+		doc := message.UploadedDocument(fileObj, styling.Plain(caption))
+		mediaOption = doc.MIME(mimeType).Filename(fileName).Audio().Voice()
+	default:
+		doc := message.UploadedDocument(fileObj, styling.Plain(caption))
+		doc.MIME(mimeType).Filename(fileName)
+		mediaOption = doc
+	}
+
+	_, sendErr = sender.To(inputPeer).Media(ctx, mediaOption)
+
+	if sendErr != nil {
+		e.errors.Add(1)
+		logger.Error("Telegram", "Failed to send file directly via MTProto", "path", filePath, "error", sendErr)
+		return e.sendUserMessage(ctx, entities, peer, "❌ Failed to send file: "+sendErr.Error())
+	}
+
+	e.filesSent.Add(1)
+	return nil
+}
+
+func (e *Engine) handleDownloadLinkUser(ctx context.Context, entities tg.Entities, peer tg.PeerClass, downloadURL string) error {
+	if downloader.Manager == nil {
+		return e.sendUserMessage(ctx, entities, peer, "❌ Downloader engine is not running on the server.")
+	}
+
+	jobID, err := downloader.Manager.AddJob(
+		downloadURL,
+		"",    // default save directory
+		"",    // extract filename from URL
+		"",    // username
+		"",    // password
+		4,     // threads
+		false, // usePremium
+	)
+	if err != nil {
+		return e.sendUserMessage(ctx, entities, peer, "❌ Failed to queue download: "+err.Error())
+	}
+
+	return e.sendUserMessage(ctx, entities, peer, fmt.Sprintf("📥 *Download Queued!*\n\nJob ID: `%s`\nLink: %s\n\nUse `/status` to monitor the download progress.", jobID, downloadURL))
+}
+
+func (e *Engine) handleUserMessage(ctx context.Context, entities tg.Entities, update *tg.UpdateNewMessage) error {
+	m, ok := update.Message.(*tg.Message)
+	if !ok || m.Out {
+		return nil
+	}
+
+	text := strings.TrimSpace(m.Message)
+	if text == "" {
+		return nil
+	}
+
+	// Extract sender details
+	var senderID int64
+	switch p := m.PeerID.(type) {
+	case *tg.PeerUser:
+		senderID = p.UserID
+	case *tg.PeerChat:
+		senderID = p.ChatID
+	case *tg.PeerChannel:
+		senderID = p.ChannelID
+	}
+
+	e.messagesProcessed.Add(1)
+	logger.Info("Telegram", "Incoming update (MTProto)", "user_id", senderID, "text", truncate(text, 80))
+
+	if !strings.HasPrefix(text, "/myid") && !e.IsAdmin(senderID) {
+		logger.Warn("Telegram", "Unauthorized access blocked (MTProto)", "user_id", senderID, "text", text)
+		return e.sendUserMessage(ctx, entities, m.PeerID, "⛔ Access denied. You are not an authorized administrator.")
+	}
+
+	switch {
+	case strings.HasPrefix(text, "/start"):
+		e.commandsProcessed.Add(1)
+		
+		var sub models.TelegramSubscriber
+		if err := db.DB.Where("chat_id = ?", senderID).First(&sub).Error; err != nil {
+			sub = models.TelegramSubscriber{
+				ChatID:    senderID,
+				Active:    true,
+			}
+			if p, ok := m.PeerID.(*tg.PeerUser); ok {
+				if user, ok := entities.Users[p.UserID]; ok {
+					sub.Username = user.Username
+					sub.FirstName = user.FirstName
+				}
+			}
+			db.DB.Create(&sub)
+		} else {
+			updatesMap := map[string]interface{}{"active": true}
+			if p, ok := m.PeerID.(*tg.PeerUser); ok {
+				if user, ok := entities.Users[p.UserID]; ok {
+					updatesMap["username"] = user.Username
+					updatesMap["first_name"] = user.FirstName
+				}
+			}
+			db.DB.Model(&sub).Updates(updatesMap)
+		}
+
+		e.mu.RLock()
+		welcome := e.Config.WelcomeMessage
+		e.mu.RUnlock()
+
+		if welcome == "" {
+			welcome = "👋 Welcome to *CleverConnect Bot*!\n\nUse /help to see available commands."
+		}
+
+		firstName := ""
+		username := ""
+		if p, ok := m.PeerID.(*tg.PeerUser); ok {
+			if user, ok := entities.Users[p.UserID]; ok {
+				firstName = user.FirstName
+				username = user.Username
+			}
+		}
+		welcome = strings.ReplaceAll(welcome, "{name}", firstName)
+		welcome = strings.ReplaceAll(welcome, "{username}", username)
+
+		return e.sendUserMessage(ctx, entities, m.PeerID, welcome)
+
+	case strings.HasPrefix(text, "/stop"):
+		e.commandsProcessed.Add(1)
+		var sub models.TelegramSubscriber
+		if err := db.DB.Where("chat_id = ?", senderID).First(&sub).Error; err == nil {
+			db.DB.Model(&sub).Update("active", false)
+		}
+		return e.sendUserMessage(ctx, entities, m.PeerID, "❌ *You have stopped the bot.*\n\nYou will no longer receive system notification broadcasts. Use `/start` to resubscribe at any time.")
+
+	case strings.HasPrefix(text, "/help"):
+		e.commandsProcessed.Add(1)
+		help := "🤖 *CleverConnect Bot Commands*\n\n"
+		help += "📌 `/start` — Welcome message & subscribe\n"
+		help += "🛑 `/stop` — Unsubscribe from broadcasts\n"
+		help += "❓ `/help` — This help menu\n"
+		help += "📊 `/status` — Bot & server status\n"
+		help += "🆔 `/myid` — Get your Telegram user ID\n"
+		help += "\n🔐 *Admin Commands:*\n"
+		help += "📁 `/files` — Browse server files\n"
+		help += "⚙️ `/settings` — View bot configuration\n"
+		help += "🔄 `/reload` — Hot-reload config from DB\n"
+		return e.sendUserMessage(ctx, entities, m.PeerID, help)
+
+	case strings.HasPrefix(text, "/myid"):
+		e.commandsProcessed.Add(1)
+		username := ""
+		if p, ok := m.PeerID.(*tg.PeerUser); ok {
+			if user, ok := entities.Users[p.UserID]; ok {
+				username = user.Username
+			}
+		}
+		msg := fmt.Sprintf("🆔 Your Telegram User ID: `%d`\n👤 Username: @%s", senderID, username)
+		return e.sendUserMessage(ctx, entities, m.PeerID, msg)
+
+	case strings.HasPrefix(text, "/status"):
+		e.commandsProcessed.Add(1)
+		uptime := time.Since(e.startedAt)
+		
+		e.mu.RLock()
+		meUsername := e.meUsername
+		e.mu.RUnlock()
+
+		stats := fmt.Sprintf(
+			"📊 *CleverConnect Bot Status*\n\n"+
+				"🟢 *Status:* Online\n"+
+				"⏱ *Uptime:* %s\n"+
+				"🧵 *Workers:* %d (all CPU cores)\n"+
+				"📨 *Messages Processed:* %d\n"+
+				"⚡ *Commands Processed:* %d\n"+
+				"📁 *Files Sent:* %d\n"+
+				"❌ *Errors:* %d\n"+
+				"🤖 *Bot:* @%s",
+			formatUptime(uptime),
+			runtime.NumCPU(),
+			e.messagesProcessed.Load(),
+			e.commandsProcessed.Load(),
+			e.filesSent.Load(),
+			e.errors.Load(),
+			meUsername,
+		)
+		
+		var activeDownloads []models.LeechJob
+		if err := db.DB.Where("status = ?", "downloading").Find(&activeDownloads).Error; err == nil && len(activeDownloads) > 0 {
+			stats += "\n\n📥 *Active Downloads:*"
+			for _, job := range activeDownloads {
+				stats += fmt.Sprintf("\n• `%s`: %.1f%% (⚡ %.1f MB/s)", job.Filename, job.Progress, job.Speed)
+			}
+		}
+		var activeUploads []models.SchedulerJob
+		if err := db.DB.Where("job_type = ? AND status = ?", "telegram_upload", "running").Find(&activeUploads).Error; err == nil && len(activeUploads) > 0 {
+			stats += "\n\n📤 *Active Uploads:*"
+			for _, job := range activeUploads {
+				stats += fmt.Sprintf("\n• `%s`: %d%%", job.Name, job.Progress)
+			}
+		}
+
+		return e.sendUserMessage(ctx, entities, m.PeerID, stats)
+
+	case strings.HasPrefix(text, "/settings"):
+		e.commandsProcessed.Add(1)
+		e.mu.RLock()
+		cfg := e.Config
+		e.mu.RUnlock()
+
+		adminIDs := cfg.AdminUserIDs
+		if adminIDs == "" {
+			adminIDs = "(none configured)"
+		}
+
+		features := []string{}
+		if cfg.EnableFileSharing {
+			features = append(features, "📁 File Sharing")
+		}
+		if cfg.EnableNotifications {
+			features = append(features, "🔔 Notifications")
+		}
+		if len(features) == 0 {
+			features = append(features, "None enabled")
+		}
+
+		e.mu.RLock()
+		meUsername := e.meUsername
+		e.mu.RUnlock()
+
+		msg := fmt.Sprintf(
+			"⚙️ *Bot Configuration*\n\n"+
+				"🤖 *Bot Username:* @%s\n"+
+				"👥 *Admin IDs:* `%s`\n"+
+				"⏱ *Polling Interval:* %ds\n"+
+				"🎯 *Enabled Features:*\n%s\n"+
+				"📝 *Welcome Message:*\n_%s_",
+			meUsername,
+			adminIDs,
+			cfg.PollingInterval,
+			strings.Join(features, "\n"),
+			truncate(cfg.WelcomeMessage, 100),
+		)
+		return e.sendUserMessage(ctx, entities, m.PeerID, msg)
+
+	case strings.HasPrefix(text, "/reload"):
+		e.commandsProcessed.Add(1)
+		if err := e.ReloadConfig(); err != nil {
+			logger.Error("Telegram", "Config reload failed (MTProto)", "error", err)
+			return e.sendUserMessage(ctx, entities, m.PeerID, "❌ Failed to reload configuration: "+err.Error())
+		}
+		return e.sendUserMessage(ctx, entities, m.PeerID, "✅ Configuration reloaded successfully from database.")
+
+	case strings.HasPrefix(text, "/files"):
+		e.commandsProcessed.Add(1)
+		return e.handleFileBrowseUser(ctx, entities, m.PeerID, 0, "/")
+
+	default:
+		var downloadURL string
+		for _, word := range strings.Fields(text) {
+			if strings.HasPrefix(word, "http://") || strings.HasPrefix(word, "https://") {
+				downloadURL = word
+				break
+			}
+		}
+
+		if downloadURL != "" {
+			return e.handleDownloadLinkUser(ctx, entities, m.PeerID, downloadURL)
+		}
+	}
+	return nil
+}

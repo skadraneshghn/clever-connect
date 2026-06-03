@@ -8,7 +8,12 @@ import { LogConsoleCard } from '../components/molecules/LogConsoleCard';
 import { SystemMonitor } from '../components/molecules/SystemMonitor';
 
 export const DashboardPage: React.FC = () => {
-  const { cpu, memory, disk, activeConnectionsCount, clients, bandwidthHistory, totalBandwidth, logs, initWebSocket, disconnectClient, blockClient } = useServerStore();
+  const { 
+    cpu, memory, disk, activeConnectionsCount, clients, bandwidthHistory, totalBandwidth, logs, initWebSocket, disconnectClient, blockClient,
+    mem_total_gb, mem_used_gb, disk_total_gb, disk_used_gb, uptime_seconds, app_mem_mb, go_version, os_runtime,
+    active_leeches, active_torrents, active_scheds,
+    os_platform, os_kernel, swap_total_gb, swap_used_gb, swap_percent
+  } = useServerStore();
 
   useEffect(() => {
     const token = localStorage.getItem('cc_server_token') || 'dummy';
@@ -16,14 +21,24 @@ export const DashboardPage: React.FC = () => {
     return () => { close(); };
   }, [initWebSocket]);
 
+  const formatUptime = (sec: number) => {
+    const d = Math.floor(sec / (3600*24));
+    const h = Math.floor((sec % (3600*24)) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const parts = [];
+    if (d > 0) parts.push(`${d}d`);
+    if (h > 0) parts.push(`${h}h`);
+    if (m > 0 || parts.length === 0) parts.push(`${m}m`);
+    return parts.join(' ');
+  };
+
   return (
     <div>
       {/* Title */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Dashboard</h1>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn--sm">Today</button>
-          <button className="btn btn--primary btn--sm">Export Data</button>
+          <button className="btn btn--primary btn--sm">System Telemetry Online</button>
         </div>
       </div>
 
@@ -34,8 +49,8 @@ export const DashboardPage: React.FC = () => {
           labelIcon={<FiUsers size={13} />}
           labelText="ACTIVE TUNNELS"
           columns={[
-            { subLabel: 'Connected', value: String(activeConnectionsCount), subValue: 'clients', changeText: 'vs. last period', changeDirection: 'up' },
-            { subLabel: 'Protocols', value: '4', subValue: 'active', changeText: 'vs. 3 last period', changeDirection: 'up' }
+            { subLabel: 'Connected', value: String(activeConnectionsCount), subValue: 'clients', changeText: 'live connection', changeDirection: 'up' },
+            { subLabel: 'Protocols', value: '4', subValue: 'active', changeText: 'available', changeDirection: 'up' }
           ]}
         />
         <Card
@@ -43,8 +58,8 @@ export const DashboardPage: React.FC = () => {
           labelIcon={<FiShield size={13} />}
           labelText="BANDWIDTH USAGE"
           columns={[
-            { subLabel: 'Download', value: (totalBandwidth.download).toFixed(0), subValue: 'GB', changeText: 'vs. last period', changeDirection: 'up' },
-            { subLabel: 'Upload', value: (totalBandwidth.upload).toFixed(0), subValue: 'GB', changeText: 'vs. last period', changeDirection: 'up' }
+            { subLabel: 'Download', value: (totalBandwidth.download).toFixed(0), subValue: 'GB', changeText: 'total download', changeDirection: 'up' },
+            { subLabel: 'Upload', value: (totalBandwidth.upload).toFixed(0), subValue: 'GB', changeText: 'total upload', changeDirection: 'up' }
           ]}
         />
         <Card
@@ -52,8 +67,8 @@ export const DashboardPage: React.FC = () => {
           labelIcon={<FiCpu size={13} />}
           labelText="SYSTEM LOAD"
           columns={[
-            { subLabel: 'CPU', value: String(cpu), subValue: '%', changeText: 'nominal', changeDirection: 'up' },
-            { subLabel: 'Memory', value: String(memory), subValue: '%', changeText: 'healthy', changeDirection: 'up' }
+            { subLabel: 'CPU', value: String(cpu), subValue: '%', changeText: 'utilization', changeDirection: 'up' },
+            { subLabel: 'Memory', value: String(memory), subValue: '%', changeText: 'ram consumption', changeDirection: 'up' }
           ]}
         />
       </div>
@@ -62,29 +77,36 @@ export const DashboardPage: React.FC = () => {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: 20, alignItems: 'start' }}>
         {/* Left */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {/* Wallet-like aggregate card */}
+          {/* Real Bandwidth Consumption display */}
           <div className="g-card">
-            <div style={{ fontSize: 12, color: 'var(--color-brand-text)', marginBottom: 4 }}>Total Server Bandwidth</div>
+            <div style={{ fontSize: 12, color: 'var(--color-brand-text)', marginBottom: 4 }}>Total Server Throughput</div>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
-              <span style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-brand-heading)' }}>{(totalBandwidth.download / 1024).toFixed(1)} TB</span>
-              <span style={{ fontSize: 12, color: 'var(--color-brand-muted)' }}>consumed • Updated now</span>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 12, borderTop: '1px solid var(--color-brand-border)', paddingTop: 12 }}>
-              {[{ icon: '📡', label: 'Connect' }, { icon: '⚡', label: 'Restart' }, { icon: '🔄', label: 'Rotate' }, { icon: '🏦', label: 'Export' }].map((a) => (
-                <button key={a.label} className="vcard__action"><span className="action-icon">{a.icon}</span>{a.label}</button>
-              ))}
+              <span style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-brand-heading)' }}>{((totalBandwidth.download + totalBandwidth.upload) / 1024).toFixed(2)} TB</span>
+              <span style={{ fontSize: 12, color: 'var(--color-brand-muted)' }}>consumed • Updated via WebSocket</span>
             </div>
           </div>
 
-          {/* Goals */}
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
-              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Resource Goals</span>
-              <span style={{ fontSize: 12, color: 'var(--color-brand)', cursor: 'pointer' }}>✏ Edit</span>
+          {/* Running Background Services Status */}
+          <div className="g-card">
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)', marginBottom: 12 }}>
+              Background Managers & Downloader
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-              <GoalCard tag="CPU LIMIT" tagVariant="orange" targetValue="90%" dueDate="Alert Threshold" currentAmount={`${cpu}%`} maxAmount="100%" progressPercent={cpu} />
-              <GoalCard tag="RAM BUFFER" tagVariant="green" targetValue="16 GB" dueDate="ECC Buffered" currentAmount={`${(memory * 0.16).toFixed(1)} GB`} maxAmount="16.0 GB" progressPercent={memory} />
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+              <div style={{ border: '1px solid var(--color-brand-border)', borderRadius: 8, padding: 12, background: 'var(--color-brand-bg)' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Torrent Engine</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--color-brand-heading)', marginTop: 4 }}>{active_torrents}</div>
+                <div style={{ fontSize: 11, color: 'var(--color-brand-text)', marginTop: 2 }}>active downloads</div>
+              </div>
+              <div style={{ border: '1px solid var(--color-brand-border)', borderRadius: 8, padding: 12, background: 'var(--color-brand-bg)' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Remote Leech</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--color-brand-heading)', marginTop: 4 }}>{active_leeches}</div>
+                <div style={{ fontSize: 11, color: 'var(--color-brand-text)', marginTop: 2 }}>downloading files</div>
+              </div>
+              <div style={{ border: '1px solid var(--color-brand-border)', borderRadius: 8, padding: 12, background: 'var(--color-brand-bg)' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Job Scheduler</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--color-brand-heading)', marginTop: 4 }}>{active_scheds}</div>
+                <div style={{ fontSize: 11, color: 'var(--color-brand-text)', marginTop: 2 }}>running tasks</div>
+              </div>
             </div>
           </div>
 
@@ -95,66 +117,25 @@ export const DashboardPage: React.FC = () => {
         {/* Right */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <SystemMonitor />
-          {/* Connected clients */}
-          <div className="g-card" style={{ padding: 0 }}>
-            <div style={{ padding: '18px 20px 0' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Active Clients</div>
-                  <div style={{ fontSize: 12, color: 'var(--color-brand-text)' }}>Track connected users across your nodes.</div>
-                </div>
-                <button className="btn btn--sm">Download report</button>
-              </div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', marginBottom: 8 }}>Top Connected Users</div>
-            </div>
-            <div style={{ padding: '0 20px 16px' }}>
-              {clients.map((c, i) => (
-                <div key={c.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: i < clients.length - 1 ? '1px solid var(--color-brand-border)' : 'none' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-muted)', width: 16 }}>#{i + 1}</span>
-                    <span style={{ fontSize: 18 }}>{c.flag}</span>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>{c.username}</div>
-                      <div style={{ fontSize: 10, color: 'var(--color-brand-muted)' }}>{c.protocol}</div>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>↘{c.downloadSpeed} MB/s</div>
-                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                      <button onClick={() => disconnectClient(c.id)} style={{ fontSize: 9, padding: '2px 6px', border: '1px solid var(--color-brand-border)', borderRadius: 4, background: '#fff', cursor: 'pointer' }}>Kick</button>
-                      <button onClick={() => blockClient(c.id)} style={{ fontSize: 9, padding: '2px 6px', border: '1px solid var(--color-brand-border)', borderRadius: 4, background: '#fff', cursor: 'pointer' }}>Block</button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          
 
-          {/* Assets Allocation */}
+          {/* System Specs & Allocation */}
           <div className="g-card">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Assets Allocation</span>
-              <button className="btn btn--sm">Manage</button>
+              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>System Specifications</span>
             </div>
-            <div className="alloc-bar">
-              <div className="alloc-bar__seg" style={{ width: '18%', background: '#ff6b2c' }} />
-              <div className="alloc-bar__seg" style={{ width: '34%', background: '#22c55e' }} />
-              <div className="alloc-bar__seg" style={{ width: '17%', background: '#3b82f6' }} />
-              <div className="alloc-bar__seg" style={{ width: '31%', background: '#6366f1' }} />
-            </div>
-            <div className="alloc-legend">
-              <div className="alloc-legend__item"><div className="alloc-legend__dot" style={{ background: '#ff6b2c' }} /> CPU 18%</div>
-              <div className="alloc-legend__item"><div className="alloc-legend__dot" style={{ background: '#22c55e' }} /> RAM 34%</div>
-              <div className="alloc-legend__item"><div className="alloc-legend__dot" style={{ background: '#3b82f6' }} /> Disk 17%</div>
-              <div className="alloc-legend__item"><div className="alloc-legend__dot" style={{ background: '#6366f1' }} /> Reserves 31%</div>
-            </div>
-            <table className="g-table" style={{ marginTop: 14 }}>
-              <thead><tr><th>NAME</th><th>CATEGORY</th><th style={{ textAlign: 'right' }}>VALUE</th></tr></thead>
+            
+            <table className="g-table" style={{ marginTop: 8 }}>
+              <thead><tr><th>NAME</th><th>METRIC</th><th style={{ textAlign: 'right' }}>VALUE</th></tr></thead>
               <tbody>
-                <tr><td>▸ CPU Cores · 4</td><td>Compute</td><td className="balance-val">{cpu}%</td></tr>
-                <tr><td>▸ Memory · 16 GB</td><td>Buffer</td><td className="balance-val">{memory}%</td></tr>
-                <tr><td>▸ Disk · 500 GB</td><td>Storage</td><td className="balance-val">{disk}%</td></tr>
-                <tr><td>▸ Connections · {activeConnectionsCount}</td><td>Network</td><td className="balance-val">{activeConnectionsCount}</td></tr>
+                <tr><td>Uptime</td><td>Duration</td><td className="balance-val" style={{ fontFamily: 'monospace' }}>{formatUptime(uptime_seconds)}</td></tr>
+                <tr><td>App Process Memory</td><td>Allocated</td><td className="balance-val" style={{ fontFamily: 'monospace' }}>{app_mem_mb.toFixed(1)} MB</td></tr>
+                <tr><td>Go Compiler</td><td>Runtime</td><td className="balance-val" style={{ fontFamily: 'monospace' }}>{go_version}</td></tr>
+                <tr><td>OS Type</td><td>Platform</td><td className="balance-val" style={{ fontFamily: 'monospace' }}>{os_platform || os_runtime}</td></tr>
+                {os_kernel && <tr><td>Kernel Version</td><td>Release</td><td className="balance-val" style={{ fontFamily: 'monospace', fontSize: 10 }}>{os_kernel}</td></tr>}
+                <tr><td>System RAM</td><td>{mem_used_gb.toFixed(1)} / {mem_total_gb.toFixed(0)} GB</td><td className="balance-val">{memory}%</td></tr>
+                {swap_total_gb > 0 && <tr><td>Swap Memory</td><td>{swap_used_gb.toFixed(1)} / {swap_total_gb.toFixed(0)} GB</td><td className="balance-val">{swap_percent.toFixed(0)}%</td></tr>}
+                <tr><td>System Storage</td><td>{disk_used_gb.toFixed(1)} / {disk_total_gb.toFixed(0)} GB</td><td className="balance-val">{disk}%</td></tr>
               </tbody>
             </table>
           </div>

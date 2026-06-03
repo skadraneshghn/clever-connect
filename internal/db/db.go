@@ -84,8 +84,17 @@ func InitDB(cfg *config.Config) *gorm.DB {
 
 	// Auto Migration
 	logger.Info("DB", "Executing automatic database schema migrations")
-	if err := DB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}); err != nil {
+	migrateDB := DB
+	if DB.Dialector.Name() == "mysql" {
+		migrateDB = DB.Set("gorm:table_options", "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
+	}
+	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}, &models.SchedulerJob{}, &models.SchedulerJobLog{}, &models.SchedulerConfig{}, &models.TelegramSubscriber{}, &models.YouTubeJob{}, &models.YouTubeConfig{}); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
+	}
+	
+	// Ensure the table collation is converted to utf8mb4 to support emoji/symbols in welcome messages
+	if DB.Dialector.Name() == "mysql" {
+		DB.Exec("ALTER TABLE `telegram_configs` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 	}
 	logger.Info("DB", "Schema migrations completed successfully")
 
@@ -101,11 +110,38 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		})
 	}
 
+	// Seed default SchedulerConfig
+	var schedCfg models.SchedulerConfig
+	if err := DB.First(&schedCfg).Error; err != nil {
+		logger.Info("DB", "Seeding default job scheduler configuration")
+		DB.Create(&models.SchedulerConfig{
+			MaxConcurrentJobs:   4,
+			DefaultPriority:     5,
+			RetryLimit:          3,
+			RetryDelaySeconds:   30,
+			JobTimeoutSeconds:   3600,
+			PurgeAfterDays:      30,
+			EnableCronJobs:      true,
+			EnableNotifications: false,
+		})
+	}
+
+	// Seed default YouTubeConfig
+	var ytCfg models.YouTubeConfig
+	if err := DB.First(&ytCfg).Error; err != nil {
+		logger.Info("DB", "Seeding default YouTube downloader configuration")
+		DB.Create(&models.YouTubeConfig{
+			DefaultSavePath: "./downloads/youtube",
+			MaxConcurrent:   2,
+		})
+	}
+
 	// Seed Admin User
 	seedAdmin(cfg)
 
 	return DB
 }
+
 
 func seedAdmin(cfg *config.Config) {
 	var admin models.User

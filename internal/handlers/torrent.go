@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -122,10 +123,11 @@ func (h *TorrentHandler) AddTorrent(c *gin.Context) {
 	var input struct {
 		MagnetURI     string `json:"magnet_uri"`
 		SaveDirectory string `json:"save_directory"`
+		SelectFiles   bool   `json:"select_files"`
 	}
 
 	if err := c.ShouldBind(&input); err == nil && input.MagnetURI != "" {
-		infoHash, err := torrent.Manager.AddMagnet(input.MagnetURI, input.SaveDirectory)
+		infoHash, err := torrent.Manager.AddMagnet(input.MagnetURI, input.SaveDirectory, input.SelectFiles)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add magnet link", "details": err.Error()})
 			return
@@ -138,6 +140,8 @@ func (h *TorrentHandler) AddTorrent(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err == nil {
 		saveDir := c.PostForm("save_directory")
+		selectFilesVal := c.PostForm("select_files")
+		selectFiles := selectFilesVal == "true"
 		
 		// Ensure temporary folder exists
 		tempDir := "./data/manager/temp"
@@ -150,7 +154,7 @@ func (h *TorrentHandler) AddTorrent(c *gin.Context) {
 		}
 		defer os.Remove(tempPath)
 
-		infoHash, err := torrent.Manager.AddTorrentFile(tempPath, saveDir)
+		infoHash, err := torrent.Manager.AddTorrentFile(tempPath, saveDir, selectFiles)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load torrent metadata", "details": err.Error()})
 			return
@@ -303,6 +307,12 @@ func (h *TorrentHandler) SelectTorrentFiles(c *gin.Context) {
 						f.Cancel()
 					}
 				}
+
+				// Persist file selection to database
+				if selBytes, err := json.Marshal(input.SelectedFiles); err == nil {
+					db.DB.Model(&models.TorrentJob{}).Where("info_hash = ?", input.InfoHash).Update("selected_files", string(selBytes))
+				}
+
 				c.JSON(http.StatusOK, gin.H{"status": "priorities_updated"})
 				return
 			default:
@@ -314,3 +324,67 @@ func (h *TorrentHandler) SelectTorrentFiles(c *gin.Context) {
 
 	c.JSON(http.StatusNotFound, gin.H{"error": "Torrent not found"})
 }
+
+// GetConfig returns the BitTorrent configurations
+func (h *TorrentHandler) GetConfig(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+
+	var cfg models.TorrentConfig
+	if err := db.DB.First(&cfg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load torrent config", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, cfg)
+}
+
+// SaveConfig updates the BitTorrent configurations
+func (h *TorrentHandler) SaveConfig(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+
+	var input models.TorrentConfig
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid config payload", "details": err.Error()})
+		return
+	}
+
+	var cfg models.TorrentConfig
+	if err := db.DB.First(&cfg).Error; err == nil {
+		cfg.SaveDirectory = input.SaveDirectory
+		cfg.MaxConnectionsPerTorrent = input.MaxConnectionsPerTorrent
+		cfg.MaxHalfOpenConnections = input.MaxHalfOpenConnections
+		cfg.UploadLimitMB = input.UploadLimitMB
+		cfg.DownloadLimitMB = input.DownloadLimitMB
+		cfg.EnableDHT = input.EnableDHT
+		cfg.EnablePEX = input.EnablePEX
+		cfg.EnableUTP = input.EnableUTP
+		cfg.EnableTCP = input.EnableTCP
+		cfg.EnableUpload = input.EnableUpload
+		cfg.PieceHashersPerTorrent = input.PieceHashersPerTorrent
+		cfg.CustomTrackers = input.CustomTrackers
+		db.DB.Save(&cfg)
+	} else {
+		db.DB.Create(&input)
+	}
+
+	// Dynamic limits update or full restart
+	if torrent.Manager != nil {
+		// Try to apply speed limits dynamically without resetting connections
+		torrent.Manager.ApplyLimits(input.UploadLimitMB, input.DownloadLimitMB)
+		
+		// Reinitialize full engine (only if app mode is server)
+		if h.cfg.AppMode == "server" {
+			if err := torrent.Init(); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reload torrent client with new configuration", "details": err.Error()})
+				return
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "saved"})
+}
+

@@ -94,26 +94,6 @@ export const DashboardPage: React.FC = () => {
         {/* RIGHT COLUMN — Goals + Table */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           <SystemMonitor />
-          {/* Goals Header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Goals</div>
-              <div style={{ fontSize: 12, color: 'var(--color-brand-text)' }}>Monitor your tunnel goals and usage progress.</div>
-            </div>
-            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-brand-heading)', cursor: 'pointer' }}>+ Add Goals</span>
-          </div>
-
-          {/* 2x2 Goal Cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            <GoalCard tag="EMERGENCY FUND" tagVariant="orange" targetValue="5.0 GB" dueDate="End of Day"
-              currentAmount={`${totalGB} GB`} maxAmount="5.0 GB" progressPercent={parseFloat(totalGB) / 5 * 100} />
-            <GoalCard tag="TRAVEL FUND" tagVariant="green" targetValue="50.0 GB" dueDate="15 Jun 2026"
-              currentAmount={`${totalGB} GB`} maxAmount="50.0 GB" progressPercent={parseFloat(totalGB) / 50 * 100} />
-            <GoalCard tag="BANDWIDTH CAP" tagVariant="blue" targetValue="100.0 GB" dueDate="30 Sep 2026"
-              currentAmount={`${totalGB} GB`} maxAmount="100.0 GB" progressPercent={parseFloat(totalGB) / 100 * 100} />
-            <GoalCard tag="RESERVE POOL" tagVariant="indigo" targetValue="250.0 GB" dueDate="31 Mar 2027"
-              currentAmount={`${totalGB} GB`} maxAmount="250.0 GB" progressPercent={parseFloat(totalGB) / 250 * 100} />
-          </div>
 
           {/* Cash Balances / Gateway Nodes */}
           <div className="g-card" style={{ padding: 0 }}>

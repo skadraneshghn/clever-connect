@@ -13,7 +13,10 @@ import (
 	"clever-connect/internal/handlers"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
+	"clever-connect/internal/scheduler"
+	"clever-connect/internal/telegram"
 	"clever-connect/internal/torrent"
+	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
 )
@@ -49,6 +52,12 @@ func main() {
 		} else {
 			defer torrent.Manager.Close()
 		}
+
+		// Initialize YouTube Download Engine
+		youtube.Init()
+
+		// Initialize Enterprise Job Scheduler Engine
+		scheduler.Init()
 	}
 
 	// Auto-start active tunnel engine on bootstrap
@@ -66,6 +75,17 @@ func main() {
 			logger.Info("Ehco", "Auto-starting active client tunnel engine")
 			if err := ehcocore.StartClientEngine(&clientCfg); err != nil {
 				logger.Error("Ehco", "Failed to auto-start client tunnel", "error", err)
+			}
+		}
+	}
+
+	// Auto-start Telegram bot engine if configured and active
+	if cfg.AppMode == "server" {
+		var telegramCfg models.TelegramConfig
+		if err := db.DB.First(&telegramCfg).Error; err == nil && telegramCfg.IsActive && telegramCfg.BotToken != "" {
+			logger.Info("Telegram", "Auto-starting Telegram bot engine")
+			if err := telegram.StartEngine(&telegramCfg); err != nil {
+				logger.Error("Telegram", "Failed to auto-start Telegram bot", "error", err)
 			}
 		}
 	}
@@ -89,6 +109,9 @@ func main() {
 	fileHandler := handlers.NewFileHandler(cfg)
 	leechHandler := handlers.NewLeechHandler(cfg)
 	torrentHandler := handlers.NewTorrentHandler(cfg)
+	youtubeHandler := handlers.NewYouTubeHandler(cfg)
+	telegramHandler := handlers.NewTelegramHandler(cfg)
+	schedulerHandler := handlers.NewSchedulerHandler(cfg)
 
 	// API Group
 	api := router.Group("/api")
@@ -146,11 +169,52 @@ func main() {
 			protected.POST("/torrent/delete", torrentHandler.DeleteTorrent)
 			protected.GET("/torrent/files", torrentHandler.ListTorrentFiles)
 			protected.POST("/torrent/select-files", torrentHandler.SelectTorrentFiles)
+			protected.GET("/torrent/config", torrentHandler.GetConfig)
+			protected.POST("/torrent/config", torrentHandler.SaveConfig)
+
+			// YouTube Downloader API Endpoints
+			protected.POST("/youtube/info", youtubeHandler.FetchInfo)
+			protected.POST("/youtube/add", youtubeHandler.AddJob)
+			protected.GET("/youtube/jobs", youtubeHandler.ListJobs)
+			protected.POST("/youtube/cancel", youtubeHandler.CancelJob)
+			protected.POST("/youtube/delete", youtubeHandler.DeleteJob)
+			protected.GET("/youtube/config", youtubeHandler.GetConfig)
+			protected.POST("/youtube/config", youtubeHandler.SaveConfig)
+
+			// Telegram Bot Core API Endpoints
+			protected.GET("/telegram/config", telegramHandler.GetConfig)
+			protected.POST("/telegram/config", telegramHandler.SaveConfig)
+			protected.POST("/telegram/test", telegramHandler.TestConnection)
+			protected.POST("/telegram/start", telegramHandler.StartBot)
+			protected.POST("/telegram/stop", telegramHandler.StopBot)
+			protected.GET("/telegram/status", telegramHandler.GetStatus)
+			protected.POST("/telegram/send-file", telegramHandler.SendFile)
+			protected.POST("/telegram/set-avatar", telegramHandler.SetBotAvatar)
+			protected.POST("/telegram/broadcast", telegramHandler.BroadcastMessage)
+			protected.POST("/telegram/auth/send-code", telegramHandler.SendAuthCode)
+			protected.POST("/telegram/auth/verify-code", telegramHandler.VerifyAuthCode)
+			protected.POST("/telegram/auth/verify-password", telegramHandler.VerifyAuthPassword)
+			protected.POST("/settings/favicon", handlers.UploadFavicon)
+
+			// Enterprise Job Scheduler API Endpoints
+			protected.GET("/scheduler/jobs", schedulerHandler.ListJobs)
+			protected.POST("/scheduler/jobs", schedulerHandler.CreateJob)
+			protected.POST("/scheduler/jobs/:id/cancel", schedulerHandler.CancelJob)
+			protected.POST("/scheduler/jobs/:id/retry", schedulerHandler.RetryJob)
+			protected.POST("/scheduler/jobs/:id/force", schedulerHandler.ForceRunJob)
+			protected.POST("/scheduler/jobs/:id/delete", schedulerHandler.DeleteJob)
+			protected.POST("/scheduler/jobs/reorder", schedulerHandler.ReorderJobs)
+			protected.GET("/scheduler/jobs/:id/logs", schedulerHandler.GetJobLogs)
+			protected.GET("/scheduler/config", schedulerHandler.GetConfig)
+			protected.POST("/scheduler/config", schedulerHandler.SaveConfig)
+			protected.GET("/scheduler/stats", schedulerHandler.GetStats)
+			protected.POST("/scheduler/purge", schedulerHandler.PurgeJobs)
 		}
 	}
 
 	// Real-time WebSocket endpoints (protected via token query param handled in middleware)
 	router.GET("/ws", handlers.AuthMiddleware(cfg.JWTSecret), wsHandler.ServeWS)
+	router.GET("/ws/jobs", handlers.AuthMiddleware(cfg.JWTSecret), wsHandler.ServeWSJobs)
 	router.GET("/ws/logs", handlers.AuthMiddleware(cfg.JWTSecret), handlers.ServeLogWS)
 
 	// Static Assets & SPA Fallback Serving
@@ -170,6 +234,9 @@ func main() {
 		}
 		logger.Info("Static", "Serving CleverConnect Client Panel UI")
 	}
+
+	router.GET("/favicon.ico", handlers.ServeFavicon)
+	router.GET("/favicon.png", handlers.ServeFavicon)
 
 	router.Use(serveEmbeddedSPA(embedFS))
 

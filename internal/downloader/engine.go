@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -95,7 +96,7 @@ func (e *Engine) Close() {
 }
 
 // AddJob registers a new download task
-func (e *Engine) AddJob(downloadURL, saveDir, filename, username, password string, threads int) (string, error) {
+func (e *Engine) AddJob(downloadURL, saveDir, filename, username, password string, threads int, usePremium bool) (string, error) {
 	// Generate unique Job ID
 	jobID := fmt.Sprintf("job_%d", time.Now().UnixNano())
 
@@ -129,6 +130,7 @@ func (e *Engine) AddJob(downloadURL, saveDir, filename, username, password strin
 		Threads:       threads,
 		Username:      username,
 		Password:      password,
+		UsePremium:    usePremium,
 		Progress:      0,
 	}
 
@@ -136,7 +138,7 @@ func (e *Engine) AddJob(downloadURL, saveDir, filename, username, password strin
 		return "", err
 	}
 
-	logger.Info("Downloader", "Added new leech job with auth check", "id", jobID, "url", downloadURL)
+	logger.Info("Downloader", "Added new leech job with auth check", "id", jobID, "url", downloadURL, "premium", usePremium)
 	return jobID, nil
 }
 
@@ -164,9 +166,53 @@ func (e *Engine) StartJob(jobID string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.activeJobs[jobID] = cancel
 
+	var downloadURL = job.URL
+	var resolvedFilename = job.Filename
+
+	if job.UsePremium {
+		var cfg models.LeechConfig
+		if err := db.DB.First(&cfg).Error; err != nil || cfg.PremiumUserID == "" || cfg.PremiumAPIKey == "" {
+			cancel()
+			return fmt.Errorf("Premium.to credentials (User ID and API Key) are not configured in settings")
+		}
+
+		apiURL := fmt.Sprintf("http://api.premium.to/api/2/getfile.php?userid=%s&apikey=%s&link=%s",
+			url.QueryEscape(cfg.PremiumUserID),
+			url.QueryEscape(cfg.PremiumAPIKey),
+			url.QueryEscape(job.URL),
+		)
+
+		var httpClient *http.Client
+		if e.client != nil {
+			if hc, ok := e.client.HTTPClient.(*http.Client); ok {
+				httpClient = hc
+			}
+		}
+		if httpClient == nil {
+			httpClient = http.DefaultClient
+		}
+
+		resolvedURL, finalFilename, err := resolvePremiumURL(apiURL, httpClient)
+		if err != nil {
+			cancel()
+			return fmt.Errorf("failed to resolve premium.to link: %w", err)
+		}
+		downloadURL = resolvedURL
+		if finalFilename != "" && finalFilename != "getfile.php" {
+			resolvedFilename = finalFilename
+			db.DB.Model(&models.LeechJob{}).Where("id = ?", jobID).Update("filename", resolvedFilename)
+		}
+	}
+
 	// Create request
-	destPath := filepath.Join(absSaveDir, job.Filename)
-	req, err := grab.NewRequest(destPath, job.URL)
+	var destPath string
+	if resolvedFilename == "getfile.php" || resolvedFilename == "downloaded_file" || resolvedFilename == "" {
+		destPath = absSaveDir
+	} else {
+		destPath = filepath.Join(absSaveDir, resolvedFilename)
+	}
+
+	req, err := grab.NewRequest(destPath, downloadURL)
 	if err != nil {
 		cancel()
 		return err
@@ -255,13 +301,19 @@ func (e *Engine) monitorProgress(resp *grab.Response, jobID string, ctx context.
 			progress := 100 * resp.Progress()
 			speed := resp.BytesPerSecond() / (1024 * 1024) // MB/s
 
-			db.DB.Model(&models.LeechJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+			updates := map[string]interface{}{
 				"status":      "downloading",
 				"downloaded":  bytesComplete,
 				"total_bytes": totalBytes,
 				"progress":    progress,
 				"speed":       speed,
-			})
+			}
+
+			if resp.Filename != "" {
+				updates["filename"] = filepath.Base(resp.Filename)
+			}
+
+			db.DB.Model(&models.LeechJob{}).Where("id = ?", jobID).Updates(updates)
 
 		case <-resp.Done:
 			var status = "completed"
@@ -274,6 +326,13 @@ func (e *Engine) monitorProgress(resp *grab.Response, jobID string, ctx context.
 				logger.Info("Downloader", "Leech job completed successfully", "id", jobID)
 			}
 
+			var job models.LeechJob
+			_ = db.DB.First(&job, "id = ?", jobID)
+			finalName := job.Filename
+			if resp.Filename != "" {
+				finalName = filepath.Base(resp.Filename)
+			}
+
 			db.DB.Model(&models.LeechJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
 				"status":        status,
 				"downloaded":    resp.BytesComplete(),
@@ -281,6 +340,7 @@ func (e *Engine) monitorProgress(resp *grab.Response, jobID string, ctx context.
 				"progress":      100.0,
 				"speed":         0.0,
 				"error_message": errMsg,
+				"filename":      finalName,
 			})
 
 			e.mu.Lock()
@@ -289,6 +349,126 @@ func (e *Engine) monitorProgress(resp *grab.Response, jobID string, ctx context.
 			return
 		}
 	}
+}
+
+// resolvePremiumURL follows premium.to redirects and parses response links and filenames
+func resolvePremiumURL(apiURL string, client *http.Client) (string, string, error) {
+	currentURL := apiURL
+	var finalFilename string
+
+	noRedirectClient := &http.Client{
+		Transport: client.Transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Timeout: 15 * time.Second,
+	}
+
+	// Limit to maximum 10 redirects to prevent infinite loops
+	for i := 0; i < 10; i++ {
+		req, err := http.NewRequest("GET", currentURL, nil)
+		if err != nil {
+			return "", "", err
+		}
+
+		resp, err := noRedirectClient.Do(req)
+		if err != nil {
+			return "", "", err
+		}
+
+		// Capture Content-Disposition if present
+		if disp := resp.Header.Get("Content-Disposition"); disp != "" {
+			if fn := parseContentDispositionFilename(disp); fn != "" {
+				finalFilename = fn
+			}
+		}
+
+		isRedirect := resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusMovedPermanently || 
+			resp.StatusCode == http.StatusTemporaryRedirect || resp.StatusCode == http.StatusSeeOther || 
+			resp.StatusCode == 308
+
+		if isRedirect {
+			resp.Body.Close()
+			loc := resp.Header.Get("Location")
+			if loc != "" {
+				// Resolve relative URLs relative to currentURL
+				base, err := url.Parse(currentURL)
+				if err == nil {
+					locURL, err := base.Parse(loc)
+					if err == nil {
+						currentURL = locURL.String()
+					} else {
+						currentURL = loc
+					}
+				} else {
+					currentURL = loc
+				}
+				continue
+			}
+			break
+		}
+
+		// If it's the first request, we need to handle plain text URL or JSON error in body
+		if i == 0 {
+			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			bodyStr := strings.TrimSpace(string(bodyBytes))
+
+			if strings.HasPrefix(bodyStr, "{") {
+				if strings.Contains(bodyStr, "\"error\"") || strings.Contains(bodyStr, "\"err\"") {
+					return "", "", fmt.Errorf("premium.to error response: %s", bodyStr)
+				}
+			}
+
+			if strings.HasPrefix(bodyStr, "http://") || strings.HasPrefix(bodyStr, "https://") {
+				currentURL = bodyStr
+				continue
+			}
+		} else {
+			resp.Body.Close()
+		}
+
+		// If we reach here and it was not a redirect (and not a URL in body of the first request), we are done.
+		break
+	}
+
+	// If filename is still empty, parse from final URL path
+	if finalFilename == "" {
+		parsed, err := url.Parse(currentURL)
+		if err == nil {
+			finalFilename = filepath.Base(parsed.Path)
+		}
+	}
+
+	return currentURL, finalFilename, nil
+}
+
+func parseContentDispositionFilename(disp string) string {
+	parts := strings.Split(disp, ";")
+	var filename string
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "filename*=") {
+			val := strings.TrimPrefix(part, "filename*=")
+			val = strings.Trim(val, "\"")
+			subParts := strings.SplitN(val, "'", 3)
+			if len(subParts) == 3 {
+				decoded, err := url.PathUnescape(subParts[2])
+				if err == nil {
+					return decoded
+				}
+			} else {
+				decoded, err := url.PathUnescape(val)
+				if err == nil {
+					return decoded
+				}
+			}
+		} else if strings.HasPrefix(part, "filename=") {
+			val := strings.TrimPrefix(part, "filename=")
+			filename = strings.Trim(val, "\"")
+		}
+	}
+	return filename
 }
 
 // startQueueWorker runs a queue tick loop checking for pending downloads

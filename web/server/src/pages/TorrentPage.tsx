@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuthStore } from '../store/authStore';
+import { useJobsStore } from '../store/jobsStore';
 import { 
 	FiPlay, FiPause, FiTrash2, FiFolder, FiPlus, FiSettings, 
 	FiGlobe, FiCheck, FiX, FiLink, FiDownloadCloud, FiServer,
@@ -193,19 +194,59 @@ const TorrentProgressBar: React.FC<{ progress: number; status: string }> = ({ pr
 				.scroll-stripes {
 					animation: scroll 1.5s linear infinite;
 				}
+				@keyframes spin {
+					0% { transform: rotate(0deg); }
+					100% { transform: rotate(360deg); }
+				}
+				.spinner {
+					animation: spin 1s linear infinite;
+				}
 			`}</style>
 		</div>
 	);
 };
 
+interface TorrentConfig {
+	save_directory: string;
+	max_connections_per_torrent: number;
+	max_half_open_connections: number;
+	upload_limit_mb: number;
+	download_limit_mb: number;
+	enable_dht: boolean;
+	enable_pex: boolean;
+	enable_utp: boolean;
+	enable_tcp: boolean;
+	enable_upload: boolean;
+	piece_hashers_per_torrent: number;
+	custom_trackers: string;
+}
+
 export const TorrentPage: React.FC = () => {
+	const torrents = useJobsStore(state => state.torrents);
+	const initWebSocket = useJobsStore(state => state.initWebSocket);
+	const sendAction = useJobsStore(state => state.sendAction);
 	const { token } = useAuthStore();
 
-	const [torrents, setTorrents] = useState<TorrentJob[]>([]);
 	const [showAddModal, setShowAddModal] = useState(false);
 	const [magnetUri, setMagnetUri] = useState('');
 	const [torrentFile, setTorrentFile] = useState<File | null>(null);
 	const [saveDir, setSaveDir] = useState('./data/manager/downloads');
+	const [showConfigModal, setShowConfigModal] = useState(false);
+	const [folderPickerTarget, setFolderPickerTarget] = useState<'add' | 'settings'>('add');
+	const [config, setConfig] = useState<TorrentConfig>({
+		save_directory: './data/manager/downloads',
+		max_connections_per_torrent: 200,
+		max_half_open_connections: 100,
+		upload_limit_mb: 0,
+		download_limit_mb: 0,
+		enable_dht: true,
+		enable_pex: true,
+		enable_utp: true,
+		enable_tcp: true,
+		enable_upload: true,
+		piece_hashers_per_torrent: 4,
+		custom_trackers: '',
+	});
 
 	// Folder Picker state
 	const [showFolderModal, setShowFolderModal] = useState(false);
@@ -224,27 +265,58 @@ export const TorrentPage: React.FC = () => {
 	const [torrentToDelete, setTorrentToDelete] = useState<TorrentJob | null>(null);
 	const [deleteFilesOption, setDeleteFilesOption] = useState(false);
 
-	const fetchTorrents = async () => {
+	// Add Torrent Step states
+	const [addStep, setAddStep] = useState<'input' | 'submitting' | 'fetching_metadata' | 'select_files'>('input');
+	const [addedInfoHash, setAddedInfoHash] = useState('');
+	const [modalFiles, setModalFiles] = useState<TorrentFileItem[]>([]);
+	const [selectedModalFileIndices, setSelectedModalFileIndices] = useState<number[]>([]);
+	const [fileSearchQuery, setFileSearchQuery] = useState('');
+	const [selectFilesEnabled, setSelectFilesEnabled] = useState(false);
+
+	const fetchConfig = async () => {
 		try {
-			const res = await fetch('/api/torrent/list', {
+			const res = await fetch('/api/torrent/config', {
 				headers: { 'Authorization': `Bearer ${token}` }
 			});
 			if (res.ok) {
 				const data = await res.json();
-				setTorrents(data || []);
+				setConfig(data);
+				if (!saveDir) setSaveDir(data.save_directory);
 			}
 		} catch (err) {
-			console.error('Failed to fetch torrents list', err);
+			console.error('Failed to fetch torrent configuration', err);
+		}
+	};
+
+	const handleSaveConfig = async () => {
+		try {
+			const res = await fetch('/api/torrent/config', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${token}`
+				},
+				body: JSON.stringify(config)
+			});
+			if (res.ok) {
+				setShowConfigModal(false);
+				fetchConfig();
+			} else {
+				const data = await res.json();
+				alert(data.error || 'Failed to save configuration');
+			}
+		} catch (err) {
+			console.error(err);
 		}
 	};
 
 	useEffect(() => {
 		if (token) {
-			fetchTorrents();
-			const interval = setInterval(fetchTorrents, 2000);
-			return () => clearInterval(interval);
+			const close = initWebSocket(token);
+			fetchConfig();
+			return () => close();
 		}
-	}, [token]);
+	}, [token, initWebSocket]);
 
 	// Fetch directories for picker
 	const fetchDirectories = async (path: string) => {
@@ -265,8 +337,10 @@ export const TorrentPage: React.FC = () => {
 		}
 	};
 
-	const openFolderPicker = () => {
-		fetchDirectories(saveDir || currentPath);
+	const openFolderPicker = (target: 'add' | 'settings') => {
+		setFolderPickerTarget(target);
+		const initialPath = target === 'add' ? saveDir : config.save_directory;
+		fetchDirectories(initialPath || currentPath);
 		setShowFolderModal(true);
 	};
 
@@ -310,29 +384,92 @@ export const TorrentPage: React.FC = () => {
 		}
 	};
 
+	const handleSelectAllFiles = () => {
+		setSelectedModalFileIndices(modalFiles.map(f => f.index));
+	};
+
+	const handleDeselectAllFiles = () => {
+		setSelectedModalFileIndices([]);
+	};
+
+	const handleToggleModalFile = (idx: number) => {
+		setSelectedModalFileIndices(prev => 
+			prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]
+		);
+	};
+
+	const handleCancelAdd = () => {
+		if (addedInfoHash) {
+			sendAction({ action: 'delete_torrent', info_hash: addedInfoHash, delete_files: true });
+		}
+		setAddStep('input');
+		setAddedInfoHash('');
+		setModalFiles([]);
+		setSelectedModalFileIndices([]);
+		setFileSearchQuery('');
+		setSelectFilesEnabled(false);
+		setShowAddModal(false);
+	};
+
+	const handleCloseKeepBackground = () => {
+		setAddStep('input');
+		setAddedInfoHash('');
+		setModalFiles([]);
+		setSelectedModalFileIndices([]);
+		setFileSearchQuery('');
+		setSelectFilesEnabled(false);
+		setShowAddModal(false);
+	};
+
+	const handleConfirmDownload = async () => {
+		if (!addedInfoHash) return;
+		try {
+			const res = await fetch('/api/torrent/select-files', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${token}`
+				},
+				body: JSON.stringify({
+					info_hash: addedInfoHash,
+					selected_files: selectedModalFileIndices
+				})
+			});
+			if (res.ok) {
+				sendAction({ action: 'resume_torrent', info_hash: addedInfoHash });
+			}
+		} catch (err) {
+			console.error(err);
+		} finally {
+			setAddStep('input');
+			setAddedInfoHash('');
+			setModalFiles([]);
+			setSelectedModalFileIndices([]);
+			setFileSearchQuery('');
+			setSelectFilesEnabled(false);
+			setShowAddModal(false);
+		}
+	};
+
 	const handleAddTorrent = async (e: React.FormEvent) => {
 		e.preventDefault();
+		if (!torrentFile && !magnetUri.trim()) return;
+
+		setAddStep('submitting');
 		try {
+			let res;
 			if (torrentFile) {
 				const formData = new FormData();
 				formData.append('file', torrentFile);
 				formData.append('save_directory', saveDir);
-
-				const res = await fetch('/api/torrent/add', {
+				formData.append('select_files', selectFilesEnabled ? 'true' : 'false');
+				res = await fetch('/api/torrent/add', {
 					method: 'POST',
 					headers: { 'Authorization': `Bearer ${token}` },
 					body: formData
 				});
-				if (res.ok) {
-					setShowAddModal(false);
-					setTorrentFile(null);
-					fetchTorrents();
-				} else {
-					const data = await res.json();
-					alert(data.error || 'Failed to add torrent file');
-				}
-			} else if (magnetUri.trim()) {
-				const res = await fetch('/api/torrent/add', {
+			} else {
+				res = await fetch('/api/torrent/add', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -340,77 +477,91 @@ export const TorrentPage: React.FC = () => {
 					},
 					body: JSON.stringify({
 						magnet_uri: magnetUri,
-						save_directory: saveDir
+						save_directory: saveDir,
+						select_files: selectFilesEnabled
 					})
 				});
-				if (res.ok) {
-					setShowAddModal(false);
-					setMagnetUri('');
-					fetchTorrents();
+			}
+
+			if (res && res.ok) {
+				const data = await res.json();
+				if (data.info_hash) {
+					if (selectFilesEnabled) {
+						setAddedInfoHash(data.info_hash);
+						setAddStep('fetching_metadata');
+					} else {
+						// Immediately start downloading and close modal
+						setAddStep('input');
+						setTorrentFile(null);
+						setMagnetUri('');
+						setSelectFilesEnabled(false);
+						setShowAddModal(false);
+					}
 				} else {
-					const data = await res.json();
-					alert(data.error || 'Failed to add magnet link');
+					setAddStep('input');
+					alert('Failed to add torrent: info hash missing');
 				}
+			} else {
+				const data = res ? await res.json() : {};
+				setAddStep('input');
+				alert(data.error || 'Failed to add torrent');
 			}
 		} catch (err) {
-			console.error('Error adding torrent', err);
+			console.error(err);
+			setAddStep('input');
+			alert('Network error adding torrent');
 		}
 	};
 
-	const handlePause = async (infoHash: string) => {
-		try {
-			await fetch('/api/torrent/pause', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${token}`
-				},
-				body: JSON.stringify({ info_hash: infoHash })
-			});
-			fetchTorrents();
-		} catch (err) {
-			console.error('Pause error', err);
-		}
+	useEffect(() => {
+		if (addStep !== 'fetching_metadata' || !addedInfoHash) return;
+
+		let active = true;
+		const poll = async () => {
+			try {
+				const res = await fetch(`/api/torrent/files?info_hash=${addedInfoHash}`, {
+					headers: { 'Authorization': `Bearer ${token}` }
+				});
+				if (!active) return;
+				if (res.ok) {
+					const data = await res.json();
+					if (data && data.status !== 'fetching_metadata') {
+						setModalFiles(data || []);
+						setSelectedModalFileIndices((data || []).map((f: TorrentFileItem) => f.index));
+						setAddStep('select_files');
+					}
+				}
+			} catch (err) {
+				console.error('Failed to poll metadata files', err);
+			}
+		};
+
+		poll();
+		const interval = setInterval(poll, 1500);
+
+		return () => {
+			active = false;
+			clearInterval(interval);
+		};
+	}, [addStep, addedInfoHash, token]);
+
+	const handlePause = (infoHash: string) => {
+		sendAction({ action: 'pause_torrent', info_hash: infoHash });
 	};
 
-	const handleResume = async (infoHash: string) => {
-		try {
-			await fetch('/api/torrent/resume', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${token}`
-				},
-				body: JSON.stringify({ info_hash: infoHash })
-			});
-			fetchTorrents();
-		} catch (err) {
-			console.error('Resume error', err);
-		}
+	const handleResume = (infoHash: string) => {
+		sendAction({ action: 'resume_torrent', info_hash: infoHash });
 	};
 
-	const handleDeleteConfirm = async () => {
+	const handleDeleteConfirm = () => {
 		if (!torrentToDelete) return;
-		try {
-			const res = await fetch('/api/torrent/delete', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${token}`
-				},
-				body: JSON.stringify({
-					info_hash: torrentToDelete.info_hash,
-					delete_files: deleteFilesOption
-				})
-			});
-			if (res.ok) {
-				setTorrentToDelete(null);
-				setDeleteFilesOption(false);
-				fetchTorrents();
-			}
-		} catch (err) {
-			console.error('Delete error', err);
-		}
+		sendAction({
+			action: 'delete_torrent',
+			info_hash: torrentToDelete.info_hash,
+			delete_files: deleteFilesOption
+		});
+		setTorrentToDelete(null);
+		setDeleteFilesOption(false);
 	};
 
 	const fetchTorrentFiles = async (infoHash: string) => {
@@ -464,12 +615,17 @@ export const TorrentPage: React.FC = () => {
 			});
 			if (res.ok) {
 				setSelectedTorrent(null);
-				fetchTorrents();
 			}
 		} catch (err) {
 			console.error(err);
 		}
 	};
+
+	const addedTorrent = torrents.find(t => t.info_hash === addedInfoHash);
+	const currentPeers = addedTorrent ? addedTorrent.peers : 0;
+	const filteredModalFiles = modalFiles.filter(file => 
+		file.path.toLowerCase().includes(fileSearchQuery.toLowerCase())
+	);
 
 	return (
 		<div style={{ padding: 24, color: 'var(--color-brand-text)' }}>
@@ -479,13 +635,22 @@ export const TorrentPage: React.FC = () => {
 					<h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: 'var(--color-brand-heading)' }}>BitTorrent Client</h1>
 					<p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--color-brand-muted)' }}>Manage high performance parallel torrent downloads</p>
 				</div>
-				<button 
-					onClick={() => setShowAddModal(true)} 
-					className="btn btn--primary" 
-					style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#ea580c', borderColor: '#ea580c', color: '#fff' }}
-				>
-					<FiPlus size={16} /> Add Torrent
-				</button>
+				<div style={{ display: 'flex', gap: 12 }}>
+					<button 
+						onClick={() => setShowAddModal(true)} 
+						className="btn btn--primary" 
+						style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#ea580c', borderColor: '#ea580c', color: '#fff' }}
+					>
+						<FiPlus size={16} /> Add Torrent
+					</button>
+					<button 
+						onClick={() => setShowConfigModal(true)} 
+						className="btn" 
+						style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+					>
+						<FiSettings size={16} /> Settings
+					</button>
+				</div>
 			</div>
 
 			{/* Torrent Jobs List */}
@@ -620,67 +785,267 @@ export const TorrentPage: React.FC = () => {
 				}}>
 					<div style={{
 						background: 'var(--color-card-bg, #fff)',
-						borderRadius: 16, width: '90%', maxWidth: 500, padding: 24,
+						borderRadius: 16, width: '90%', maxWidth: 520, padding: 24,
 						border: '1px solid var(--color-brand-border)',
 						boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
 					}}>
 						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
 							<h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--color-brand-heading)' }}>Add New Torrent</h3>
-							<button onClick={() => setShowAddModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-muted)' }}><FiX size={18} /></button>
+							<button onClick={handleCancelAdd} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-muted)' }}><FiX size={18} /></button>
 						</div>
 
-						<form onSubmit={handleAddTorrent}>
-							{/* Magnet Link */}
-							<div style={{ marginBottom: 16 }}>
-								<label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Magnet Link URI</label>
-								<div style={{ position: 'relative' }}>
-									<FiLink size={16} style={{ position: 'absolute', left: 12, top: 12, color: 'var(--color-brand-muted)' }} />
-									<input 
-										type="text" 
-										placeholder="magnet:?xt=urn:btih:..." 
-										value={magnetUri} 
-										onChange={(e) => { setMagnetUri(e.target.value); setTorrentFile(null); }}
-										style={{ width: '100%', padding: '10px 12px 10px 38px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit' }}
-									/>
+						{addStep === 'input' && (
+							<form onSubmit={handleAddTorrent}>
+								{/* Magnet Link */}
+								<div style={{ marginBottom: 16 }}>
+									<label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Magnet Link URI</label>
+									<div style={{ position: 'relative' }}>
+										<FiLink size={16} style={{ position: 'absolute', left: 12, top: 12, color: 'var(--color-brand-muted)' }} />
+										<input 
+											type="text" 
+											placeholder="magnet:?xt=urn:btih:..." 
+											value={magnetUri} 
+											onChange={(e) => { setMagnetUri(e.target.value); setTorrentFile(null); }}
+											style={{ width: '100%', padding: '10px 12px 10px 38px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit' }}
+										/>
+									</div>
 								</div>
-							</div>
 
-							<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '8px 0', fontSize: 12, color: 'var(--color-brand-muted)' }}>
-								<span>— OR —</span>
-							</div>
+								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '12px 0', fontSize: 12, color: 'var(--color-brand-muted)', fontWeight: 500 }}>
+									<span>— OR —</span>
+								</div>
 
-							{/* Torrent File Upload */}
-							<div style={{ marginBottom: 20 }}>
-								<label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Torrent Metadata File</label>
-								<input 
-									type="file" 
-									accept=".torrent"
-									onChange={(e) => { if (e.target.files?.[0]) { setTorrentFile(e.target.files[0]); setMagnetUri(''); } }}
-									style={{ width: '100%', fontSize: 13 }}
-								/>
-							</div>
+								{/* Torrent File Drag & Drop */}
+								<div style={{ marginBottom: 20 }}>
+									<label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Torrent Metadata File</label>
+									<div 
+										onClick={() => document.getElementById('torrent-file-input')?.click()}
+										onDragOver={(e) => e.preventDefault()}
+										onDrop={(e) => {
+											e.preventDefault();
+											const file = e.dataTransfer.files?.[0];
+											if (file && file.name.endsWith('.torrent')) {
+												setTorrentFile(file);
+												setMagnetUri('');
+											}
+										}}
+										style={{
+											border: '2px dashed var(--color-brand-border)',
+											borderRadius: 12,
+											padding: '24px 16px',
+											textAlign: 'center',
+											cursor: 'pointer',
+											background: torrentFile ? 'rgba(234, 88, 12, 0.05)' : 'rgba(0,0,0,0.18)',
+											borderColor: torrentFile ? '#ea580c' : 'var(--color-brand-border)',
+											transition: 'all 0.2s ease',
+											display: 'flex',
+											flexDirection: 'column',
+											alignItems: 'center',
+											justifyContent: 'center',
+											gap: 8
+										}}
+									>
+										<input 
+											id="torrent-file-input"
+											type="file" 
+											accept=".torrent"
+											onChange={(e) => { if (e.target.files?.[0]) { setTorrentFile(e.target.files[0]); setMagnetUri(''); } }}
+											style={{ display: 'none' }}
+										/>
+										<FiDownloadCloud size={28} style={{ color: torrentFile ? '#ea580c' : 'var(--color-brand-muted)' }} />
+										<span style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-brand-heading)' }}>
+											{torrentFile ? torrentFile.name : 'Drag & Drop .torrent file here or click to browse'}
+										</span>
+										{torrentFile && (
+											<span style={{ fontSize: 11, color: 'var(--color-brand-muted)' }}>
+												{(torrentFile.size / 1024).toFixed(1)} KB • Click to change
+											</span>
+										)}
+									</div>
+								</div>
 
-							{/* Save Directory Picker */}
-							<div style={{ marginBottom: 24 }}>
-								<label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Save Directory</label>
-								<div style={{ display: 'flex', gap: 8 }}>
-									<input 
-										type="text" 
-										value={saveDir} 
-										onChange={(e) => setSaveDir(e.target.value)}
-										style={{ flex: 1, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
-									/>
-									<button type="button" onClick={openFolderPicker} className="btn" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-										<FiFolder size={14} /> Browse
+								{/* Save Directory Picker */}
+								<div style={{ marginBottom: 16 }}>
+									<label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Save Directory</label>
+									<div style={{ display: 'flex', gap: 8 }}>
+										<input 
+											type="text" 
+											value={saveDir} 
+											onChange={(e) => setSaveDir(e.target.value)}
+											style={{ flex: 1, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+										/>
+										<button type="button" onClick={() => openFolderPicker('add')} className="btn" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+											<FiFolder size={14} /> Browse
+										</button>
+									</div>
+								</div>
+
+								{/* Beautiful Switch to toggle select files */}
+								<div style={{ 
+									display: 'flex', 
+									alignItems: 'center', 
+									justifyContent: 'space-between', 
+									background: 'rgba(0,0,0,0.18)', 
+									padding: '12px 16px', 
+									borderRadius: 12, 
+									border: '1px solid var(--color-brand-border)',
+									marginBottom: 24 
+								}}>
+									<div>
+										<span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Select files to download</span>
+										<span style={{ display: 'block', fontSize: 11, color: 'var(--color-brand-muted)', marginTop: 2 }}>Fetch metadata first to check/uncheck files</span>
+									</div>
+									<label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 22 }}>
+										<input 
+											type="checkbox" 
+											checked={selectFilesEnabled} 
+											onChange={(e) => setSelectFilesEnabled(e.target.checked)} 
+											style={{ opacity: 0, width: 0, height: 0 }} 
+										/>
+										<span style={{ 
+											position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0, 
+											backgroundColor: selectFilesEnabled ? '#ea580c' : 'rgba(255,255,255,0.1)', 
+											transition: '.3s', borderRadius: 22 
+										}}>
+											<span style={{ 
+												position: 'absolute', content: '""', height: 16, width: 16, left: 3, bottom: 3, 
+												backgroundColor: 'white', transition: '.3s', borderRadius: '50%',
+												transform: selectFilesEnabled ? 'translateX(22px)' : 'translateX(0)' 
+											}} />
+										</span>
+									</label>
+								</div>
+
+								<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+									<button type="button" onClick={handleCancelAdd} className="btn">Cancel</button>
+									<button type="submit" className="btn btn--primary" style={{ background: '#ea580c', borderColor: '#ea580c', color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }} disabled={!magnetUri.trim() && !torrentFile}>
+										{selectFilesEnabled ? (
+											<>Next <FiChevronLeft size={16} style={{ transform: 'rotate(180deg)' }} /></>
+										) : (
+											'Start Downloading'
+										)}
 									</button>
 								</div>
-							</div>
+							</form>
+						)}
 
-							<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-								<button type="button" onClick={() => setShowAddModal(false)} className="btn">Cancel</button>
-								<button type="submit" className="btn btn--primary" style={{ background: '#ea580c', borderColor: '#ea580c', color: '#fff' }} disabled={!magnetUri.trim() && !torrentFile}>Start Downloading</button>
+						{addStep === 'submitting' && (
+							<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: '30px 10px', textAlign: 'center' }}>
+								<div className="spinner" style={{ width: 40, height: 40, border: '3px solid rgba(234,88,12,0.1)', borderTopColor: '#ea580c', borderRadius: '50%' }} />
+								<div>
+									<h4 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: 'var(--color-brand-heading)' }}>Submitting to Server</h4>
+									<p style={{ fontSize: 12, color: 'var(--color-brand-muted)', marginTop: 6 }}>Uploading torrent payload and registering job metadata...</p>
+								</div>
 							</div>
-						</form>
+						)}
+
+						{addStep === 'fetching_metadata' && (
+							<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: '30px 10px', textAlign: 'center' }}>
+								<div className="spinner" style={{ width: 40, height: 40, border: '3px solid rgba(59,130,246,0.1)', borderTopColor: '#3b82f6', borderRadius: '50%' }} />
+								<div>
+									<h4 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: 'var(--color-brand-heading)' }}>Retrieving Torrent Info</h4>
+									<p style={{ fontSize: 12, color: 'var(--color-brand-muted)', marginTop: 6 }}>
+										{magnetUri ? 'Downloading magnet metadata from BitTorrent network peers...' : 'Parsing metainfo tree...'}
+									</p>
+									<div style={{ display: 'inline-block', marginTop: 12, fontSize: 11, background: 'rgba(0,0,0,0.18)', padding: '4px 10px', borderRadius: 20, border: '1px solid var(--color-brand-border)', fontFamily: 'monospace' }}>
+										Peers connected: {currentPeers}
+									</div>
+								</div>
+								<div style={{ display: 'flex', gap: 12, marginTop: 16, width: '100%' }}>
+									<button type="button" className="btn" style={{ flex: 1 }} onClick={handleCancelAdd}>Delete & Cancel</button>
+									<button type="button" className="btn btn--primary" style={{ flex: 1 }} onClick={handleCloseKeepBackground}>Run in Background</button>
+								</div>
+							</div>
+						)}
+
+						{addStep === 'select_files' && (
+							<div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+								<div>
+									<h4 style={{ fontSize: 14, fontWeight: 700, margin: 0, color: 'var(--color-brand-heading)' }}>Select Files to Download</h4>
+									<p style={{ fontSize: 11, color: 'var(--color-brand-muted)', marginTop: 2 }}>Uncheck any files you do not wish to download onto the server.</p>
+								</div>
+
+								{/* Search / Filter input */}
+								<input 
+									type="text" 
+									placeholder="Search files by name..." 
+									value={fileSearchQuery}
+									onChange={(e) => setFileSearchQuery(e.target.value)}
+									style={{ width: '100%', padding: '8px 12px', fontSize: 12, borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', outline: 'none' }}
+								/>
+
+								{/* Select Action buttons */}
+								<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+									<div style={{ display: 'flex', gap: 8 }}>
+										<button type="button" className="btn btn--sm" style={{ padding: '2px 8px', fontSize: 11 }} onClick={handleSelectAllFiles}>Select All</button>
+										<button type="button" className="btn btn--sm" style={{ padding: '2px 8px', fontSize: 11 }} onClick={handleDeselectAllFiles}>Deselect All</button>
+									</div>
+									<span style={{ fontSize: 11, color: 'var(--color-brand-muted)' }}>
+										Selected {selectedModalFileIndices.length} of {modalFiles.length} files
+									</span>
+								</div>
+
+								{/* Scrollable file list */}
+								<div style={{ border: '1px solid var(--color-brand-border)', borderRadius: 8, background: 'var(--color-brand-bg)', maxHeight: 200, overflowY: 'auto', padding: '4px 0' }}>
+									{filteredModalFiles.length === 0 ? (
+										<div style={{ padding: 20, textAlign: 'center', color: 'var(--color-brand-muted)', fontSize: 12 }}>No matching files found</div>
+									) : (
+										filteredModalFiles.map(file => {
+											const isChecked = selectedModalFileIndices.includes(file.index);
+											return (
+												<label 
+													key={file.index} 
+													style={{ 
+														display: 'flex', 
+														alignItems: 'center', 
+														gap: 10, 
+														padding: '8px 12px', 
+														borderBottom: '1px solid rgba(255,255,255,0.03)', 
+														cursor: 'pointer',
+														userSelect: 'none',
+														background: isChecked ? 'rgba(255,255,255,0.01)' : 'transparent'
+													}}
+												>
+													<input 
+														type="checkbox" 
+														checked={isChecked}
+														onChange={() => handleToggleModalFile(file.index)}
+														style={{ accentColor: 'var(--color-brand)' }}
+													/>
+													<div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+														<span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-brand-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+															{file.path}
+														</span>
+														<span style={{ fontSize: 10, color: 'var(--color-brand-muted)' }}>
+															{formatBytes(file.length)}
+														</span>
+													</div>
+												</label>
+											);
+										})
+									)}
+								</div>
+
+								{/* Save directory input (again, editable) */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)' }}>Save Location</label>
+									<div style={{ display: 'flex', gap: 8 }}>
+										<input 
+											type="text" 
+											value={saveDir} 
+											onChange={(e) => setSaveDir(e.target.value)}
+											style={{ flex: 1, padding: '8px 12px', fontSize: 12, borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', outline: 'none' }}
+										/>
+										<button type="button" className="btn btn--sm" style={{ padding: '0 12px' }} onClick={() => openFolderPicker('add')}><FiFolder size={14} /></button>
+									</div>
+								</div>
+
+								<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 8 }}>
+									<button type="button" className="btn" onClick={handleCancelAdd}>Cancel</button>
+									<button type="button" className="btn btn--primary" style={{ background: '#ea580c', borderColor: '#ea580c', color: '#fff' }} onClick={handleConfirmDownload}>Confirm & Download</button>
+								</div>
+							</div>
+						)}
 					</div>
 				</div>
 			)}
@@ -766,7 +1131,14 @@ export const TorrentPage: React.FC = () => {
 							<button type="button" onClick={() => setShowFolderModal(false)} className="btn">Cancel</button>
 							<button 
 								type="button" 
-								onClick={() => { setSaveDir(currentPath); setShowFolderModal(false); }} 
+								onClick={() => {
+									if (folderPickerTarget === 'add') {
+										setSaveDir(currentPath);
+									} else {
+										setConfig(prev => ({ ...prev, save_directory: currentPath }));
+									}
+									setShowFolderModal(false);
+								}} 
 								className="btn btn--primary"
 								style={{ background: '#ea580c', borderColor: '#ea580c', color: '#fff' }}
 							>
@@ -882,6 +1254,190 @@ export const TorrentPage: React.FC = () => {
 								disabled={loadingFiles}
 							>
 								Save Changes
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{/* SETTINGS MODAL */}
+			{showConfigModal && (
+				<div style={{
+					position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+					background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+					display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
+				}}>
+					<div style={{
+						background: 'var(--color-card-bg, #fff)',
+						borderRadius: 16, width: '90%', maxWidth: 650, padding: 24,
+						border: '1px solid var(--color-brand-border)',
+						boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+						maxHeight: '90vh', overflowY: 'auto'
+					}}>
+						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+							<h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--color-brand-heading)' }}>BitTorrent Client Configuration</h3>
+							<button onClick={() => setShowConfigModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-muted)' }}><FiX size={18} /></button>
+						</div>
+
+						<div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+							{/* Form Grid */}
+							<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+								{/* Left Column */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Default Save Folder</label>
+										<div style={{ display: 'flex', gap: 8 }}>
+											<input 
+												type="text" 
+												value={config.save_directory} 
+												onChange={(e) => setConfig(prev => ({ ...prev, save_directory: e.target.value }))}
+												style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+											/>
+											<button type="button" onClick={() => openFolderPicker('settings')} className="btn btn--sm" style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiFolder size={12} /> Browse</button>
+										</div>
+									</div>
+
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Upload Speed Limit (MB/s)</label>
+										<input 
+											type="number" 
+											step="0.1"
+											min="0"
+											value={config.upload_limit_mb} 
+											onChange={(e) => setConfig(prev => ({ ...prev, upload_limit_mb: parseFloat(e.target.value) || 0 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+											placeholder="0 for unlimited"
+										/>
+									</div>
+
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Download Speed Limit (MB/s)</label>
+										<input 
+											type="number" 
+											step="0.1"
+											min="0"
+											value={config.download_limit_mb} 
+											onChange={(e) => setConfig(prev => ({ ...prev, download_limit_mb: parseFloat(e.target.value) || 0 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+											placeholder="0 for unlimited"
+										/>
+									</div>
+
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Piece Hashers Per Torrent</label>
+										<input 
+											type="number" 
+											min="1"
+											max="16"
+											value={config.piece_hashers_per_torrent} 
+											onChange={(e) => setConfig(prev => ({ ...prev, piece_hashers_per_torrent: parseInt(e.target.value) || 4 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+										/>
+									</div>
+								</div>
+
+								{/* Right Column */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Max Connections Per Torrent</label>
+										<input 
+											type="number" 
+											min="10"
+											max="2000"
+											value={config.max_connections_per_torrent} 
+											onChange={(e) => setConfig(prev => ({ ...prev, max_connections_per_torrent: parseInt(e.target.value) || 200 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+										/>
+									</div>
+
+									<div>
+										<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Max Half-Open Connections</label>
+										<input 
+											type="number" 
+											min="5"
+											max="500"
+											value={config.max_half_open_connections} 
+											onChange={(e) => setConfig(prev => ({ ...prev, max_half_open_connections: parseInt(e.target.value) || 100 }))}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 13 }}
+										/>
+									</div>
+
+									{/* Toggles */}
+									<div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_dht} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_dht: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable DHT (Distributed Hash Table)</span>
+										</label>
+
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_pex} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_pex: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable PEX (Peer Exchange)</span>
+										</label>
+
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_utp} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_utp: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable uTP Protocol</span>
+										</label>
+
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_tcp} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_tcp: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable TCP Protocol</span>
+										</label>
+
+										<label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+											<input 
+												type="checkbox" 
+												checked={config.enable_upload} 
+												onChange={(e) => setConfig(prev => ({ ...prev, enable_upload: e.target.checked }))}
+												style={{ cursor: 'pointer', accentColor: '#ea580c' }}
+											/>
+											<span>Enable Seeding / Uploading</span>
+										</label>
+									</div>
+								</div>
+							</div>
+
+							{/* Custom Trackers list */}
+							<div>
+								<label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--color-brand-muted)' }}>Inject Custom Trackers (Newline Separated)</label>
+								<textarea 
+									rows={4}
+									value={config.custom_trackers}
+									onChange={(e) => setConfig(prev => ({ ...prev, custom_trackers: e.target.value }))}
+									style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'transparent', color: 'inherit', fontSize: 12, fontFamily: 'monospace' }}
+									placeholder="udp://tracker.opentrackr.org:1337/announce"
+								/>
+							</div>
+						</div>
+
+						<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 20 }}>
+							<button onClick={() => setShowConfigModal(false)} className="btn">Cancel</button>
+							<button 
+								onClick={handleSaveConfig} 
+								className="btn btn--primary" 
+								style={{ background: '#ea580c', borderColor: '#ea580c', color: '#fff' }}
+							>
+								Save Settings
 							</button>
 						</div>
 					</div>

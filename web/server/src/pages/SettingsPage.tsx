@@ -20,6 +20,49 @@ export const SettingsPage: React.FC = () => {
   const [selectedFont, setSelectedFont] = useState(() => localStorage.getItem('cc_font') || 'inter');
   const [selectedTheme, setSelectedTheme] = useState(() => localStorage.getItem('cc_theme') || 'light');
   const [showToken, setShowToken] = useState(false);
+  const [faviconFile, setFaviconFile] = useState<File | null>(null);
+  const [uploadingFavicon, setUploadingFavicon] = useState(false);
+  const [faviconMsg, setFaviconMsg] = useState('');
+
+  const handleFaviconUpload = async () => {
+    if (!faviconFile) return;
+    setUploadingFavicon(true);
+    setFaviconMsg('');
+    try {
+      const formData = new FormData();
+      formData.append('favicon', faviconFile);
+      const res = await fetch('/api/settings/favicon', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData,
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setFaviconMsg('✅ Favicon updated successfully! Applied instantly.');
+        setFaviconFile(null);
+        const fileInput = document.getElementById('favicon-input') as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
+
+        // Update favicon links dynamically in DOM
+        const links = document.querySelectorAll("link[rel~='icon']");
+        links.forEach((link: any) => {
+          link.href = '/favicon.png?t=' + Date.now();
+        });
+        if (links.length === 0) {
+          const newLink = document.createElement('link');
+          newLink.rel = 'icon';
+          newLink.type = 'image/png';
+          newLink.href = '/favicon.png?t=' + Date.now();
+          document.head.appendChild(newLink);
+        }
+      } else {
+        setFaviconMsg(`❌ ${data.error}`);
+      }
+    } catch (e: any) {
+      setFaviconMsg('❌ ' + e.message);
+    }
+    setUploadingFavicon(false);
+  };
 
   // Decode JWT Payload helper
   const decodeJWT = (t: string | null) => {
@@ -119,6 +162,47 @@ export const SettingsPage: React.FC = () => {
                 );
               })}
             </div>
+          </div>
+
+          {/* Favicon Upload Card */}
+          <div className="g-card animate-slide-in">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <FiSliders style={{ color: 'var(--color-brand)', fontSize: 18 }} />
+              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Website Favicon</span>
+            </div>
+            <p style={{ fontSize: 11, color: 'var(--color-brand-text)', marginBottom: 14 }}>
+              Upload any image format to set it as the website's favicon. It will automatically be converted to a premium high-quality icon.
+            </p>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <input
+                id="favicon-input"
+                type="file"
+                accept="image/*"
+                onChange={e => setFaviconFile(e.target.files?.[0] || null)}
+                style={{
+                  flex: 1,
+                  fontSize: 12,
+                  color: 'var(--color-brand-text)',
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  border: '1px solid var(--color-brand-border)',
+                  background: 'var(--color-brand-bg)'
+                }}
+              />
+              <button
+                className="btn btn--sm btn--primary"
+                onClick={handleFaviconUpload}
+                disabled={uploadingFavicon || !faviconFile}
+                style={{ height: 38, whiteSpace: 'nowrap' }}
+              >
+                {uploadingFavicon ? 'Uploading...' : 'Upload Icon'}
+              </button>
+            </div>
+            {faviconMsg && (
+              <div style={{ marginTop: 10, fontSize: 12, color: faviconMsg.startsWith('✅') ? '#10b981' : '#ef4444' }}>
+                {faviconMsg}
+              </div>
+            )}
           </div>
 
           {/* Font Selector Card */}

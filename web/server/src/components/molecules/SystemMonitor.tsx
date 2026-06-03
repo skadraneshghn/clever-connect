@@ -1,31 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { FiCpu, FiHardDrive, FiActivity, FiClock } from 'react-icons/fi';
-
-interface Stats {
-  cpu_percent: number;
-  mem_total_gb: number;
-  mem_used_gb: number;
-  mem_percent: number;
-  disk_total_gb: number;
-  disk_used_gb: number;
-  disk_percent: number;
-  app_mem_mb: number;
-  uptime_seconds: number;
-}
+import React, { useState } from 'react';
+import { useServerStore } from '../../store/dashboardStore';
+import { FiCpu, FiHardDrive, FiActivity, FiClock, FiActivity as FiNet, FiThermometer, FiChevronDown, FiChevronUp } from 'react-icons/fi';
 
 export const SystemMonitor: React.FC = () => {
-  const [stats, setStats] = useState<Stats>({
-    cpu_percent: 18,
-    mem_total_gb: 16,
-    mem_used_gb: 5.4,
-    mem_percent: 33.7,
-    disk_total_gb: 120,
-    disk_used_gb: 24,
-    disk_percent: 20,
-    app_mem_mb: 8.4,
-    uptime_seconds: 120
-  });
-  const [loading, setLoading] = useState(true);
+  const state = useServerStore();
+  const [showCores, setShowCores] = useState(false);
 
   const formatUptime = (totalSeconds: number): string => {
     const d = Math.floor(totalSeconds / (3600 * 24));
@@ -42,46 +21,14 @@ export const SystemMonitor: React.FC = () => {
     return parts.join(' ');
   };
 
-  const fetchStats = async () => {
-    try {
-      const token = localStorage.getItem('cc_server_token') || localStorage.getItem('cc_client_token') || '';
-      const response = await fetch('/api/system/stats', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setStats(data);
-      } else {
-        // Mock drift offline
-        setStats(prev => ({
-          ...prev,
-          cpu_percent: Math.min(100, Math.max(0, prev.cpu_percent + (Math.random() * 6 - 3))),
-          mem_percent: Math.min(100, Math.max(0, prev.mem_percent + (Math.random() * 2 - 1))),
-          mem_used_gb: Math.min(prev.mem_total_gb, Math.max(0, prev.mem_used_gb + (Math.random() * 0.1 - 0.05))),
-          app_mem_mb: Math.max(5, prev.app_mem_mb + (Math.random() * 0.2 - 0.1)),
-          uptime_seconds: prev.uptime_seconds + 3
-        }));
-      }
-    } catch (err) {
-      // Offline fallback
-      setStats(prev => ({
-        ...prev,
-        cpu_percent: Math.min(100, Math.max(0, prev.cpu_percent + (Math.random() * 6 - 3))),
-        mem_percent: Math.min(100, Math.max(0, prev.mem_percent + (Math.random() * 2 - 1))),
-        uptime_seconds: prev.uptime_seconds + 3
-      }));
-    } finally {
-      setLoading(false);
-    }
+  const formatSpeed = (bytesPerSec: number): string => {
+    if (!bytesPerSec || bytesPerSec === 0 || isNaN(bytesPerSec)) return '0 B/s';
+    const k = 1024;
+    const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    const i = Math.floor(Math.log(bytesPerSec) / Math.log(k));
+    const clampedIndex = Math.min(i, sizes.length - 1);
+    return parseFloat((bytesPerSec / Math.pow(k, clampedIndex)).toFixed(1)) + ' ' + sizes[clampedIndex];
   };
-
-  useEffect(() => {
-    fetchStats();
-    const interval = setInterval(fetchStats, 3000);
-    return () => clearInterval(interval);
-  }, []);
 
   const cpuColor = 'var(--color-brand)';
   const ramColor = '#10b981';
@@ -97,6 +44,27 @@ export const SystemMonitor: React.FC = () => {
     return circumference - (Math.min(100, Math.max(0, percent)) / 100) * circumference;
   };
 
+  // Safe accessors
+  const cpuPercent = state.cpu ?? 0;
+  const cpuCores = state.cpu_cores_percent ?? [];
+  const cpuMhz = state.cpu_mhz ?? 0;
+  const cpuTemp = state.cpu_temp ?? 0;
+  const memPercent = state.memory ?? 0;
+  const memUsed = state.mem_used_gb ?? 0;
+  const memTotal = state.mem_total_gb ?? 0;
+  const memFree = state.mem_free_gb ?? 0;
+  const swapPercent = state.swap_percent ?? 0;
+  const swapUsed = state.swap_used_gb ?? 0;
+  const swapTotal = state.swap_total_gb ?? 0;
+  const diskPercent = state.disk ?? 0;
+  const diskUsed = state.disk_used_gb ?? 0;
+  const diskTotal = state.disk_total_gb ?? 0;
+  const diskFree = state.disk_free_gb ?? 0;
+  const diskReadSpeed = state.disk_read_bytes_sec ?? 0;
+  const diskWriteSpeed = state.disk_write_bytes_sec ?? 0;
+  const netRecvSpeed = state.net_recv_bytes_sec ?? 0;
+  const netSentSpeed = state.net_sent_bytes_sec ?? 0;
+
   return (
     <div className="g-card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       
@@ -104,11 +72,11 @@ export const SystemMonitor: React.FC = () => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <FiActivity style={{ color: 'var(--color-brand)', fontSize: 18 }} />
-          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Hardware & App Resource Monitor</span>
+          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Observability Diagnostics</span>
         </div>
-        {loading && (
-          <span style={{ fontSize: 10, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: 1 }} className="blink-animation">
-            syncing...
+        {state.wsConnected && (
+          <span style={{ fontSize: 9, color: 'var(--color-brand-success)', textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700 }} className="blink-animation">
+            ● live
           </span>
         )}
       </div>
@@ -133,7 +101,7 @@ export const SystemMonitor: React.FC = () => {
                 fill="transparent"
                 strokeWidth={stroke}
                 strokeDasharray={circumference + ' ' + circumference}
-                style={{ strokeDashoffset: getStrokeDashoffset(stats.cpu_percent), transition: 'stroke-dashoffset 0.8s ease-in-out' }}
+                style={{ strokeDashoffset: getStrokeDashoffset(cpuPercent), transition: 'stroke-dashoffset 0.8s ease-in-out' }}
                 strokeLinecap="round"
                 r={normalizedRadius}
                 cx="32"
@@ -149,7 +117,7 @@ export const SystemMonitor: React.FC = () => {
               fontWeight: 700,
               color: 'var(--color-brand-heading)'
             }}>
-              {Math.round(stats.cpu_percent)}%
+              {Math.round(cpuPercent)}%
             </div>
           </div>
           <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -174,7 +142,7 @@ export const SystemMonitor: React.FC = () => {
                 fill="transparent"
                 strokeWidth={stroke}
                 strokeDasharray={circumference + ' ' + circumference}
-                style={{ strokeDashoffset: getStrokeDashoffset(stats.mem_percent), transition: 'stroke-dashoffset 0.8s ease-in-out' }}
+                style={{ strokeDashoffset: getStrokeDashoffset(memPercent), transition: 'stroke-dashoffset 0.8s ease-in-out' }}
                 strokeLinecap="round"
                 r={normalizedRadius}
                 cx="32"
@@ -190,11 +158,11 @@ export const SystemMonitor: React.FC = () => {
               fontWeight: 700,
               color: 'var(--color-brand-heading)'
             }}>
-              {Math.round(stats.mem_percent)}%
+              {Math.round(memPercent)}%
             </div>
           </div>
           <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-            <FiCpu size={12} style={{ color: ramColor }} /> Memory
+            <FiCpu size={12} style={{ color: ramColor }} /> RAM
           </span>
         </div>
 
@@ -215,7 +183,7 @@ export const SystemMonitor: React.FC = () => {
                 fill="transparent"
                 strokeWidth={stroke}
                 strokeDasharray={circumference + ' ' + circumference}
-                style={{ strokeDashoffset: getStrokeDashoffset(stats.disk_percent), transition: 'stroke-dashoffset 0.8s ease-in-out' }}
+                style={{ strokeDashoffset: getStrokeDashoffset(diskPercent), transition: 'stroke-dashoffset 0.8s ease-in-out' }}
                 strokeLinecap="round"
                 r={normalizedRadius}
                 cx="32"
@@ -231,11 +199,87 @@ export const SystemMonitor: React.FC = () => {
               fontWeight: 700,
               color: 'var(--color-brand-heading)'
             }}>
-              {Math.round(stats.disk_percent)}%
+              {Math.round(diskPercent)}%
             </div>
           </div>
           <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-            <FiHardDrive size={12} style={{ color: diskColor }} /> Storage
+            <FiHardDrive size={12} style={{ color: diskColor }} /> Disk
+          </span>
+        </div>
+
+      </div>
+
+      {/* Hardware Temp & Freq info */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--color-brand-bg)', border: '1px dashed var(--color-brand-border)', borderRadius: 8, fontSize: 12 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-brand-text)' }}>
+          <FiThermometer style={{ color: '#ef4444' }} /> CPU Temp: <strong>{cpuTemp > 0 ? `${cpuTemp.toFixed(1)}°C` : 'N/A'}</strong>
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-brand-text)' }}>
+          <FiCpu style={{ color: 'var(--color-brand)' }} /> Freq: <strong>{cpuMhz > 0 ? `${(cpuMhz / 1000).toFixed(2)} GHz` : 'N/A'}</strong>
+        </span>
+      </div>
+
+      {/* Collapsible CPU Cores list */}
+      {cpuCores.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--color-brand-border)', paddingTop: 10 }}>
+          <div 
+            onClick={() => setShowCores(!showCores)} 
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', fontSize: 12, color: 'var(--color-brand-heading)', fontWeight: 600 }}
+          >
+            <span>Per-Core CPU Load ({cpuCores.length} cores)</span>
+            {showCores ? <FiChevronUp size={14} /> : <FiChevronDown size={14} />}
+          </div>
+          
+          {showCores && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+              {cpuCores.map((percent, index) => (
+                <div key={index} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11 }}>
+                  <span style={{ width: 45, color: 'var(--color-brand-muted)', fontWeight: 500 }}>Core {index}</span>
+                  <div style={{ flex: 1, height: 6, background: 'var(--color-brand-border)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${percent}%`, height: '100%', background: cpuColor, transition: 'width 0.4s ease' }} />
+                  </div>
+                  <span style={{ width: 32, textAlign: 'right', color: 'var(--color-brand-heading)', fontWeight: 700 }}>{Math.round(percent)}%</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Observability Details section */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, borderTop: '1px solid var(--color-brand-border)', paddingTop: 12, fontSize: 12 }}>
+        
+        {/* RAM detailed specs */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ color: 'var(--color-brand-muted)' }}>Memory (Used/Free/Total)</span>
+          <span style={{ color: 'var(--color-brand-heading)', fontWeight: 600 }}>
+            {memUsed.toFixed(1)} GB / {memFree.toFixed(1)} GB / {memTotal.toFixed(1)} GB
+          </span>
+        </div>
+
+        {/* SWAP detailed specs */}
+        {swapTotal > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ color: 'var(--color-brand-muted)' }}>Swap Space ({Math.round(swapPercent)}% used)</span>
+            <span style={{ color: 'var(--color-brand-heading)', fontWeight: 600 }}>
+              {swapUsed.toFixed(1)} GB / {swapTotal.toFixed(1)} GB
+            </span>
+          </div>
+        )}
+
+        {/* Disk read/write throughput */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ color: 'var(--color-brand-muted)' }}>Disk IO Read / Write</span>
+          <span style={{ color: 'var(--color-brand-heading)', fontWeight: 600 }}>
+            {formatSpeed(diskReadSpeed)} / {formatSpeed(diskWriteSpeed)}
+          </span>
+        </div>
+
+        {/* Network speed throughput */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ color: 'var(--color-brand-muted)' }}>Network Ingress / Egress</span>
+          <span style={{ fontWeight: 600, color: 'var(--color-brand)' }}>
+            ↓ {formatSpeed(netRecvSpeed)} / ↑ {formatSpeed(netSentSpeed)}
           </span>
         </div>
 
@@ -245,10 +289,10 @@ export const SystemMonitor: React.FC = () => {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, borderTop: '1px solid var(--color-brand-border)', paddingTop: 12 }}>
         
         <div>
-          <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', textTransform: 'uppercase', fontWeight: 600 }}>App Alloc</div>
+          <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', textTransform: 'uppercase', fontWeight: 600 }}>App Memory</div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginTop: 2 }}>
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
-              {stats.app_mem_mb.toFixed(1)}
+              {state.app_mem_mb ? state.app_mem_mb.toFixed(1) : '0.0'}
             </span>
             <span style={{ fontSize: 10, color: 'var(--color-brand-text)' }}>MB RAM</span>
           </div>
@@ -259,7 +303,7 @@ export const SystemMonitor: React.FC = () => {
             <FiClock /> Uptime
           </div>
           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-brand-heading)', marginTop: 4 }}>
-            {formatUptime(stats.uptime_seconds)}
+            {formatUptime(state.uptime_seconds)}
           </div>
         </div>
 

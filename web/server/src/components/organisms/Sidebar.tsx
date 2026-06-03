@@ -1,5 +1,5 @@
 import React from 'react';
-import { FiGrid, FiLayers, FiGlobe, FiRepeat, FiShield, FiTrendingUp, FiUsers, FiSettings, FiBook, FiHelpCircle, FiLogOut, FiSearch, FiZap, FiMenu, FiCpu, FiFolder } from 'react-icons/fi';
+import { FiGrid, FiLayers, FiGlobe, FiRepeat, FiShield, FiTrendingUp, FiUsers, FiSettings, FiBook, FiHelpCircle, FiLogOut, FiSearch, FiZap, FiMenu, FiCpu, FiFolder, FiSend } from 'react-icons/fi';
 
 interface SidebarProps {
   activeTab: string;
@@ -10,9 +10,6 @@ interface SidebarProps {
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: FiGrid },
-  { id: 'nodes', label: 'VPN Nodes', icon: FiGlobe },
-  { id: 'connections', label: 'Connections', icon: FiLayers },
-  { id: 'transfers', label: 'Transfers', icon: FiRepeat },
   {
     id: 'protocol', label: 'Protocol', icon: FiCpu,
     children: [
@@ -25,22 +22,37 @@ const navItems = [
       { id: 'files', label: 'File manager' },
       { id: 'leech', label: 'Leech manager' },
       { id: 'torrent', label: 'Torrent client' },
+      { id: 'youtube', label: 'YouTube downloader' },
+    ]
+  },
+  { id: 'fw-logs', label: 'System Logs', icon: FiShield },
+  {
+    id: 'system-section', label: 'System', icon: FiCpu,
+    children: [
+      { id: 'scheduler', label: 'Job Scheduler' },
     ]
   },
   {
-    id: 'firewall', label: 'Firewall', icon: FiShield,
+    id: 'settings-section', label: 'Settings', icon: FiSettings,
     children: [
-      { id: 'fw-rules', label: 'Rules' },
-      { id: 'fw-logs', label: 'Traffic Logs' },
+      { id: 'settings', label: 'App settings' },
+      { id: 'telegram-settings', label: 'Telegram' },
     ]
   },
-  { id: 'analytics', label: 'Analytics', icon: FiTrendingUp },
-  { id: 'team', label: 'Team', icon: FiUsers },
-  { id: 'settings', label: 'Settings', icon: FiSettings },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isCollapsed, setIsCollapsed }) => {
   const username = localStorage.getItem('cc_client_username') || 'salman';
+
+  const [openMenu, setOpenMenu] = React.useState<string | null>(() => {
+    const matched = navItems.find(item => item.children && item.children.some(c => c.id === activeTab));
+    return matched ? matched.id : null;
+  });
+
+  React.useEffect(() => {
+    const matched = navItems.find(item => item.children && item.children.some(c => c.id === activeTab));
+    setOpenMenu(matched ? matched.id : null);
+  }, [activeTab]);
 
   return (
     <aside className={`sidebar ${isCollapsed ? 'sidebar--collapsed' : ''}`}>
@@ -53,21 +65,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isCol
         </button>
       </div>
 
-      {/* Search */}
-      <div className="sidebar__search">
-        <div className="sidebar__search-wrap">
-          <FiSearch className="search-icon" />
-          {!isCollapsed && (
-            <>
-              <input type="text" placeholder="Search" />
-              <span className="search-shortcut">⌘F</span>
-            </>
-          )}
-        </div>
-      </div>
-
       {/* Navigation */}
-      <nav className="sidebar__nav">
+      <nav className="sidebar__nav" style={{ marginTop: 20 }}>
         {navItems.map((item) => (
           <React.Fragment key={item.id}>
             <div
@@ -85,7 +84,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isCol
               <item.icon className="nav-icon" />
               {!isCollapsed && <span>{item.label}</span>}
             </div>
-            {!isCollapsed && item.children && item.children.length > 0 && (
+            {!isCollapsed && item.children && item.children.length > 0 && openMenu === item.id && (
               <div className="sidebar__submenu">
                 {item.children.map((child) => (
                   <div
@@ -103,40 +102,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isCol
       </nav>
 
       <div className="sidebar__divider" />
-
-      {/* Bottom */}
-      <div className="sidebar__bottom">
-        <div className="sidebar__item" onClick={() => setActiveTab('live')} title={isCollapsed ? 'Live' : undefined}>
-          <span className="live-dot" />
-          {!isCollapsed && <span>Live</span>}
-        </div>
-        <div className="sidebar__item" onClick={() => setActiveTab('docs')} title={isCollapsed ? 'Documentation' : undefined}>
-          <FiBook className="nav-icon" />
-          {!isCollapsed && <span>Documentation</span>}
-        </div>
-        <div className="sidebar__item" onClick={() => setActiveTab('support')} title={isCollapsed ? 'Help & Support' : undefined}>
-          <FiHelpCircle className="nav-icon" />
-          {!isCollapsed && <span>Help & Support</span>}
-        </div>
-      </div>
-
-      {!isCollapsed && (
-        <>
-          {/* Plan card */}
-          <div className="sidebar__plan">
-            <div className="sidebar__plan-label">Your Starter Plan</div>
-            <div className="sidebar__plan-title">CleverConnect Free Trial</div>
-            <div className="sidebar__plan-desc">Unlimited protocols, speed capped at 100Mbps.</div>
-          </div>
-
-          <button className="sidebar__upgrade" onClick={() => alert('Upgrade to premium')}>
-            <FiZap style={{ marginRight: 6, verticalAlign: 'middle' }} />
-            Upgrade Plan
-          </button>
-
-          <div className="sidebar__footer-text">Access on Mobile</div>
-        </>
-      )}
 
       <div style={{ padding: isCollapsed ? '16px 0' : '0 16px 16px', display: 'flex', flexDirection: isCollapsed ? 'column' : 'row', gap: 10, justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: 'var(--color-brand-text)' }}>
         {!isCollapsed && (

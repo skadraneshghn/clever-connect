@@ -13,6 +13,7 @@ const FilesPage = lazy(() => import('./pages/FilesPage').then(m => ({ default: m
 const LeechPage = lazy(() => import('./pages/LeechPage').then(m => ({ default: m.LeechPage })));
 const PlayerPage = lazy(() => import('./pages/PlayerPage').then(m => ({ default: m.PlayerPage })));
 const TorrentPage = lazy(() => import('./pages/TorrentPage').then(m => ({ default: m.TorrentPage })));
+const TelegramSettingsPage = lazy(() => import('./pages/TelegramSettingsPage').then(m => ({ default: m.TelegramSettingsPage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -44,6 +45,7 @@ const ProtectedLayout: React.FC = () => {
     files: ['Storage', 'Files Explorer'],
     leech: ['Storage', 'Remote Leech Manager'],
     torrent: ['Storage', 'Torrent Client'],
+    'telegram-settings': ['Settings', 'Telegram Bot'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -107,6 +109,7 @@ const router = createBrowserRouter([
       { path: 'files', element: <FilesPage /> },
       { path: 'leech', element: <LeechPage /> },
       { path: 'torrent', element: <TorrentPage /> },
+      { path: 'telegram-settings', element: <TelegramSettingsPage /> },
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },

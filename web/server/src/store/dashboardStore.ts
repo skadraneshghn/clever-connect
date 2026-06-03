@@ -34,6 +34,34 @@ interface ServerState {
   disconnectClient: (id: string) => Promise<boolean>;
   blockClient: (id: string) => Promise<boolean>;
   addClient: (username: string) => Promise<boolean>;
+
+  mem_total_gb: number;
+  mem_used_gb: number;
+  disk_total_gb: number;
+  disk_used_gb: number;
+  uptime_seconds: number;
+  app_mem_mb: number;
+  go_version: string;
+  os_runtime: string;
+  active_leeches: number;
+  active_torrents: number;
+  active_scheds: number;
+
+  cpu_cores_percent: number[];
+  cpu_mhz: number;
+  mem_free_gb: number;
+  swap_total_gb: number;
+  swap_used_gb: number;
+  swap_percent: number;
+  disk_free_gb: number;
+  disk_read_bytes_sec: number;
+  disk_write_bytes_sec: number;
+  net_recv_bytes_sec: number;
+  net_sent_bytes_sec: number;
+  cpu_temp: number;
+  boot_time: number;
+  os_platform: string;
+  os_kernel: string;
 }
 
 export const useServerStore = create<ServerState>((set, get) => {
@@ -45,6 +73,32 @@ export const useServerStore = create<ServerState>((set, get) => {
     memory: 45,
     disk: 18,
     activeConnectionsCount: 4,
+    mem_total_gb: 16,
+    mem_used_gb: 7.2,
+    disk_total_gb: 500,
+    disk_used_gb: 90,
+    uptime_seconds: 7200,
+    app_mem_mb: 24,
+    go_version: 'go1.22.4',
+    os_runtime: 'linux',
+    active_leeches: 0,
+    active_torrents: 0,
+    active_scheds: 0,
+    cpu_cores_percent: [20, 25, 18, 30],
+    cpu_mhz: 2400,
+    mem_free_gb: 8.8,
+    swap_total_gb: 2,
+    swap_used_gb: 0.5,
+    swap_percent: 25,
+    disk_free_gb: 410,
+    disk_read_bytes_sec: 0,
+    disk_write_bytes_sec: 0,
+    net_recv_bytes_sec: 0,
+    net_sent_bytes_sec: 0,
+    cpu_temp: 42.5,
+    boot_time: Date.now() / 1000 - 7200,
+    os_platform: 'ubuntu',
+    os_kernel: '5.15.0-generic',
     clients: [
       { id: '1', username: 'salman_desktop', ip: '82.102.23.45', country: 'Iran', flag: '🇮🇷', protocol: 'VLESS-XTLS', connectedAt: '12:04:12', duration: '02h 35m', uploadSpeed: 2.4, downloadSpeed: 12.5, active: true },
       { id: '2', username: 'john_iphone', ip: '188.45.67.12', country: 'Germany', flag: '🇩🇪', protocol: 'Shadowsocks', connectedAt: '13:10:00', duration: '01h 29m', uploadSpeed: 1.1, downloadSpeed: 5.8, active: true },
@@ -152,7 +206,33 @@ export const useServerStore = create<ServerState>((set, get) => {
                       upload: data.totalUpload,
                       download: data.totalDownload
                     },
-                    clients: data.clients || state.clients
+                    clients: data.clients || state.clients,
+                    mem_total_gb: data.mem_total_gb,
+                    mem_used_gb: data.mem_used_gb,
+                    disk_total_gb: data.disk_total_gb,
+                    disk_used_gb: data.disk_used_gb,
+                    uptime_seconds: data.uptime_seconds,
+                    app_mem_mb: data.app_mem_mb,
+                    go_version: data.go_version,
+                    os_runtime: data.os_runtime,
+                    active_leeches: data.active_leeches,
+                    active_torrents: data.active_torrents,
+                    active_scheds: data.active_scheds,
+                    cpu_cores_percent: data.cpu_cores_percent || state.cpu_cores_percent,
+                    cpu_mhz: data.cpu_mhz || state.cpu_mhz,
+                    mem_free_gb: data.mem_free_gb || state.mem_free_gb,
+                    swap_total_gb: data.swap_total_gb || state.swap_total_gb,
+                    swap_used_gb: data.swap_used_gb || state.swap_used_gb,
+                    swap_percent: data.swap_percent || state.swap_percent,
+                    disk_free_gb: data.disk_free_gb || state.disk_free_gb,
+                    disk_read_bytes_sec: data.disk_read_bytes_sec || 0,
+                    disk_write_bytes_sec: data.disk_write_bytes_sec || 0,
+                    net_recv_bytes_sec: data.net_recv_bytes_sec || 0,
+                    net_sent_bytes_sec: data.net_sent_bytes_sec || 0,
+                    cpu_temp: data.cpu_temp || state.cpu_temp,
+                    boot_time: data.boot_time || state.boot_time,
+                    os_platform: data.os_platform || state.os_platform,
+                    os_kernel: data.os_kernel || state.os_kernel
                   };
                 });
               } else if (data.type === 'log') {
@@ -214,7 +294,33 @@ export const useServerStore = create<ServerState>((set, get) => {
               totalBandwidth: {
                 upload: state.totalBandwidth.upload + 0.1,
                 download: state.totalBandwidth.download + 0.5
-              }
+              },
+              mem_total_gb: 16,
+              mem_used_gb: parseFloat((16 * (memVal / 100)).toFixed(1)),
+              disk_total_gb: 500,
+              disk_used_gb: 90 + Math.floor(Math.random() * 2),
+              uptime_seconds: state.uptime_seconds + 2,
+              app_mem_mb: parseFloat((20 + Math.random() * 5).toFixed(1)),
+              go_version: 'go1.22.4',
+              os_runtime: 'linux',
+              active_leeches: state.active_leeches,
+              active_torrents: state.active_torrents,
+              active_scheds: state.active_scheds,
+              cpu_cores_percent: state.cpu_cores_percent.map(c => Math.max(0, Math.min(100, c + Math.floor(Math.random() * 11) - 5))),
+              cpu_mhz: 2400 + Math.floor(Math.random() * 100) - 50,
+              mem_free_gb: parseFloat((16 - (16 * (memVal / 100))).toFixed(1)),
+              swap_total_gb: 2,
+              swap_used_gb: 0.5 + Math.random() * 0.1,
+              swap_percent: 25 + Math.floor(Math.random() * 5),
+              disk_free_gb: 410 - Math.floor(Math.random() * 2),
+              disk_read_bytes_sec: Math.random() * 1024 * 1024 * 5,
+              disk_write_bytes_sec: Math.random() * 1024 * 1024 * 10,
+              net_recv_bytes_sec: Math.random() * 1024 * 1024 * 8,
+              net_sent_bytes_sec: Math.random() * 1024 * 1024 * 2,
+              cpu_temp: 40 + Math.random() * 10,
+              boot_time: state.boot_time,
+              os_platform: 'ubuntu',
+              os_kernel: '5.15.0-generic'
             };
           });
         }

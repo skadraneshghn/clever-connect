@@ -68,6 +68,8 @@ type LeechConfig struct {
 	ThreadsPerJob   int    `json:"threads_per_job" gorm:"default:8"`
 	UserAgent       string `json:"user_agent" gorm:"default:'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0'"`
 	ProxyURL        string `json:"proxy_url"` // Optional HTTP/SOCKS5 proxy
+	PremiumUserID   string `json:"premium_user_id"`
+	PremiumAPIKey   string `json:"premium_api_key"`
 }
 
 // LeechJob tracks individual remote download tasks
@@ -84,6 +86,7 @@ type LeechJob struct {
 	Threads       int       `json:"threads"`
 	Username      string    `json:"username"`
 	Password      string    `json:"password"`
+	UsePremium    bool      `json:"use_premium" gorm:"default:false"`
 	ErrorMessage  string    `json:"error_message"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -104,8 +107,151 @@ type TorrentJob struct {
 	DownloadSpeed float64   `json:"download_speed"` // MB/s
 	UploadSpeed   float64   `json:"upload_speed"`   // MB/s
 	Peers         int       `json:"peers"`
+	SelectedFiles string    `gorm:"type:text" json:"selected_files"` // JSON array of selected file indices
 	ErrorMessage  string    `json:"error_message"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// TelegramConfig stores the Telegram bot configuration, persisted in the database.
+// All settings are configurable from the admin panel and the REST API.
+type TelegramConfig struct {
+	gorm.Model
+	BotToken            string `json:"bot_token" gorm:"type:text"`
+	AdminUserIDs        string `json:"admin_user_ids" gorm:"type:text"`                // Comma-separated Telegram user IDs
+	WelcomeMessage      string `json:"welcome_message" gorm:"type:text"`
+	PollingInterval     int    `json:"polling_interval" gorm:"default:10"`              // Seconds between long-poll cycles
+	MaxFileSize         int    `json:"max_file_size" gorm:"default:2000"`                 // Maximum file size in MB
+	EnableFileSharing   bool   `json:"enable_file_sharing" gorm:"default:true"`
+	EnableNotifications bool   `json:"enable_notifications" gorm:"default:true"`
+	IsActive            bool   `json:"is_active" gorm:"default:false"`                  // Whether the bot should auto-start
+	AppID               int    `json:"app_id"`
+	AppHash             string `json:"app_hash"`
+	MTProtoServer       string `json:"mtproto_server"`
+	MTProtoPublicKey    string `json:"mtproto_public_key" gorm:"type:text"`
+	PhoneNumber         string `json:"phone_number"`
+	AuthType            string `json:"auth_type" gorm:"default:'bot'"` // 'bot' or 'user'
+}
+
+// TorrentConfig stores advanced client configurations for BitTorrent client
+type TorrentConfig struct {
+	gorm.Model
+	SaveDirectory              string  `json:"save_directory" gorm:"default:'./data/manager/downloads'"`
+	MaxConnectionsPerTorrent   int     `json:"max_connections_per_torrent" gorm:"default:200"`
+	MaxHalfOpenConnections     int     `json:"max_half_open_connections" gorm:"default:100"`
+	UploadLimitMB              float64 `json:"upload_limit_mb" gorm:"default:0"` // 0 is unlimited
+	DownloadLimitMB            float64 `json:"download_limit_mb" gorm:"default:0"` // 0 is unlimited
+	EnableDHT                  bool    `json:"enable_dht" gorm:"default:true"`
+	EnablePEX                  bool    `json:"enable_pex" gorm:"default:true"`
+	EnableUTP                  bool    `json:"enable_utp" gorm:"default:true"`
+	EnableTCP                  bool    `json:"enable_tcp" gorm:"default:true"`
+	EnableUpload               bool    `json:"enable_upload" gorm:"default:true"`
+	PieceHashersPerTorrent     int     `json:"piece_hashers_per_torrent" gorm:"default:4"`
+	CustomTrackers             string  `json:"custom_trackers" gorm:"type:text"`
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Enterprise Job Scheduler Models
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Job status constants
+const (
+	JobStatusQueued    = "queued"
+	JobStatusRunning   = "running"
+	JobStatusCompleted = "completed"
+	JobStatusFailed    = "failed"
+	JobStatusCancelled = "cancelled"
+	JobStatusScheduled = "scheduled" // For cron-scheduled jobs
+)
+
+// SchedulerJob is the central model tracking each unit of work in the scheduler.
+type SchedulerJob struct {
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	UUID        string     `gorm:"size:36;uniqueIndex" json:"uuid"`
+	Type        string     `gorm:"size:100;not null;index" json:"type"`                      // e.g., file_compress, leech_download, custom_task
+	Name        string     `gorm:"size:255;not null" json:"name"`                             // Human-readable name
+	Description string     `gorm:"type:text" json:"description"`                              // Extended description
+	Category    string     `gorm:"size:100;index;default:'general'" json:"category"`           // Grouping: general, files, download, system, cron
+	Status      string     `gorm:"size:50;not null;index;default:'queued'" json:"status"`      // queued, running, completed, failed, cancelled, scheduled
+	Priority    int        `gorm:"default:5;index" json:"priority"`                            // 1=highest, 10=lowest
+	Progress    int        `gorm:"default:0" json:"progress"`                                  // 0-100
+	Message     string     `gorm:"type:text" json:"message"`                                   // Status message or error details
+	Payload     string     `gorm:"type:text" json:"payload"`                                   // JSON payload for the job handler
+	CronExpr    string     `gorm:"size:100" json:"cron_expr"`                                  // Optional cron expression (robfig/cron format)
+	RetryCount  int        `gorm:"default:0" json:"retry_count"`
+	StartedAt   *time.Time `json:"started_at"`
+	FinishedAt  *time.Time `json:"finished_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// SchedulerJobLog stores granular execution logs for each job run.
+type SchedulerJobLog struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	SchedulerJobID uint      `gorm:"index;not null" json:"scheduler_job_id"`
+	Level          string    `gorm:"size:20;not null" json:"level"` // INFO, WARN, ERROR, DEBUG
+	Message        string    `gorm:"type:text;not null" json:"message"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// SchedulerConfig stores admin-configurable scheduler parameters.
+type SchedulerConfig struct {
+	gorm.Model
+	MaxConcurrentJobs   int  `json:"max_concurrent_jobs" gorm:"default:4"`
+	DefaultPriority     int  `json:"default_priority" gorm:"default:5"`
+	RetryLimit          int  `json:"retry_limit" gorm:"default:3"`
+	RetryDelaySeconds   int  `json:"retry_delay_seconds" gorm:"default:30"`
+	JobTimeoutSeconds   int  `json:"job_timeout_seconds" gorm:"default:3600"`
+	PurgeAfterDays      int  `json:"purge_after_days" gorm:"default:30"`
+	EnableCronJobs      bool `json:"enable_cron_jobs" gorm:"default:true"`
+	EnableNotifications bool `json:"enable_notifications" gorm:"default:false"`
+}
+
+// TelegramSubscriber stores Telegram users who have interacted with the bot.
+type TelegramSubscriber struct {
+	gorm.Model
+	ChatID    int64  `gorm:"uniqueIndex;not null" json:"chat_id"`
+	Username  string `json:"username"`
+	FirstName string `json:"first_name"`
+	Active    bool   `gorm:"default:true" json:"active"`
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// YouTube Downloader Models
+// ──────────────────────────────────────────────────────────────────────────────
+
+// YouTubeJob tracks individual YouTube video download tasks
+type YouTubeJob struct {
+	ID               string    `gorm:"primaryKey" json:"id"`
+	VideoURL         string    `gorm:"type:text;not null" json:"video_url"`
+	VideoID          string    `json:"video_id"`
+	Title            string    `gorm:"type:text" json:"title"`
+	Author           string    `json:"author"`
+	Duration         string    `json:"duration"` // Human-readable duration
+	DurationSeconds  int64     `json:"duration_seconds"`
+	Thumbnail        string    `gorm:"type:text" json:"thumbnail"`
+	Filename         string    `json:"filename"`
+	SaveDirectory    string    `json:"save_directory"`
+	SelectedITag     int       `json:"selected_itag"`
+	QualityLabel     string    `json:"quality_label"` // e.g., "1080p", "720p", "360p"
+	MimeType         string    `json:"mime_type"`
+	TotalBytes       int64     `json:"total_bytes"`
+	Downloaded       int64     `json:"downloaded"`
+	Status           string    `json:"status" gorm:"default:'pending'"` // pending, fetching, downloading, converting, completed, error
+	Progress         float64   `json:"progress"`                        // 0.0 to 100.0
+	ConvertProgress  float64   `json:"convert_progress"`                // 0.0 to 100.0 (TV conversion progress)
+	Speed            float64   `json:"speed"`                           // MB/s
+	ConvertToTV      bool      `json:"convert_to_tv" gorm:"default:false"`
+	ConvertStatus    string    `json:"convert_status"` // "", "queued", "converting", "completed", "error"
+	ErrorMessage     string    `json:"error_message"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// YouTubeConfig stores default configurations for YouTube downloads
+type YouTubeConfig struct {
+	gorm.Model
+	DefaultSavePath string `json:"default_save_path" gorm:"default:'./downloads/youtube'"`
+	MaxConcurrent   int    `json:"max_concurrent" gorm:"default:2"`
+	ProxyURL        string `json:"proxy_url"`
+}
