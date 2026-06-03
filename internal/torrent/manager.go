@@ -352,7 +352,7 @@ func (m *TorrentManager) updateStats() {
 }
 
 // AddMagnet adds a torrent via magnet link
-func (m *TorrentManager) AddMagnet(uri string, saveDir string) (string, error) {
+func (m *TorrentManager) AddMagnet(uri string, saveDir string, selectFiles bool) (string, error) {
 	t, err := m.client.AddMagnet(uri)
 	if err != nil {
 		return "", err
@@ -370,12 +370,17 @@ func (m *TorrentManager) AddMagnet(uri string, saveDir string) (string, error) {
 		}
 	}
 
+	status := "downloading"
+	if selectFiles {
+		status = "paused"
+	}
+
 	job := models.TorrentJob{
 		InfoHash:      infoHash,
 		Name:          "Fetching metadata...",
 		MagnetURI:     uri,
 		SaveDirectory: saveDir,
-		Status:        "downloading",
+		Status:        status,
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}
@@ -386,14 +391,18 @@ func (m *TorrentManager) AddMagnet(uri string, saveDir string) (string, error) {
 	}
 
 	// Trigger download
-	t.AllowDataDownload()
-	t.DownloadAll()
+	if selectFiles {
+		t.DisallowDataDownload()
+	} else {
+		t.AllowDataDownload()
+		t.DownloadAll()
+	}
 
 	return infoHash, nil
 }
 
 // AddTorrentFile adds a torrent via physical .torrent file
-func (m *TorrentManager) AddTorrentFile(torrentPath string, saveDir string) (string, error) {
+func (m *TorrentManager) AddTorrentFile(torrentPath string, saveDir string, selectFiles bool) (string, error) {
 	mi, err := metainfo.LoadFromFile(torrentPath)
 	if err != nil {
 		return "", err
@@ -422,12 +431,17 @@ func (m *TorrentManager) AddTorrentFile(torrentPath string, saveDir string) (str
 		_ = copyFile(torrentPath, persistentPath)
 	}
 
+	status := "downloading"
+	if selectFiles {
+		status = "paused"
+	}
+
 	job := models.TorrentJob{
 		InfoHash:      infoHash,
 		Name:          t.Name(),
 		TorrentPath:   persistentPath,
 		SaveDirectory: saveDir,
-		Status:        "downloading",
+		Status:        status,
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}
@@ -436,8 +450,15 @@ func (m *TorrentManager) AddTorrentFile(torrentPath string, saveDir string) (str
 		return "", err
 	}
 
-	t.AllowDataDownload()
-	t.DownloadAll()
+	if selectFiles {
+		t.DisallowDataDownload()
+		for _, f := range t.Files() {
+			f.Cancel()
+		}
+	} else {
+		t.AllowDataDownload()
+		t.DownloadAll()
+	}
 
 	return infoHash, nil
 }
@@ -458,7 +479,6 @@ func (m *TorrentManager) ResumeTorrent(infoHash string) {
 	for _, t := range m.client.Torrents() {
 		if t.InfoHash().HexString() == infoHash {
 			t.AllowDataDownload()
-			t.DownloadAll()
 			db.DB.Model(&models.TorrentJob{}).Where("info_hash = ?", infoHash).Update("status", "downloading")
 			break
 		}

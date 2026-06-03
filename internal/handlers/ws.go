@@ -1,12 +1,18 @@
 package handlers
 
 import (
+	"encoding/json"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"clever-connect/internal/config"
+	"clever-connect/internal/db"
+	"clever-connect/internal/downloader"
 	"clever-connect/internal/logger"
+	"clever-connect/internal/models"
+	"clever-connect/internal/torrent"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -127,6 +133,175 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 					"totalDown", totalDownload,
 					"totalUp", totalUpload,
 				)
+			}
+		}
+	}
+}
+
+// ServeWSJobs upgraded stream sending and receiving torrent + leech jobs data
+func (h *WSHandler) ServeWSJobs(c *gin.Context) {
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		logger.Error("WS", "WebSocket jobs upgrade failed",
+			"error", err.Error(),
+			"ip", c.ClientIP(),
+		)
+		return
+	}
+	defer conn.Close()
+
+	logger.Info("WS", "Jobs WebSocket connection established",
+		"mode", h.cfg.AppMode,
+		"ip", c.ClientIP(),
+	)
+
+	if h.cfg.AppMode == "client" {
+		// --- CLIENT MODE: PIPE/PROXY TO SERVER ---
+		var remoteURLTarget string
+		var remoteToken string
+		if h.cfg.ServerURL != "" {
+			remoteURLTarget = h.cfg.ServerURL
+			remoteToken = h.cfg.ServerAuthToken
+		} else {
+			var clientCfg models.EhcoClientConfig
+			if err := db.DB.First(&clientCfg).Error; err != nil || clientCfg.RemoteURL == "" {
+				logger.Warn("WS", "No remote server connection configured for jobs proxy")
+				return
+			}
+			remoteURLTarget = clientCfg.RemoteURL
+			remoteToken = clientCfg.AuthToken
+		}
+
+		// Convert http/https to ws/wss if needed
+		remoteWS := remoteURLTarget
+		remoteWS = strings.Replace(remoteWS, "https://", "wss://", 1)
+		remoteWS = strings.Replace(remoteWS, "http://", "ws://", 1)
+		if idx := strings.Index(remoteWS, "/ws"); idx != -1 {
+			remoteWS = remoteWS[:idx]
+		}
+		if idx := strings.Index(remoteWS, "/tunnel"); idx != -1 {
+			remoteWS = remoteWS[:idx]
+		}
+		remoteWS = strings.TrimSuffix(remoteWS, "/")
+		remoteWS += "/ws/jobs?token=" + remoteToken
+
+		// Dial remote server websocket
+		serverConn, _, err := websocket.DefaultDialer.Dial(remoteWS, nil)
+		if err != nil {
+			logger.Error("WS", "Failed to connect to remote server jobs WebSocket", "error", err.Error())
+			return
+		}
+		defer serverConn.Close()
+
+		// Run bidirectional piping
+		errChan := make(chan error, 2)
+		
+		// Copy client -> server
+		go func() {
+			for {
+				msgType, message, err := conn.ReadMessage()
+				if err != nil {
+					errChan <- err
+					return
+				}
+				err = serverConn.WriteMessage(msgType, message)
+				if err != nil {
+					errChan <- err
+					return
+				}
+			}
+		}()
+
+		// Copy server -> client
+		go func() {
+			for {
+				msgType, message, err := serverConn.ReadMessage()
+				if err != nil {
+					errChan <- err
+					return
+				}
+				err = conn.WriteMessage(msgType, message)
+				if err != nil {
+					errChan <- err
+					return
+				}
+			}
+		}()
+
+		// Wait for error/closure
+		<-errChan
+		return
+	}
+
+	// --- SERVER MODE: REAL BUSINESS LOGIC ---
+	// 1. Reader loop to handle incoming actions/commands
+	go func() {
+		for {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			var cmd struct {
+				Action      string `json:"action"`
+				InfoHash    string `json:"info_hash,omitempty"`
+				JobID       string `json:"job_id,omitempty"`
+				DeleteFiles bool   `json:"delete_files,omitempty"`
+			}
+			if err := json.Unmarshal(message, &cmd); err != nil {
+				continue
+			}
+
+			switch cmd.Action {
+			case "pause_torrent":
+				if cmd.InfoHash != "" && torrent.Manager != nil {
+					torrent.Manager.PauseTorrent(cmd.InfoHash)
+				}
+			case "resume_torrent":
+				if cmd.InfoHash != "" && torrent.Manager != nil {
+					torrent.Manager.ResumeTorrent(cmd.InfoHash)
+				}
+			case "delete_torrent":
+				if cmd.InfoHash != "" && torrent.Manager != nil {
+					torrent.Manager.DeleteTorrent(cmd.InfoHash, cmd.DeleteFiles)
+				}
+			case "pause_leech":
+				if cmd.JobID != "" && downloader.Manager != nil {
+					downloader.Manager.PauseJob(cmd.JobID)
+				}
+			case "resume_leech":
+				if cmd.JobID != "" {
+					_ = db.DB.Model(&models.LeechJob{}).Where("id = ?", cmd.JobID).Update("status", "pending")
+				}
+			case "delete_leech":
+				if cmd.JobID != "" && downloader.Manager != nil {
+					downloader.Manager.DeleteJob(cmd.JobID, cmd.DeleteFiles)
+				}
+			}
+		}
+	}()
+
+	// 2. Ticker loop to push live updates of both lists (every 1 second for seamless fluidity)
+	ticker := time.NewTicker(1000 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			var torrentList []models.TorrentJob
+			var leechList []models.LeechJob
+
+			// Fetch lists from database
+			_ = db.DB.Order("created_at desc").Find(&torrentList)
+			_ = db.DB.Order("created_at desc").Find(&leechList)
+
+			response := gin.H{
+				"torrents":   torrentList,
+				"leechJobs":  leechList,
+			}
+
+			if err := conn.WriteJSON(response); err != nil {
+				return
 			}
 		}
 	}

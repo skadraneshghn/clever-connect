@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuthStore } from '../store/authStore';
+import { useJobsStore } from '../store/jobsStore';
 import { 
 	FiPlay, FiPause, FiTrash2, FiFolder, FiPlus, FiSettings, 
 	FiGlobe, FiCheck, FiX, FiLink, FiDownloadCloud, FiServer,
@@ -164,8 +165,10 @@ const GameProgressBar: React.FC<{ progress: number; status: string }> = ({ progr
 export const LeechPage: React.FC = () => {
 	const { token } = useAuthStore();
 	
-	// List and State
-	const [jobs, setJobs] = useState<LeechJob[]>([]);
+	const jobs = useJobsStore(state => state.leechJobs);
+	const initWebSocket = useJobsStore(state => state.initWebSocket);
+	const sendAction = useJobsStore(state => state.sendAction);
+
 	const [config, setConfig] = useState<LeechConfig>({
 		default_save_path: './downloads',
 		max_concurrent: 3,
@@ -193,21 +196,6 @@ export const LeechPage: React.FC = () => {
 	const [newFolderName, setNewFolderName] = useState('');
 	const [showNewFolderInput, setShowNewFolderInput] = useState(false);
 
-	// Fetch Jobs
-	const fetchJobs = async () => {
-		try {
-			const res = await fetch('/api/leech/jobs', {
-				headers: { 'Authorization': `Bearer ${token}` }
-			});
-			if (res.ok) {
-				const data = await res.json();
-				setJobs(data || []);
-			}
-		} catch (err) {
-			console.error('Failed to fetch download jobs', err);
-		}
-	};
-
 	// Fetch Config
 	const fetchConfig = async () => {
 		try {
@@ -224,15 +212,13 @@ export const LeechPage: React.FC = () => {
 		}
 	};
 
-	// Polling for progress updates
 	useEffect(() => {
 		if (token) {
-			fetchJobs();
+			const close = initWebSocket(token);
 			fetchConfig();
-			const interval = setInterval(fetchJobs, 1500);
-			return () => clearInterval(interval);
+			return () => close();
 		}
-	}, [token]);
+	}, [token, initWebSocket]);
 
 	// Fetch remote directories for picker
 	const fetchDirectories = async (path: string) => {
@@ -327,7 +313,6 @@ export const LeechPage: React.FC = () => {
 				setFilename('');
 				setDownloadUsername('');
 				setDownloadPassword('');
-				fetchJobs();
 			}
 		} catch (err) {
 			console.error(err);
@@ -335,41 +320,15 @@ export const LeechPage: React.FC = () => {
 	};
 
 	// Toggle pause/resume
-	const handleToggleJob = async (job: LeechJob) => {
-		const action = job.status === 'downloading' ? 'pause' : 'start';
-		try {
-			await fetch(`/api/leech/${action}`, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${token}`
-				},
-				body: JSON.stringify({ id: job.id })
-			});
-			fetchJobs();
-		} catch (err) {
-			console.error(err);
-		}
+	const handleToggleJob = (job: LeechJob) => {
+		const wsAction = job.status === 'downloading' ? 'pause_leech' : 'resume_leech';
+		sendAction({ action: wsAction, job_id: job.id });
 	};
 
 	// Delete a job
-	const handleDeleteJob = async (id: string, deleteFiles: boolean) => {
+	const handleDeleteJob = (id: string, deleteFiles: boolean) => {
 		if (!confirm('Are you sure you want to delete this download job?')) return;
-		try {
-			const res = await fetch('/api/leech/delete', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${token}`
-				},
-				body: JSON.stringify({ id, delete_files: deleteFiles })
-			});
-			if (res.ok) {
-				fetchJobs();
-			}
-		} catch (err) {
-			console.error(err);
-		}
+		sendAction({ action: 'delete_leech', job_id: id, delete_files: deleteFiles });
 	};
 
 	// Update Config settings

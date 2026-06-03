@@ -122,10 +122,11 @@ func (h *TorrentHandler) AddTorrent(c *gin.Context) {
 	var input struct {
 		MagnetURI     string `json:"magnet_uri"`
 		SaveDirectory string `json:"save_directory"`
+		SelectFiles   bool   `json:"select_files"`
 	}
 
 	if err := c.ShouldBind(&input); err == nil && input.MagnetURI != "" {
-		infoHash, err := torrent.Manager.AddMagnet(input.MagnetURI, input.SaveDirectory)
+		infoHash, err := torrent.Manager.AddMagnet(input.MagnetURI, input.SaveDirectory, input.SelectFiles)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add magnet link", "details": err.Error()})
 			return
@@ -138,6 +139,8 @@ func (h *TorrentHandler) AddTorrent(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err == nil {
 		saveDir := c.PostForm("save_directory")
+		selectFilesVal := c.PostForm("select_files")
+		selectFiles := selectFilesVal == "true"
 		
 		// Ensure temporary folder exists
 		tempDir := "./data/manager/temp"
@@ -150,7 +153,7 @@ func (h *TorrentHandler) AddTorrent(c *gin.Context) {
 		}
 		defer os.Remove(tempPath)
 
-		infoHash, err := torrent.Manager.AddTorrentFile(tempPath, saveDir)
+		infoHash, err := torrent.Manager.AddTorrentFile(tempPath, saveDir, selectFiles)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load torrent metadata", "details": err.Error()})
 			return

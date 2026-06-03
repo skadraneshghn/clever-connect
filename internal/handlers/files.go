@@ -14,6 +14,8 @@ import (
 	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
+	"clever-connect/internal/torrent"
+	anacrolixTorrent "github.com/anacrolix/torrent"
 	"github.com/gin-gonic/gin"
 )
 
@@ -158,6 +160,51 @@ func getDiskInfo(path string) (total uint64, free uint64, used uint64) {
 	return
 }
 
+func (h *FileHandler) findActiveTorrentFile(absolutePath string) (*anacrolixTorrent.File, bool) {
+	if torrent.Manager == nil || torrent.Manager.Client() == nil {
+		return nil, false
+	}
+
+	cleanPath := filepath.Clean(absolutePath)
+
+	// Fetch all jobs to know their save directories
+	var jobs []models.TorrentJob
+	if err := db.DB.Find(&jobs).Error; err != nil {
+		return nil, false
+	}
+
+	jobMap := make(map[string]string) // infoHash -> saveDir
+	for _, job := range jobs {
+		jobMap[job.InfoHash] = job.SaveDirectory
+	}
+
+	for _, t := range torrent.Manager.Client().Torrents() {
+		infoHash := t.InfoHash().HexString()
+		saveDir, ok := jobMap[infoHash]
+		if !ok {
+			saveDir = "./data/manager/downloads"
+		}
+		absSaveDir, err := filepath.Abs(saveDir)
+		if err != nil {
+			absSaveDir = saveDir
+		}
+
+		select {
+		case <-t.GotInfo():
+			files := t.Files()
+			for i := range files {
+				torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, files[i].Path()))
+				if torrentFilePath == cleanPath {
+					return files[i], true
+				}
+			}
+		default:
+			// Info not resolved yet
+		}
+	}
+	return nil, false
+}
+
 // ListDirectory handles GET /api/files/list
 func (h *FileHandler) ListDirectory(c *gin.Context) {
 	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
@@ -172,7 +219,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	}
 
 	entries, err := os.ReadDir(safePath)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read directory", "details": err.Error()})
 		return
 	}
@@ -191,6 +238,84 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 			ModTime:   info.ModTime(),
 			Extension: filepath.Ext(entry.Name()),
 		})
+	}
+
+	// Merge in virtual files for active torrents that should be in this folder
+	virtualFiles := make(map[string]FileItem)
+	if torrent.Manager != nil && torrent.Manager.Client() != nil {
+		var jobs []models.TorrentJob
+		if err := db.DB.Find(&jobs).Error; err == nil {
+			jobMap := make(map[string]string)
+			for _, job := range jobs {
+				jobMap[job.InfoHash] = job.SaveDirectory
+			}
+
+			for _, t := range torrent.Manager.Client().Torrents() {
+				infoHash := t.InfoHash().HexString()
+				saveDir, ok := jobMap[infoHash]
+				if !ok {
+					saveDir = "./data/manager/downloads"
+				}
+				absSaveDir, err := filepath.Abs(saveDir)
+				if err != nil {
+					absSaveDir = saveDir
+				}
+
+				select {
+				case <-t.GotInfo():
+					for _, f := range t.Files() {
+						torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, f.Path()))
+						parentDir := filepath.Dir(torrentFilePath)
+
+						if parentDir == safePath {
+							name := filepath.Base(torrentFilePath)
+							virtualFiles[name] = FileItem{
+								Name:      name,
+								IsDir:     false,
+								Size:      f.Length(),
+								ModTime:   time.Now(),
+								Extension: filepath.Ext(name),
+							}
+						} else if strings.HasPrefix(parentDir, safePath) {
+							rel, err := filepath.Rel(safePath, parentDir)
+							if err == nil && rel != "." && rel != ".." {
+								parts := strings.Split(filepath.ToSlash(rel), "/")
+								if len(parts) > 0 && parts[0] != "" {
+									dirName := parts[0]
+									virtualFiles[dirName] = FileItem{
+										Name:      dirName,
+										IsDir:     true,
+										Size:      0,
+										ModTime:   time.Now(),
+										Extension: "",
+									}
+								}
+							}
+						}
+					}
+				default:
+				}
+			}
+		}
+	}
+
+	// Merge virtual files with physical ones
+	for _, vf := range virtualFiles {
+		foundIdx := -1
+		for idx, pf := range files {
+			if pf.Name == vf.Name {
+				foundIdx = idx
+				break
+			}
+		}
+
+		if foundIdx != -1 {
+			if !files[foundIdx].IsDir && vf.Size > files[foundIdx].Size {
+				files[foundIdx].Size = vf.Size
+			}
+		} else {
+			files = append(files, vf)
+		}
 	}
 
 	// Clean standard absolute visual path for display
@@ -224,6 +349,22 @@ func (h *FileHandler) StreamOrDownload(c *gin.Context) {
 		return
 	}
 
+	// 1. Check if the file is part of an active torrent and can be streamed live!
+	if tFile, found := h.findActiveTorrentFile(safePath); found {
+		if c.Query("download") == "true" {
+			c.Header("Content-Disposition", "attachment; filename=\""+filepath.Base(safePath)+"\"")
+		}
+
+		reader := tFile.NewReader()
+		defer reader.Close()
+
+		// Stream content using the torrent client's reader!
+		// It supports range seeking, so HLS/MP4 seek and fast download works!
+		http.ServeContent(c.Writer, c.Request, filepath.Base(safePath), time.Now(), reader)
+		return
+	}
+
+	// 2. Fall back to standard disk file streaming
 	file, err := os.Open(safePath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})

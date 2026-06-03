@@ -175,6 +175,7 @@ func main() {
 
 	// Real-time WebSocket endpoints (protected via token query param handled in middleware)
 	router.GET("/ws", handlers.AuthMiddleware(cfg.JWTSecret), wsHandler.ServeWS)
+	router.GET("/ws/jobs", handlers.AuthMiddleware(cfg.JWTSecret), wsHandler.ServeWSJobs)
 	router.GET("/ws/logs", handlers.AuthMiddleware(cfg.JWTSecret), handlers.ServeLogWS)
 
 	// Static Assets & SPA Fallback Serving
