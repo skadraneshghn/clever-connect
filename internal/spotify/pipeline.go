@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,33 +29,79 @@ import (
 // Replicates the spotDL algorithm: Spotify metadata + YouTube audio + FFmpeg conversion
 // ──────────────────────────────────────────────────────────────────────────────
 
+// searchYouTube performs a keyless search query on YouTube and returns the first matching video ID
+func searchYouTube(ctx context.Context, query string) (string, error) {
+	searchURL := "https://www.youtube.com/results?search_query=" + url.QueryEscape(query)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected search status code: %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	body := string(bodyBytes)
+
+	// Regex to extract video IDs from search results: /watch?v=XXXXXXXXXXX
+	re := regexp.MustCompile(`/watch\?v=([a-zA-Z0-9_-]{11})`)
+	matches := re.FindAllStringSubmatch(body, -1)
+	for _, match := range matches {
+		if len(match) > 1 && len(match[1]) == 11 {
+			return match[1], nil
+		}
+	}
+
+	// Fallback regex looking for videoId key in YouTube's JSON payload
+	reJSON := regexp.MustCompile(`"videoId"\s*:\s*"([a-zA-Z0-9_-]{11})"`)
+	matchesJSON := reJSON.FindAllStringSubmatch(body, -1)
+	for _, match := range matchesJSON {
+		if len(match) > 1 && len(match[1]) == 11 {
+			return match[1], nil
+		}
+	}
+
+	return "", fmt.Errorf("no videos found in YouTube search results for query: %s", query)
+}
+
 // matchYouTube searches YouTube Music for a matching audio using ISRC or title+artist
 func matchYouTube(ctx context.Context, track *TrackMeta) (string, error) {
-	client := &ytdl.Client{}
-
 	// Strategy 1: Search by ISRC (highest accuracy, exactly like spotDL)
 	if track.ISRC != "" {
-		searchQuery := track.ISRC
-		video, err := client.GetVideoContext(ctx, "ytsearch1:"+searchQuery)
-		if err == nil && video != nil {
-			url := "https://www.youtube.com/watch?v=" + video.ID
-			logger.Info("Spotify", "ISRC match found on YouTube", "isrc", track.ISRC, "yt_id", video.ID)
+		videoID, err := searchYouTube(ctx, track.ISRC)
+		if err == nil && videoID != "" {
+			url := "https://www.youtube.com/watch?v=" + videoID
+			logger.Info("Spotify", "ISRC match found on YouTube", "isrc", track.ISRC, "yt_id", videoID)
 			return url, nil
 		}
+		logger.Warn("Spotify", "ISRC match failed, falling back to title search", "isrc", track.ISRC, "error", err)
 	}
 
 	// Strategy 2: Search by "Artist - Title" (fallback, like spotDL)
 	searchQuery := fmt.Sprintf("%s - %s", track.Artist, track.Title)
-	video, err := client.GetVideoContext(ctx, "ytsearch1:"+searchQuery)
+	videoID, err := searchYouTube(ctx, searchQuery)
 	if err != nil {
 		return "", fmt.Errorf("no YouTube match found for %s: %w", searchQuery, err)
 	}
-	if video == nil {
-		return "", fmt.Errorf("no YouTube match found for %s", searchQuery)
-	}
 
-	ytURL := "https://www.youtube.com/watch?v=" + video.ID
-	logger.Info("Spotify", "Title match found on YouTube", "query", searchQuery, "yt_id", video.ID)
+	ytURL := "https://www.youtube.com/watch?v=" + videoID
+	logger.Info("Spotify", "Title match found on YouTube", "query", searchQuery, "yt_id", videoID)
 	return ytURL, nil
 }
 

@@ -337,7 +337,8 @@ func (e *Engine) executeDownload(ctx context.Context, job *models.YouTubeJob) {
 	// If converting to TV, download to a temp file first
 	downloadPath := destPath
 	if job.ConvertToTV {
-		downloadPath = destPath + ".ytdl_temp"
+		ext := filepath.Ext(destPath)
+		downloadPath = strings.TrimSuffix(destPath, ext) + ".ytdl_temp" + ext
 	}
 
 	// Setup download paths for separate streams if merging is required
@@ -547,8 +548,15 @@ func (e *Engine) mergeVideoAudio(ctx context.Context, jobID, videoPath, audioPat
 		"-c:a", audioCodec,   // Re-encode audio to aac/opus for target container compatibility
 		"-map", "0:v:0",      // Map first video stream from first input
 		"-map", "1:a:0",      // Map first audio stream from second input
-		outputPath,           // Output path
 	}
+
+	if strings.Contains(strings.ToLower(outputPath), ".webm") {
+		args = append(args, "-f", "webm")
+	} else {
+		args = append(args, "-f", "mp4")
+	}
+
+	args = append(args, outputPath)
 
 	var stderrBuf bytes.Buffer
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
@@ -680,6 +688,9 @@ func (e *Engine) DeleteJob(jobID string, deleteFiles bool) {
 			destPath := filepath.Join(absSaveDir, job.Filename)
 			_ = os.Remove(destPath)
 			_ = os.Remove(destPath + ".ytdl_temp")
+			ext := filepath.Ext(destPath)
+			tempPath := strings.TrimSuffix(destPath, ext) + ".ytdl_temp" + ext
+			_ = os.Remove(tempPath)
 		}
 		db.DB.Unscoped().Delete(&job)
 	}
