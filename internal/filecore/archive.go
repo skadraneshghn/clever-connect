@@ -301,15 +301,118 @@ func ExtractArchive(ctx context.Context, archivePath string, password string, up
 
 // CompressFiles archives a list of absolute file paths into a target destination.
 func CompressFiles(ctx context.Context, filePaths []string, destArchivePath string, updateProgress func(progress int)) error {
+	ext := strings.ToLower(filepath.Ext(destArchivePath))
+
+	// 1. Handle RAR compression
+	if ext == ".rar" {
+		var rarPath string
+		candidatePaths := []string{
+			"./bin/rar-bin",
+			"../bin/rar-bin",
+			"../../bin/rar-bin",
+		}
+		for _, cp := range candidatePaths {
+			absPath, err := filepath.Abs(cp)
+			if err == nil {
+				if _, err := os.Stat(absPath); err == nil {
+					rarPath = absPath
+					break
+				}
+			}
+		}
+		if rarPath == "" {
+			return fmt.Errorf("rar-bin executable not found. Please ensure the rar binary is present in ./bin/")
+		}
+
+		var baseDir string
+		if len(filePaths) > 0 {
+			baseDir = filepath.Dir(filePaths[0])
+		}
+
+		cmdArgs := []string{"a", "-ep1", destArchivePath}
+		for _, p := range filePaths {
+			if rel, err := filepath.Rel(baseDir, p); err == nil {
+				cmdArgs = append(cmdArgs, rel)
+			} else {
+				cmdArgs = append(cmdArgs, p)
+			}
+		}
+
+		cmd := exec.CommandContext(ctx, rarPath, cmdArgs...)
+		cmd.Dir = baseDir
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("rar compression failed: %s, %w", string(output), err)
+		}
+		updateProgress(100)
+		return nil
+	}
+
+	// 2. Handle 7Z compression
+	if ext == ".7z" {
+		sevenZipPath, err := exec.LookPath("7z")
+		if err != nil {
+			return fmt.Errorf("7z executable not found: %w", err)
+		}
+
+		var baseDir string
+		if len(filePaths) > 0 {
+			baseDir = filepath.Dir(filePaths[0])
+		}
+
+		cmdArgs := []string{"a", "-y", destArchivePath}
+		for _, p := range filePaths {
+			if rel, err := filepath.Rel(baseDir, p); err == nil {
+				cmdArgs = append(cmdArgs, rel)
+			} else {
+				cmdArgs = append(cmdArgs, p)
+			}
+		}
+
+		cmd := exec.CommandContext(ctx, sevenZipPath, cmdArgs...)
+		cmd.Dir = baseDir
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("7z compression failed: %s, %w", string(output), err)
+		}
+		updateProgress(100)
+		return nil
+	}
+
+	// 3. Handle standard formats via mholt/archives
 	outFile, err := os.Create(destArchivePath)
 	if err != nil {
 		return err
 	}
 	defer outFile.Close()
 
-	// Default to Zip for broad compatibility, but mholt/archives supports others
-	format := archives.Zip{}
-	
+	var format archives.Archiver
+	if strings.HasSuffix(strings.ToLower(destArchivePath), ".tar.gz") || strings.HasSuffix(strings.ToLower(destArchivePath), ".tgz") {
+		format = archives.CompressedArchive{
+			Compression: archives.Gz{},
+			Archival:    archives.Tar{},
+		}
+	} else if strings.HasSuffix(strings.ToLower(destArchivePath), ".tar.bz2") || strings.HasSuffix(strings.ToLower(destArchivePath), ".tbz2") {
+		format = archives.CompressedArchive{
+			Compression: archives.Bz2{},
+			Archival:    archives.Tar{},
+		}
+	} else if strings.HasSuffix(strings.ToLower(destArchivePath), ".tar.xz") || strings.HasSuffix(strings.ToLower(destArchivePath), ".txz") {
+		format = archives.CompressedArchive{
+			Compression: archives.Xz{},
+			Archival:    archives.Tar{},
+		}
+	} else if strings.HasSuffix(strings.ToLower(destArchivePath), ".tar.zst") || strings.HasSuffix(strings.ToLower(destArchivePath), ".tzst") {
+		format = archives.CompressedArchive{
+			Compression: archives.Zstd{},
+			Archival:    archives.Tar{},
+		}
+	} else if ext == ".tar" {
+		format = archives.Tar{}
+	} else {
+		format = archives.Zip{}
+	}
+
 	// Map files to archives.FileInfo structure
 	fileMap := make(map[string]string)
 	for _, p := range filePaths {

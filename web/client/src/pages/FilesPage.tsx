@@ -35,16 +35,27 @@ const getFileCategory = (ext: string): 'image' | 'video' | 'code' | 'other' => {
 
 const isArchiveFile = (fileName: string): boolean => {
 	const lower = fileName.toLowerCase();
-	return lower.endsWith('.zip') || 
-		   lower.endsWith('.tar') || 
-		   lower.endsWith('.tar.gz') || 
-		   lower.endsWith('.tgz') || 
-		   lower.endsWith('.rar') || 
-		   lower.endsWith('.7z') || 
-		   lower.endsWith('.gz') || 
-		   lower.endsWith('.xz') || 
-		   lower.endsWith('.bz2') || 
-		   lower.endsWith('.zst');
+	if (lower.endsWith('.zip') || 
+		lower.endsWith('.tar') || 
+		lower.endsWith('.tar.gz') || 
+		lower.endsWith('.tgz') || 
+		lower.endsWith('.rar') || 
+		lower.endsWith('.7z') || 
+		lower.endsWith('.gz') || 
+		lower.endsWith('.xz') || 
+		lower.endsWith('.bz2') || 
+		lower.endsWith('.zst')) {
+		return true;
+	}
+	if (/\.part\d+$/i.test(lower) || /\.\d{3,}$/i.test(lower)) {
+		return true;
+	}
+	return false;
+};
+
+const updateArchiveExtension = (name: string, ext: string): string => {
+	const base = name.replace(/\.(zip|tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz|tar\.zst|tzst|rar|7z)$/i, '');
+	return base ? base + ext : 'archive' + ext;
 };
 
 const getMonacoLanguage = (ext: string): string => {
@@ -713,6 +724,7 @@ export const FilesPage: React.FC = () => {
 	// Archive Modal
 	const [showArchiveModal, setShowArchiveModal] = useState<boolean>(false);
 	const [archiveName, setArchiveName] = useState<string>('archive.zip');
+	const [archiveFormat, setArchiveFormat] = useState<string>('.zip');
 	const [compressing, setCompressing] = useState<boolean>(false);
 	const [compressQueue, setCompressQueue] = useState<{ name: string; path: string }[]>([]);
 	const [showCompressQueueModal, setShowCompressQueueModal] = useState<boolean>(false);
@@ -2061,26 +2073,52 @@ export const FilesPage: React.FC = () => {
 				</div>
 			)}
 
-			{/* Zip Archive Modal */}
+			{/* Archive Modal */}
 			{showArchiveModal && (
 				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
 					<div className="g-card animate-zoom-in" style={{ width: 360, padding: 22, boxShadow: '0 20px 40px rgba(0,0,0,0.2)' }}>
 						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-							<h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Compress Selected to ZIP</h3>
+							<h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Compress Selected</h3>
 							<button onClick={() => setShowArchiveModal(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}><FiX size={16} /></button>
 						</div>
 						<form onSubmit={handleCompress}>
-							<input 
-								type="text" 
-								required
-								value={archiveName}
-								onChange={(e) => setArchiveName(e.target.value)}
-								placeholder="archive.zip"
-								style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13, marginBottom: 14 }}
-							/>
+							<div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
+								<div>
+									<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Format</label>
+									<select 
+										value={archiveFormat} 
+										onChange={(e) => {
+											const fmt = e.target.value;
+											setArchiveFormat(fmt);
+											setArchiveName(prev => updateArchiveExtension(prev, fmt));
+										}}
+										style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+									>
+										<option value=".zip">ZIP Archive (.zip)</option>
+										<option value=".tar">TAR Archive (.tar)</option>
+										<option value=".tar.gz">TAR GZIP (.tar.gz)</option>
+										<option value=".tar.bz2">TAR BZIP2 (.tar.bz2)</option>
+										<option value=".tar.xz">TAR XZ (.tar.xz)</option>
+										<option value=".tar.zst">TAR Zstandard (.tar.zst)</option>
+										<option value=".rar">RAR Archive (.rar)</option>
+										<option value=".7z">7Z Archive (.7z)</option>
+									</select>
+								</div>
+								<div>
+									<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Archive Name</label>
+									<input 
+										type="text" 
+										required
+										value={archiveName}
+										onChange={(e) => setArchiveName(e.target.value)}
+										placeholder="archive.zip"
+										style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+									/>
+								</div>
+							</div>
 							<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
 								<button type="button" className="btn" onClick={() => setShowArchiveModal(false)}>Cancel</button>
-								<button type="submit" className="btn btn--primary" disabled={compressing}>{compressing ? 'Archiving...' : 'ZIP Items'}</button>
+								<button type="submit" className="btn btn--primary" disabled={compressing}>{compressing ? 'Archiving...' : 'Compress Items'}</button>
 							</div>
 						</form>
 					</div>
@@ -2163,16 +2201,39 @@ export const FilesPage: React.FC = () => {
 						
 						{compressQueue.length > 0 ? (
 							<div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-									<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Archive Name</label>
-									<input 
-										type="text" 
-										required
-										value={archiveName}
-										onChange={(e) => setArchiveName(e.target.value)}
-										placeholder="archive.zip"
-										style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
-									/>
+								<div style={{ display: 'flex', gap: 10 }}>
+									<div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+										<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Format</label>
+										<select 
+											value={archiveFormat} 
+											onChange={(e) => {
+												const fmt = e.target.value;
+												setArchiveFormat(fmt);
+												setArchiveName(prev => updateArchiveExtension(prev, fmt));
+											}}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+										>
+											<option value=".zip">ZIP (.zip)</option>
+											<option value=".tar">TAR (.tar)</option>
+											<option value=".tar.gz">TAR.GZ (.tar.gz)</option>
+											<option value=".tar.bz2">TAR.BZ2 (.tar.bz2)</option>
+											<option value=".tar.xz">TAR.XZ (.tar.xz)</option>
+											<option value=".tar.zst">TAR.ZST (.tar.zst)</option>
+											<option value=".rar">RAR (.rar)</option>
+											<option value=".7z">7Z (.7z)</option>
+										</select>
+									</div>
+									<div style={{ flex: 2, display: 'flex', flexDirection: 'column', gap: 4 }}>
+										<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Archive Name</label>
+										<input 
+											type="text" 
+											required
+											value={archiveName}
+											onChange={(e) => setArchiveName(e.target.value)}
+											placeholder="archive.zip"
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+										/>
+									</div>
 								</div>
 								
 								<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
