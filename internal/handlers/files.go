@@ -1,7 +1,8 @@
 package handlers
 
 import (
-	"archive/zip"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
+	"clever-connect/internal/scheduler"
 	"clever-connect/internal/torrent"
 	anacrolixTorrent "github.com/anacrolix/torrent"
 	"github.com/gin-gonic/gin"
@@ -334,6 +336,66 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 		"disk_free":    diskFree,
 		"disk_used":    diskUsed,
 	})
+}
+
+// SearchFiles handles GET /api/files/search
+func (h *FileHandler) SearchFiles(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+	reqPath := c.DefaultQuery("path", "")
+	query := c.DefaultQuery("q", "")
+
+	if len(query) <= 3 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Query must be more than 3 characters"})
+		return
+	}
+
+	safePath, err := h.securePath(reqPath)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	results := make([]gin.H, 0)
+	limit := 100
+
+	err = filepath.WalkDir(safePath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if len(results) >= limit {
+			return filepath.SkipDir
+		}
+		name := d.Name()
+		if strings.Contains(strings.ToLower(name), strings.ToLower(query)) {
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			relPath, err := filepath.Rel(h.rootDir, path)
+			if err != nil {
+				relPath = name
+			}
+			relPath = "/" + filepath.ToSlash(relPath)
+			results = append(results, gin.H{
+				"name":      name,
+				"is_dir":    d.IsDir(),
+				"size":      info.Size(),
+				"mod_time":  info.ModTime(),
+				"extension": filepath.Ext(name),
+				"path":      relPath,
+			})
+		}
+		return nil
+	})
+
+	if err != nil && err != filepath.SkipDir {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Search failed", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, results)
 }
 
 // StreamOrDownload handles GET /api/files/stream
@@ -723,108 +785,66 @@ func (h *FileHandler) CompressItems(c *gin.Context) {
 		return
 	}
 
-	zipPath := filepath.Join(req.ParentPath, req.ZipName)
-	safeZipPath, err := h.securePath(zipPath)
-	if err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-		return
-	}
-
-	newZipFile, err := os.Create(safeZipPath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create ZIP archive"})
-		return
-	}
-	defer newZipFile.Close()
-
-	zipWriter := zip.NewWriter(newZipFile)
-	defer zipWriter.Close()
-
+	var absolutePaths []string
 	for _, item := range req.Items {
 		itemPath := filepath.Join(req.ParentPath, item)
 		safeItemPath, err := h.securePath(itemPath)
 		if err != nil {
-			continue
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied for: " + item})
+			return
 		}
-
-		info, err := os.Stat(safeItemPath)
-		if err != nil {
-			continue
-		}
-
-		if info.IsDir() {
-			err = filepath.Walk(safeItemPath, func(path string, f os.FileInfo, err error) error {
-				if err != nil {
-					return err
-				}
-
-				relPath, err := filepath.Rel(filepath.Dir(safeItemPath), path)
-				if err != nil {
-					return err
-				}
-
-				header, err := zip.FileInfoHeader(f)
-				if err != nil {
-					return err
-				}
-
-				header.Name = filepath.ToSlash(relPath)
-				if f.IsDir() {
-					header.Name += "/"
-				} else {
-					header.Method = zip.Deflate
-				}
-
-				writer, err := zipWriter.CreateHeader(header)
-				if err != nil {
-					return err
-				}
-
-				if f.IsDir() {
-					return nil
-				}
-
-				fileToZip, err := os.Open(path)
-				if err != nil {
-					return err
-				}
-				defer fileToZip.Close()
-				_, err = io.Copy(writer, fileToZip)
-				return err
-			})
-		} else {
-			header, err := zip.FileInfoHeader(info)
-			if err != nil {
-				continue
-			}
-			header.Name = item
-			header.Method = zip.Deflate
-
-			writer, err := zipWriter.CreateHeader(header)
-			if err != nil {
-				continue
-			}
-
-			fileToZip, err := os.Open(safeItemPath)
-			if err != nil {
-				continue
-			}
-			defer fileToZip.Close()
-			_, err = io.Copy(writer, fileToZip)
-		}
+		absolutePaths = append(absolutePaths, safeItemPath)
 	}
 
-	logger.Info("Files", "Created ZIP archive successfully", "zipPath", zipPath)
-	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "ZIP archive created successfully"})
+	destName := req.ZipName
+	if filepath.Ext(destName) == "" {
+		destName = destName + ".zip"
+	}
+
+	payloadObj := struct {
+		Files    []string `json:"files"`
+		DestName string   `json:"dest_name"`
+	}{
+		Files:    absolutePaths,
+		DestName: destName,
+	}
+
+	payloadBytes, err := json.Marshal(payloadObj)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal payload"})
+		return
+	}
+
+	job, err := scheduler.Engine.SubmitJob(
+		"file_compress",
+		fmt.Sprintf("Compress %d items", len(absolutePaths)),
+		fmt.Sprintf("Compressing %s to %s/Compressed", strings.Join(req.Items, ", "), h.rootDir),
+		"files",
+		5,
+		string(payloadBytes),
+		"",
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to submit compress job", "details": err.Error()})
+		return
+	}
+
+	logger.Info("Files", "Submitted compression job successfully", "jobID", job.ID, "zipName", destName)
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Compression job queued successfully",
+		"job_id":  job.ID,
+	})
 }
 
-// DecompressItem handles POST /api/files/decompress to extract ZIP archives
+// DecompressItem handles POST /api/files/decompress to extract ZIP/TAR/RAR/7Z archives
 func (h *FileHandler) DecompressItem(c *gin.Context) {
 	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
 		return
 	}
 	var req struct {
-		Path string `json:"path" binding:"required"`
+		Path     string `json:"path" binding:"required"`
+		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
@@ -836,48 +856,54 @@ func (h *FileHandler) DecompressItem(c *gin.Context) {
 		return
 	}
 
-	reader, err := zip.OpenReader(safePath)
+	info, err := os.Stat(safePath)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open ZIP archive", "details": err.Error()})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Archive file not found"})
 		return
 	}
-	defer reader.Close()
-
-	destDir := filepath.Dir(safePath)
-
-	for _, f := range reader.File {
-		fpath := filepath.Join(destDir, f.Name)
-
-		// Traversal check for each file inside zip
-		if !strings.HasPrefix(filepath.Clean(fpath), h.rootDir) {
-			continue
-		}
-
-		if f.FileInfo().IsDir() {
-			_ = os.MkdirAll(fpath, os.ModePerm)
-			continue
-		}
-
-		if err = os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-			continue
-		}
-
-		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			continue
-		}
-
-		rc, err := f.Open()
-		if err != nil {
-			outFile.Close()
-			continue
-		}
-
-		_, err = io.Copy(outFile, rc)
-		outFile.Close()
-		rc.Close()
+	if info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Target is a directory, not an archive file"})
+		return
 	}
 
-	logger.Info("Files", "Extracted ZIP archive successfully", "path", req.Path)
-	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "ZIP archive extracted successfully"})
+	// Verify if archive requires password
+	requiresPassword, err := filecore.IsArchivePasswordProtected(safePath)
+	if err == nil && requiresPassword && req.Password == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"status":            "password_required",
+			"message":           "Archive is password-protected",
+			"requires_password": true,
+		})
+		return
+	}
+
+	payload := safePath
+	if req.Password != "" {
+		pData, _ := json.Marshal(map[string]string{
+			"path":     safePath,
+			"password": req.Password,
+		})
+		payload = string(pData)
+	}
+
+	job, err := scheduler.Engine.SubmitJob(
+		"file_decompress",
+		fmt.Sprintf("Decompress %s", filepath.Base(safePath)),
+		fmt.Sprintf("Extracting %s near the archive file", filepath.Base(safePath)),
+		"files",
+		5,
+		payload,
+		"",
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to submit decompress job", "details": err.Error()})
+		return
+	}
+
+	logger.Info("Files", "Submitted decompression job successfully", "jobID", job.ID, "path", req.Path)
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Decompression job queued successfully",
+		"job_id":  job.ID,
+	})
 }

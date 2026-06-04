@@ -13,6 +13,9 @@ const FilesPage = lazy(() => import('./pages/FilesPage').then(m => ({ default: m
 const LeechPage = lazy(() => import('./pages/LeechPage').then(m => ({ default: m.LeechPage })));
 const PlayerPage = lazy(() => import('./pages/PlayerPage').then(m => ({ default: m.PlayerPage })));
 const TorrentPage = lazy(() => import('./pages/TorrentPage').then(m => ({ default: m.TorrentPage })));
+const YouTubePage = lazy(() => import('./pages/YouTubePage').then(m => ({ default: m.YouTubePage })));
+const SpotifyPage = lazy(() => import('./pages/SpotifyPage').then(m => ({ default: m.SpotifyPage })));
+const JobSchedulerPage = lazy(() => import('./pages/JobSchedulerPage').then(m => ({ default: m.JobSchedulerPage })));
 const TelegramSettingsPage = lazy(() => import('./pages/TelegramSettingsPage').then(m => ({ default: m.TelegramSettingsPage })));
 
 // Loading spinner
@@ -45,6 +48,9 @@ const ProtectedLayout: React.FC = () => {
     files: ['Storage', 'Files Explorer'],
     leech: ['Storage', 'Remote Leech Manager'],
     torrent: ['Storage', 'Torrent Client'],
+    youtube: ['Storage', 'YouTube Downloader'],
+    spotify: ['Storage', 'Spotify Downloader'],
+    scheduler: ['System', 'Job Scheduler'],
     'telegram-settings': ['Settings', 'Telegram Bot'],
   };
 
@@ -109,6 +115,9 @@ const router = createBrowserRouter([
       { path: 'files', element: <FilesPage /> },
       { path: 'leech', element: <LeechPage /> },
       { path: 'torrent', element: <TorrentPage /> },
+      { path: 'youtube', element: <YouTubePage /> },
+      { path: 'spotify', element: <SpotifyPage /> },
+      { path: 'scheduler', element: <JobSchedulerPage /> },
       { path: 'telegram-settings', element: <TelegramSettingsPage /> },
     ],
   },

@@ -10,6 +10,7 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/filecore"
 	"clever-connect/internal/models"
 	"clever-connect/internal/torrent"
 
@@ -108,6 +109,18 @@ func (h *TorrentHandler) ListTorrents(c *gin.Context) {
 	if err := db.DB.Order("created_at desc").Find(&jobs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query torrent database", "details": err.Error()})
 		return
+	}
+
+	// Populate FileExists for completed or seeding torrents
+	for i := range jobs {
+		jobs[i].FileExists = true
+		if jobs[i].Status == "completed" || jobs[i].Status == "seeding" {
+			absSaveDir := filecore.GetAbsoluteSavePath(jobs[i].SaveDirectory)
+			destPath := filepath.Join(absSaveDir, jobs[i].Name)
+			if _, err := os.Stat(destPath); os.IsNotExist(err) {
+				jobs[i].FileExists = false
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, jobs)

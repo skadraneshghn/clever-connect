@@ -15,6 +15,7 @@ export interface TorrentJob {
   upload_speed: number;
   peers: number;
   error_message: string;
+  file_exists?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -31,6 +32,7 @@ export interface LeechJob {
   speed: number;
   threads: number;
   error_message: string;
+  file_exists?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -58,6 +60,42 @@ export interface YouTubeJob {
   convert_to_tv: boolean;
   convert_status: string;
   error_message: string;
+  file_exists?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SpotifyJob {
+  id: string;
+  spotify_url: string;
+  spotify_id: string;
+  title: string;
+  artist: string;
+  artists: string;
+  album: string;
+  album_artist: string;
+  cover_url: string;
+  release_date: string;
+  track_number: number;
+  total_tracks: number;
+  duration_ms: number;
+  isrc: string;
+  genre: string;
+  explicit: boolean;
+  popularity: number;
+  youtube_url: string;
+  filename: string;
+  save_directory: string;
+  format: string;
+  bitrate: string;
+  total_bytes: number;
+  downloaded: number;
+  status: string;
+  progress: number;
+  speed: number;
+  album_job_id: string;
+  error_message: string;
+  file_exists?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -66,6 +104,7 @@ interface JobsState {
   torrents: TorrentJob[];
   leechJobs: LeechJob[];
   youtubeJobs: YouTubeJob[];
+  spotifyJobs: SpotifyJob[];
   wsConnected: boolean;
   initWebSocket: (token: string) => () => void;
   sendAction: (cmd: { action: string; info_hash?: string; job_id?: string; delete_files?: boolean }) => void;
@@ -79,6 +118,7 @@ export const useJobsStore = create<JobsState>((set, get) => {
     torrents: [],
     leechJobs: [],
     youtubeJobs: [],
+    spotifyJobs: [],
     wsConnected: false,
 
     initWebSocket: (token) => {
@@ -99,7 +139,8 @@ export const useJobsStore = create<JobsState>((set, get) => {
               set({
                 torrents: data.torrents || [],
                 leechJobs: data.leechJobs || [],
-                youtubeJobs: data.youtubeJobs || []
+                youtubeJobs: data.youtubeJobs || [],
+                spotifyJobs: data.spotifyJobs || []
               });
             } catch (err) {
               console.error('Failed to parse jobs WS data', err);

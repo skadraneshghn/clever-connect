@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
@@ -24,9 +26,85 @@ func NewSchedulerHandler(cfg *config.Config) *SchedulerHandler {
 	return &SchedulerHandler{cfg: cfg}
 }
 
+// proxyToServer automatically forwards requests from the Client Panel to the remote Clever Cloud server.
+func (h *SchedulerHandler) proxyToServer(c *gin.Context, method string, apiPath string) bool {
+	if h.cfg.AppMode == "server" {
+		return false
+	}
+
+	var remoteURLTarget string
+	var remoteToken string
+
+	if h.cfg.ServerURL != "" {
+		remoteURLTarget = h.cfg.ServerURL
+		remoteToken = h.cfg.ServerAuthToken
+	} else {
+		var clientCfg models.EhcoClientConfig
+		if err := db.DB.First(&clientCfg).Error; err != nil || clientCfg.RemoteURL == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No remote server connection configured in client panel"})
+			return true
+		}
+		remoteURLTarget = clientCfg.RemoteURL
+		remoteToken = clientCfg.AuthToken
+	}
+
+	remoteHost := remoteURLTarget
+	remoteHost = strings.Replace(remoteHost, "wss://", "https://", 1)
+	remoteHost = strings.Replace(remoteHost, "ws://", "http://", 1)
+	if idx := strings.Index(remoteHost, "/ws"); idx != -1 {
+		remoteHost = remoteHost[:idx]
+	}
+	if idx := strings.Index(remoteHost, "/tunnel"); idx != -1 {
+		remoteHost = remoteHost[:idx]
+	}
+	remoteHost = strings.TrimSuffix(remoteHost, "/")
+
+	remoteURL := remoteHost + apiPath
+	if c.Request.URL.RawQuery != "" {
+		remoteURL += "?" + c.Request.URL.RawQuery
+	}
+
+	req, err := http.NewRequest(method, remoteURL, c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request", "details": err.Error()})
+		return true
+	}
+
+	for k, vv := range c.Request.Header {
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
+	}
+
+	if remoteToken != "" {
+		req.Header.Set("Authorization", "Bearer "+remoteToken)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Remote server connection refused or timed out", "details": err.Error()})
+		return true
+	}
+	defer resp.Body.Close()
+
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			c.Writer.Header().Add(k, v)
+		}
+	}
+	c.Writer.WriteHeader(resp.StatusCode)
+
+	_, _ = io.Copy(c.Writer, resp.Body)
+	return true
+}
+
 // ListJobs returns all scheduler jobs with optional filters.
 // GET /api/scheduler/jobs?status=running&category=files&type=file_compress&limit=50&offset=0
 func (h *SchedulerHandler) ListJobs(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	status := c.Query("status")
 	category := c.Query("category")
 	jobType := c.Query("type")
@@ -54,6 +132,9 @@ func (h *SchedulerHandler) ListJobs(c *gin.Context) {
 // CreateJob submits a new job to the scheduler.
 // POST /api/scheduler/jobs
 func (h *SchedulerHandler) CreateJob(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	var input struct {
 		Type        string `json:"type" binding:"required"`
 		Name        string `json:"name" binding:"required"`
@@ -98,6 +179,9 @@ func (h *SchedulerHandler) CreateJob(c *gin.Context) {
 // CancelJob cancels a running or queued job.
 // POST /api/scheduler/jobs/:id/cancel
 func (h *SchedulerHandler) CancelJob(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job ID"})
@@ -120,6 +204,9 @@ func (h *SchedulerHandler) CancelJob(c *gin.Context) {
 // RetryJob retries a failed or cancelled job.
 // POST /api/scheduler/jobs/:id/retry
 func (h *SchedulerHandler) RetryJob(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job ID"})
@@ -142,6 +229,9 @@ func (h *SchedulerHandler) RetryJob(c *gin.Context) {
 // ForceRunJob force-runs a queued job immediately.
 // POST /api/scheduler/jobs/:id/force
 func (h *SchedulerHandler) ForceRunJob(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job ID"})
@@ -164,6 +254,9 @@ func (h *SchedulerHandler) ForceRunJob(c *gin.Context) {
 // DeleteJob removes a job and its logs.
 // POST /api/scheduler/jobs/:id/delete
 func (h *SchedulerHandler) DeleteJob(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job ID"})
@@ -186,6 +279,9 @@ func (h *SchedulerHandler) DeleteJob(c *gin.Context) {
 // ReorderJobs updates priorities for job queue reordering.
 // POST /api/scheduler/jobs/reorder
 func (h *SchedulerHandler) ReorderJobs(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	var input struct {
 		OrderedIDs []uint `json:"ordered_ids" binding:"required"`
 	}
@@ -211,6 +307,9 @@ func (h *SchedulerHandler) ReorderJobs(c *gin.Context) {
 // GetJobLogs returns execution logs for a specific job.
 // GET /api/scheduler/jobs/:id/logs?limit=100
 func (h *SchedulerHandler) GetJobLogs(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job ID"})
@@ -234,6 +333,9 @@ func (h *SchedulerHandler) GetJobLogs(c *gin.Context) {
 // GetConfig returns the scheduler configuration.
 // GET /api/scheduler/config
 func (h *SchedulerHandler) GetConfig(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	var cfg models.SchedulerConfig
 	if err := db.DB.First(&cfg).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load scheduler config"})
@@ -246,6 +348,9 @@ func (h *SchedulerHandler) GetConfig(c *gin.Context) {
 // SaveConfig updates the scheduler configuration.
 // POST /api/scheduler/config
 func (h *SchedulerHandler) SaveConfig(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	var input models.SchedulerConfig
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid config payload", "details": err.Error()})
@@ -293,6 +398,9 @@ func (h *SchedulerHandler) SaveConfig(c *gin.Context) {
 // GetStats returns scheduler statistics.
 // GET /api/scheduler/stats
 func (h *SchedulerHandler) GetStats(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	if scheduler.Engine == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Scheduler engine not initialized"})
 		return
@@ -305,6 +413,9 @@ func (h *SchedulerHandler) GetStats(c *gin.Context) {
 // PurgeJobs removes old completed/failed jobs.
 // POST /api/scheduler/purge
 func (h *SchedulerHandler) PurgeJobs(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	var input struct {
 		OlderThanDays int `json:"older_than_days"`
 	}

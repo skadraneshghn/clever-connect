@@ -18,6 +18,18 @@ import (
 	"lukechampine.com/blake3"
 )
 
+// GetAbsoluteSavePath resolves any relative or absolute download folder path
+// to ensure it is sandboxed and located inside the File Manager's root folder ("./data/manager")
+func GetAbsoluteSavePath(saveDir string) string {
+	absBase, _ := filepath.Abs("./data/manager")
+	absSave, err := filepath.Abs(saveDir)
+	if err == nil && strings.HasPrefix(absSave, absBase) {
+		return absSave
+	}
+	clean := filepath.Clean("/" + saveDir)
+	return filepath.Join(absBase, clean)
+}
+
 // GetBlake3Checksum calculates the 256-bit BLAKE3 hash of a file.
 // It reads the file in 64KB blocks, which is extremely fast and efficient.
 func GetBlake3Checksum(filePath string) (string, error) {

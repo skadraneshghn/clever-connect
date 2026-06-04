@@ -90,6 +90,7 @@ type LeechJob struct {
 	Password      string    `json:"password"`
 	UsePremium    bool      `json:"use_premium" gorm:"default:false"`
 	ErrorMessage  string    `json:"error_message"`
+	FileExists    bool      `gorm:"-" json:"file_exists"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -111,6 +112,7 @@ type TorrentJob struct {
 	Peers         int       `json:"peers"`
 	SelectedFiles string    `gorm:"type:text" json:"selected_files"` // JSON array of selected file indices
 	ErrorMessage  string    `json:"error_message"`
+	FileExists    bool      `gorm:"-" json:"file_exists"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -246,6 +248,7 @@ type YouTubeJob struct {
 	ConvertToTV      bool      `json:"convert_to_tv" gorm:"default:false"`
 	ConvertStatus    string    `json:"convert_status"` // "", "queued", "converting", "completed", "error"
 	ErrorMessage     string    `json:"error_message"`
+	FileExists       bool      `gorm:"-" json:"file_exists"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -256,6 +259,63 @@ type YouTubeConfig struct {
 	DefaultSavePath string `json:"default_save_path" gorm:"default:'./downloads/youtube'"`
 	MaxConcurrent   int    `json:"max_concurrent" gorm:"default:2"`
 	ProxyURL        string `json:"proxy_url"`
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Spotify Downloader Models
+// ──────────────────────────────────────────────────────────────────────────────
+
+// SpotifyConfig stores admin-configurable Spotify downloader settings
+type SpotifyConfig struct {
+	gorm.Model
+	ClientID         string `json:"client_id" gorm:"type:text"`
+	ClientSecret     string `json:"client_secret" gorm:"type:text"`
+	DefaultSavePath  string `json:"default_save_path" gorm:"default:'./downloads/spotify/audios'"`
+	DefaultFormat    string `json:"default_format" gorm:"default:'mp3'"`         // mp3, flac, opus, m4a, wav, ogg
+	DefaultBitrate   string `json:"default_bitrate" gorm:"default:'320k'"`       // 128k, 192k, 256k, 320k, auto
+	MaxConcurrent    int    `json:"max_concurrent" gorm:"default:3"`
+	EmbedMetadata    bool   `json:"embed_metadata" gorm:"default:true"`          // Embed ID3 tags & cover art
+	EmbedLyrics      bool   `json:"embed_lyrics" gorm:"default:true"`            // Embed lyrics if available
+	OverwriteExist   bool   `json:"overwrite_existing" gorm:"default:false"`     // Overwrite files if they exist
+	ProxyURL         string `json:"proxy_url"`                                    // Optional proxy for Spotify API
+	FileNameTemplate string `json:"file_name_template" gorm:"default:'{artist} - {title}'"` // Filename template
+}
+
+// SpotifyJob tracks individual Spotify track download tasks through the full pipeline
+type SpotifyJob struct {
+	ID             string    `gorm:"primaryKey" json:"id"`
+	SpotifyURL     string    `gorm:"type:text;not null" json:"spotify_url"`       // Original Spotify URL
+	SpotifyID      string    `json:"spotify_id"`                                   // Spotify Track ID
+	Title          string    `gorm:"type:text" json:"title"`
+	Artist         string    `json:"artist"`
+	Artists        string    `gorm:"type:text" json:"artists"`                     // JSON array of artist names
+	Album          string    `json:"album"`
+	AlbumArtist    string    `json:"album_artist"`
+	CoverURL       string    `gorm:"type:text" json:"cover_url"`                  // High-res album art URL
+	ReleaseDate    string    `json:"release_date"`
+	TrackNumber    int       `json:"track_number"`
+	TotalTracks    int       `json:"total_tracks"`
+	DiscNumber     int       `json:"disc_number"`
+	DurationMs     int       `json:"duration_ms"`
+	ISRC           string    `json:"isrc"`                                         // International Standard Recording Code
+	Genre          string    `json:"genre"`
+	Explicit       bool      `json:"explicit"`
+	Popularity     int       `json:"popularity"`
+	YouTubeURL     string    `gorm:"type:text" json:"youtube_url"`                // Matched YouTube video URL
+	Filename       string    `json:"filename"`
+	SaveDirectory  string    `json:"save_directory"`
+	Format         string    `json:"format" gorm:"default:'mp3'"`                 // Output format
+	Bitrate        string    `json:"bitrate" gorm:"default:'320k'"`               // Output bitrate
+	TotalBytes     int64     `json:"total_bytes"`
+	Downloaded     int64     `json:"downloaded"`
+	Status         string    `json:"status" gorm:"default:'pending'"`             // pending, fetching_meta, matching, downloading, converting, tagging, completed, error
+	Progress       float64   `json:"progress"`                                    // 0.0 to 100.0
+	Speed          float64   `json:"speed"`                                       // MB/s
+	AlbumJobID     string    `json:"album_job_id"`                                // Group tracks from same album
+	ErrorMessage   string    `json:"error_message"`
+	FileExists     bool      `gorm:"-" json:"file_exists"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // FileRegistry tracks unique files saved on disk via their BLAKE3 checksum

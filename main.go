@@ -14,6 +14,7 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/scheduler"
+	"clever-connect/internal/spotify"
 	"clever-connect/internal/telegram"
 	"clever-connect/internal/torrent"
 	"clever-connect/internal/youtube"
@@ -55,6 +56,9 @@ func main() {
 
 		// Initialize YouTube Download Engine
 		youtube.Init()
+
+		// Initialize Spotify Download Engine
+		spotify.Init()
 
 		// Initialize Enterprise Job Scheduler Engine
 		scheduler.Init()
@@ -110,6 +114,7 @@ func main() {
 	leechHandler := handlers.NewLeechHandler(cfg)
 	torrentHandler := handlers.NewTorrentHandler(cfg)
 	youtubeHandler := handlers.NewYouTubeHandler(cfg)
+	spotifyHandler := handlers.NewSpotifyHandler(cfg)
 	telegramHandler := handlers.NewTelegramHandler(cfg)
 	schedulerHandler := handlers.NewSchedulerHandler(cfg)
 
@@ -141,6 +146,7 @@ func main() {
 
 			// File Manager API Endpoints
 			protected.GET("/files/list", fileHandler.ListDirectory)
+			protected.GET("/files/search", fileHandler.SearchFiles)
 			protected.GET("/files/stream", fileHandler.StreamOrDownload)
 			protected.GET("/files/content", fileHandler.GetContent)
 			protected.POST("/files/save", fileHandler.SaveContent)
@@ -180,6 +186,16 @@ func main() {
 			protected.POST("/youtube/delete", youtubeHandler.DeleteJob)
 			protected.GET("/youtube/config", youtubeHandler.GetConfig)
 			protected.POST("/youtube/config", youtubeHandler.SaveConfig)
+
+			// Spotify Downloader API Endpoints
+			protected.POST("/spotify/info", spotifyHandler.FetchInfo)
+			protected.POST("/spotify/add", spotifyHandler.AddJob)
+			protected.GET("/spotify/jobs", spotifyHandler.ListJobs)
+			protected.POST("/spotify/cancel", spotifyHandler.CancelJob)
+			protected.POST("/spotify/delete", spotifyHandler.DeleteJob)
+			protected.POST("/spotify/retry", spotifyHandler.RetryJob)
+			protected.GET("/spotify/config", spotifyHandler.GetConfig)
+			protected.POST("/spotify/config", spotifyHandler.SaveConfig)
 
 			// Telegram Bot Core API Endpoints
 			protected.GET("/telegram/config", telegramHandler.GetConfig)

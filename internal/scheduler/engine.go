@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"clever-connect/internal/db"
 	"clever-connect/internal/downloader"
+	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/telegram"
@@ -729,36 +732,64 @@ func (s *Scheduler) registerBuiltinJobs() {
 		return fmt.Errorf("shell_command type is disabled for security")
 	})
 
-	// File compression job (placeholder — integrates with file handler)
+	// File compression job
 	s.RegisterJob("file_compress", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
 		logFn("INFO", "File compression job started")
-		// Progress simulation — the actual handler in files.go will update this
-		for i := 0; i <= 100; i += 10 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				db.DB.Model(job).Update("progress", i)
-				time.Sleep(200 * time.Millisecond)
-			}
+		
+		var payload struct {
+			Files    []string `json:"files"`
+			DestName string   `json:"dest_name"`
 		}
-		logFn("INFO", "File compression completed")
+		if err := json.Unmarshal([]byte(job.Payload), &payload); err != nil {
+			return fmt.Errorf("failed to parse compression payload: %w", err)
+		}
+
+		// Ensure Compressed folder exists in root
+		compressedDir := filepath.Clean("./data/manager/Compressed")
+		if err := os.MkdirAll(compressedDir, 0755); err != nil {
+			return fmt.Errorf("failed to create Compressed directory: %w", err)
+		}
+		destPath := filepath.Join(compressedDir, payload.DestName)
+
+		err := filecore.CompressFiles(ctx, payload.Files, destPath, func(progress int) {
+			db.DB.Model(job).Update("progress", progress)
+		})
+
+		if err != nil {
+			return fmt.Errorf("compression failed: %w", err)
+		}
+
+		logFn("INFO", fmt.Sprintf("Files compressed to %s", destPath))
 		return nil
 	})
 
 	// File decompression job
 	s.RegisterJob("file_decompress", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
-		logFn("INFO", "File decompression job started")
-		for i := 0; i <= 100; i += 10 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				db.DB.Model(job).Update("progress", i)
-				time.Sleep(200 * time.Millisecond)
+		logFn("INFO", fmt.Sprintf("Starting extraction of %s", job.Description))
+		
+		archivePath := job.Payload
+		var password string
+
+		if strings.HasPrefix(strings.TrimSpace(job.Payload), "{") {
+			var p struct {
+				Path     string `json:"path"`
+				Password string `json:"password"`
+			}
+			if err := json.Unmarshal([]byte(job.Payload), &p); err == nil {
+				archivePath = p.Path
+				password = p.Password
 			}
 		}
-		logFn("INFO", "File decompression completed")
+
+		err := filecore.ExtractArchive(ctx, archivePath, password, func(progress int) {
+			db.DB.Model(job).Update("progress", progress)
+		})
+
+		if err != nil {
+			return fmt.Errorf("extraction failed: %w", err)
+		}
+
+		logFn("INFO", "File decompression completed successfully")
 		return nil
 	})
 

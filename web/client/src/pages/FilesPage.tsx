@@ -33,6 +33,31 @@ const getFileCategory = (ext: string): 'image' | 'video' | 'code' | 'other' => {
 	return 'other';
 };
 
+const isArchiveFile = (fileName: string): boolean => {
+	const lower = fileName.toLowerCase();
+	if (lower.endsWith('.zip') || 
+		lower.endsWith('.tar') || 
+		lower.endsWith('.tar.gz') || 
+		lower.endsWith('.tgz') || 
+		lower.endsWith('.rar') || 
+		lower.endsWith('.7z') || 
+		lower.endsWith('.gz') || 
+		lower.endsWith('.xz') || 
+		lower.endsWith('.bz2') || 
+		lower.endsWith('.zst')) {
+		return true;
+	}
+	if (/\.part\d+$/i.test(lower) || /\.\d{3,}$/i.test(lower)) {
+		return true;
+	}
+	return false;
+};
+
+const updateArchiveExtension = (name: string, ext: string): string => {
+	const base = name.replace(/\.(zip|tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz|tar\.zst|tzst|rar|7z)$/i, '');
+	return base ? base + ext : 'archive' + ext;
+};
+
 const getMonacoLanguage = (ext: string): string => {
 	const e = ext.toLowerCase();
 	if (e === '.go') return 'go';
@@ -699,7 +724,14 @@ export const FilesPage: React.FC = () => {
 	// Archive Modal
 	const [showArchiveModal, setShowArchiveModal] = useState<boolean>(false);
 	const [archiveName, setArchiveName] = useState<string>('archive.zip');
+	const [archiveFormat, setArchiveFormat] = useState<string>('.zip');
 	const [compressing, setCompressing] = useState<boolean>(false);
+	const [compressQueue, setCompressQueue] = useState<{ name: string; path: string }[]>([]);
+	const [showCompressQueueModal, setShowCompressQueueModal] = useState<boolean>(false);
+
+	// Archive Password Modal
+	const [passwordModal, setPasswordModal] = useState<{ show: boolean, targetPath: string, callback?: (password: string) => void }>({ show: false, targetPath: '' });
+	const [archivePassword, setArchivePassword] = useState<string>('');
 
 	// Share Modal
 	const [showShareModal, setShowShareModal] = useState<boolean>(false);
@@ -924,12 +956,17 @@ export const FilesPage: React.FC = () => {
 				body: JSON.stringify({
 					parent_path: currentPath,
 					items: selectedItems,
-					zip_name: archiveName.trim().endsWith('.zip') ? archiveName.trim() : `${archiveName.trim()}.zip`
+					zip_name: archiveName.trim()
 				})
 			});
 			if (res.ok) {
+				const data = await res.json();
+				alert(`Compression job queued successfully! Job ID: ${data.job_id}`);
 				setShowArchiveModal(false);
 				fetchFiles(currentPath);
+			} else {
+				const errData = await res.json();
+				alert(`Compression failed: ${errData.error}`);
 			}
 		} catch (err) {
 			console.error(err);
@@ -953,10 +990,137 @@ export const FilesPage: React.FC = () => {
 				body: JSON.stringify({ path: targetPath })
 			});
 			if (res.ok) {
+				const data = await res.json();
+				if (data.status === 'password_required') {
+					setPasswordModal({
+						show: true,
+						targetPath: targetPath,
+						callback: async (pwd: string) => {
+							setLoading(true);
+							try {
+								const finalRes = await fetch('/api/files/decompress', {
+									method: 'POST',
+									headers: {
+										'Content-Type': 'application/json',
+										'Authorization': `Bearer ${token}`
+									},
+									body: JSON.stringify({ path: targetPath, password: pwd })
+								});
+								const finalData = await finalRes.json();
+								if (finalRes.ok && finalData.status === 'success') {
+									alert(`Extraction job queued successfully! Job ID: ${finalData.job_id}`);
+									fetchFiles(currentPath);
+								} else {
+									alert(`Extraction failed: ${finalData.error || 'Wrong password or corrupt archive'}`);
+								}
+							} catch (e) {
+								console.error(e);
+							} finally {
+								setLoading(false);
+							}
+						}
+					});
+					return;
+				}
+				alert(`Extraction job queued successfully! Job ID: ${data.job_id}`);
 				fetchFiles(currentPath);
+			} else {
+				const errData = await res.json();
+				alert(`Extraction failed: ${errData.error}`);
 			}
 		} catch (err) {
 			console.error(err);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const handleAddToCompressQueue = (file: FileItem) => {
+		const fullPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+		setCompressQueue(prev => {
+			if (prev.some(item => item.path === fullPath)) {
+				alert(`"${file.name}" is already in the compress queue.`);
+				return prev;
+			}
+			return [...prev, { name: file.name, path: fullPath }];
+		});
+	};
+
+	const handleAddSelectedToCompressQueue = () => {
+		setCompressQueue(prev => {
+			const newItems = [...prev];
+			let addedCount = 0;
+			selectedItems.forEach(name => {
+				const file = files.find(f => f.name === name);
+				if (file) {
+					const fullPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+					if (!newItems.some(item => item.path === fullPath)) {
+						newItems.push({ name: file.name, path: fullPath });
+						addedCount++;
+					}
+				}
+			});
+			if (addedCount > 0) {
+				alert(`Added ${addedCount} items to the compress queue.`);
+			}
+			return newItems;
+		});
+		setSelectedItems([]);
+	};
+
+	const handleCompressQueue = async () => {
+		if (compressQueue.length === 0 || !archiveName.trim()) return;
+		setCompressing(true);
+		try {
+			const res = await fetch('/api/files/compress', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${token}`
+				},
+				body: JSON.stringify({
+					parent_path: '',
+					items: compressQueue.map(item => item.path),
+					zip_name: archiveName.trim()
+				})
+			});
+			if (res.ok) {
+				const data = await res.json();
+				alert(`Compression job queued successfully for all queue items! Job ID: ${data.job_id}`);
+				setCompressQueue([]);
+				setShowCompressQueueModal(false);
+				fetchFiles(currentPath);
+			} else {
+				const errData = await res.json();
+				alert(`Compression failed: ${errData.error}`);
+			}
+		} catch (err) {
+			console.error(err);
+		} finally {
+			setCompressing(false);
+		}
+	};
+
+	const handleExtractBulk = async () => {
+		const archiveFiles = selectedItems.filter(name => isArchiveFile(name));
+		if (archiveFiles.length === 0) return;
+		setLoading(true);
+		try {
+			for (const name of archiveFiles) {
+				const targetPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
+				await fetch('/api/files/decompress', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${token}`
+					},
+					body: JSON.stringify({ path: targetPath })
+				});
+			}
+			fetchFiles(currentPath);
+			alert(`Extraction jobs queued for ${archiveFiles.length} archives!`);
+		} catch (err) {
+			console.error("Bulk extract failed:", err);
 		} finally {
 			setLoading(false);
 		}
@@ -1285,6 +1449,27 @@ export const FilesPage: React.FC = () => {
 						</button>
 					</div>
 
+					{/* Compress List Trigger Button */}
+					{(compressQueue.length > 0 || selectedItems.length > 0) && (
+						<button 
+							className="btn btn--sm" 
+							onClick={() => setShowCompressQueueModal(true)} 
+							style={{ 
+								display: 'flex', 
+								alignItems: 'center', 
+								gap: 6, 
+								background: 'rgba(99, 102, 241, 0.1)', 
+								border: '1px solid rgba(99, 102, 241, 0.3)', 
+								color: 'var(--color-brand)',
+								fontWeight: 600
+							}}
+							title="Open Compress List Queue"
+						>
+							<FiArchive size={14} />
+							<span>Compress List ({compressQueue.length})</span>
+						</button>
+					)}
+
 					<button className="btn btn--sm" onClick={() => fetchFiles(currentPath)} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
 						<FiRefreshCw size={13} className={loading ? 'spin-anim' : ''} />
 					</button>
@@ -1382,7 +1567,10 @@ export const FilesPage: React.FC = () => {
 					<div style={{ display: 'flex', gap: 8 }}>
 						<button className="btn btn--sm" onClick={handleCopy} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiCopy size={13} /> Copy</button>
 						<button className="btn btn--sm" onClick={handleCut} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiScissors size={13} /> Cut</button>
-						<button className="btn btn--sm" onClick={() => setShowArchiveModal(true)} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiArchive size={13} /> Zip Compress</button>
+						<button className="btn btn--sm" onClick={handleAddSelectedToCompressQueue} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiArchive size={13} /> Add to Compress List</button>
+						{selectedItems.some(name => isArchiveFile(name)) && (
+							<button className="btn btn--sm" onClick={handleExtractBulk} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(59,130,246,0.1)', color: '#3b82f6', borderColor: '#3b82f6' }}><FiArchive size={13} /> Uncompress</button>
+						)}
 						<button className="btn btn--sm" onClick={handleDeleteSelected} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(239,68,68,0.1)', color: '#ef4444', borderColor: '#ef4444' }}><FiTrash2 size={13} /> Delete</button>
 					</div>
 				</div>
@@ -1885,28 +2073,187 @@ export const FilesPage: React.FC = () => {
 				</div>
 			)}
 
-			{/* Zip Archive Modal */}
+			{/* Archive Modal */}
 			{showArchiveModal && (
 				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
 					<div className="g-card animate-zoom-in" style={{ width: 360, padding: 22, boxShadow: '0 20px 40px rgba(0,0,0,0.2)' }}>
 						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-							<h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Compress Selected to ZIP</h3>
+							<h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Compress Selected</h3>
 							<button onClick={() => setShowArchiveModal(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}><FiX size={16} /></button>
 						</div>
 						<form onSubmit={handleCompress}>
+							<div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
+								<div>
+									<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Format</label>
+									<select 
+										value={archiveFormat} 
+										onChange={(e) => {
+											const fmt = e.target.value;
+											setArchiveFormat(fmt);
+											setArchiveName(prev => updateArchiveExtension(prev, fmt));
+										}}
+										style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+									>
+										<option value=".zip">ZIP Archive (.zip)</option>
+										<option value=".tar">TAR Archive (.tar)</option>
+										<option value=".tar.gz">TAR GZIP (.tar.gz)</option>
+										<option value=".tar.bz2">TAR BZIP2 (.tar.bz2)</option>
+										<option value=".tar.xz">TAR XZ (.tar.xz)</option>
+										<option value=".tar.zst">TAR Zstandard (.tar.zst)</option>
+										<option value=".rar">RAR Archive (.rar)</option>
+										<option value=".7z">7Z Archive (.7z)</option>
+									</select>
+								</div>
+								<div>
+									<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Archive Name</label>
+									<input 
+										type="text" 
+										required
+										value={archiveName}
+										onChange={(e) => setArchiveName(e.target.value)}
+										placeholder="archive.zip"
+										style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+									/>
+								</div>
+							</div>
+							<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+								<button type="button" className="btn" onClick={() => setShowArchiveModal(false)}>Cancel</button>
+								<button type="submit" className="btn btn--primary" disabled={compressing}>{compressing ? 'Archiving...' : 'Compress Items'}</button>
+							</div>
+						</form>
+					</div>
+				</div>
+			)}
+
+			{/* Archive Password Modal */}
+			{passwordModal.show && (
+				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
+					<div className="g-card animate-zoom-in" style={{ width: 360, padding: 22, boxShadow: '0 20px 40px rgba(0,0,0,0.2)' }}>
+						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+							<h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Archive Password Required</h3>
+							<button onClick={() => setPasswordModal({ show: false, targetPath: '' })} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}><FiX size={16} /></button>
+						</div>
+						<form onSubmit={(e) => {
+							e.preventDefault();
+							if (passwordModal.callback) {
+								passwordModal.callback(archivePassword);
+							}
+							setPasswordModal({ show: false, targetPath: '' });
+							setArchivePassword('');
+						}}>
+							<p style={{ fontSize: 13, color: 'var(--color-brand-text)', marginBottom: 12, lineHeight: '1.4' }}>
+								The archive <strong>{passwordModal.targetPath.split('/').pop()}</strong> is password-protected. Please enter its password:
+							</p>
 							<input 
-								type="text" 
+								type="password" 
 								required
-								value={archiveName}
-								onChange={(e) => setArchiveName(e.target.value)}
-								placeholder="archive.zip"
+								autoFocus
+								value={archivePassword}
+								onChange={(e) => setArchivePassword(e.target.value)}
+								placeholder="Enter archive password..."
 								style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13, marginBottom: 14 }}
 							/>
 							<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-								<button type="button" className="btn" onClick={() => setShowArchiveModal(false)}>Cancel</button>
-								<button type="submit" className="btn btn--primary" disabled={compressing}>{compressing ? 'Archiving...' : 'ZIP Items'}</button>
+								<button type="button" className="btn" onClick={() => {
+									setPasswordModal({ show: false, targetPath: '' });
+									setArchivePassword('');
+								}}>Cancel</button>
+								<button type="submit" className="btn btn--primary">Decrypt & Extract</button>
 							</div>
 						</form>
+					</div>
+				</div>
+			)}
+
+			{/* Compress Queue Modal */}
+			{showCompressQueueModal && (
+				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, backdropFilter: 'blur(4px)' }}>
+					<div className="g-card animate-zoom-in" style={{ width: 480, padding: 22, boxShadow: '0 20px 50px rgba(0,0,0,0.4)', border: '1px solid var(--color-brand-border)', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+							<h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Compress Queue ({compressQueue.length} items)</h3>
+							<button onClick={() => setShowCompressQueueModal(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}><FiX size={18} /></button>
+						</div>
+						
+						<div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14, minHeight: 120, maxHeight: 320, paddingRight: 4 }}>
+							{compressQueue.length === 0 ? (
+								<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-brand-muted)', gap: 10, padding: '20px 0' }}>
+									<FiArchive size={32} style={{ opacity: 0.5 }} />
+									<span style={{ fontSize: 12 }}>No files added to the compression list yet.</span>
+								</div>
+							) : (
+								compressQueue.map((item, idx) => (
+									<div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', borderRadius: 6, background: 'var(--color-brand-bg)', border: '1px solid var(--color-brand-border)', gap: 10 }}>
+										<div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1 }}>
+											<span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</span>
+											<span style={{ fontSize: 10, color: 'var(--color-brand-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.path}</span>
+										</div>
+										<button 
+											className="btn btn--sm" 
+											onClick={() => setCompressQueue(prev => prev.filter((_, i) => i !== idx))}
+											style={{ padding: '3px 6px', fontSize: 10, color: 'var(--color-brand-red, #ef4444)', background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)' }}
+										>
+											Remove
+										</button>
+									</div>
+								))
+							)}
+						</div>
+						
+						{compressQueue.length > 0 ? (
+							<div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+								<div style={{ display: 'flex', gap: 10 }}>
+									<div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+										<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Format</label>
+										<select 
+											value={archiveFormat} 
+											onChange={(e) => {
+												const fmt = e.target.value;
+												setArchiveFormat(fmt);
+												setArchiveName(prev => updateArchiveExtension(prev, fmt));
+											}}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+										>
+											<option value=".zip">ZIP (.zip)</option>
+											<option value=".tar">TAR (.tar)</option>
+											<option value=".tar.gz">TAR.GZ (.tar.gz)</option>
+											<option value=".tar.bz2">TAR.BZ2 (.tar.bz2)</option>
+											<option value=".tar.xz">TAR.XZ (.tar.xz)</option>
+											<option value=".tar.zst">TAR.ZST (.tar.zst)</option>
+											<option value=".rar">RAR (.rar)</option>
+											<option value=".7z">7Z (.7z)</option>
+										</select>
+									</div>
+									<div style={{ flex: 2, display: 'flex', flexDirection: 'column', gap: 4 }}>
+										<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Archive Name</label>
+										<input 
+											type="text" 
+											required
+											value={archiveName}
+											onChange={(e) => setArchiveName(e.target.value)}
+											placeholder="archive.zip"
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+										/>
+									</div>
+								</div>
+								
+								<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
+									<button type="button" className="btn btn--secondary btn--sm" onClick={() => setCompressQueue([])}>Clear All</button>
+									<button type="button" className="btn btn--sm" onClick={() => setShowCompressQueueModal(false)}>Close</button>
+									<button 
+										type="button" 
+										className="btn btn--primary btn--sm" 
+										disabled={compressing || !archiveName.trim()}
+										onClick={handleCompressQueue}
+									>
+										{compressing ? 'Archiving...' : 'Compress'}
+									</button>
+								</div>
+							</div>
+						) : (
+							<div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+								<button type="button" className="btn btn--sm" onClick={() => setShowCompressQueueModal(false)}>Close</button>
+							</div>
+						)}
 					</div>
 				</div>
 			)}

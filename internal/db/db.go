@@ -88,7 +88,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 	if DB.Dialector.Name() == "mysql" {
 		migrateDB = DB.Set("gorm:table_options", "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
 	}
-	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}, &models.SchedulerJob{}, &models.SchedulerJobLog{}, &models.SchedulerConfig{}, &models.TelegramSubscriber{}, &models.YouTubeJob{}, &models.YouTubeConfig{}, &models.FileRegistry{}); err != nil {
+	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}, &models.SchedulerJob{}, &models.SchedulerJobLog{}, &models.SchedulerConfig{}, &models.TelegramSubscriber{}, &models.YouTubeJob{}, &models.YouTubeConfig{}, &models.FileRegistry{}, &models.SpotifyConfig{}, &models.SpotifyJob{}); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
 	
@@ -133,6 +133,20 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		DB.Create(&models.YouTubeConfig{
 			DefaultSavePath: "./downloads/youtube",
 			MaxConcurrent:   2,
+		})
+	}
+	// Seed default SpotifyConfig
+	var spotifyCfg models.SpotifyConfig
+	if err := DB.First(&spotifyCfg).Error; err != nil {
+		logger.Info("DB", "Seeding default Spotify downloader configuration")
+		DB.Create(&models.SpotifyConfig{
+			DefaultSavePath:  "./downloads/spotify/audios",
+			DefaultFormat:    "mp3",
+			DefaultBitrate:   "320k",
+			MaxConcurrent:    3,
+			EmbedMetadata:    true,
+			EmbedLyrics:      true,
+			FileNameTemplate: "{artist} - {title}",
 		})
 	}
 

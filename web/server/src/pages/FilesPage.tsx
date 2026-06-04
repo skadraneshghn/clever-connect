@@ -6,7 +6,7 @@ import {
 	FiImage, FiVideo, FiZoomIn, FiZoomOut, FiRotateCw, FiX, FiCheck,
 	FiChevronRight, FiChevronDown, FiScissors, FiCopy, FiClipboard, FiInfo, FiArchive, FiShare2,
 	FiPlay, FiPause, FiMaximize2, FiChevronLeft, FiExternalLink,
-	FiRotateCcw, FiVolume2, FiVolumeX, FiTv, FiMinimize2
+	FiRotateCcw, FiVolume2, FiVolumeX, FiTv, FiMinimize2, FiEye, FiSend, FiSearch
 } from 'react-icons/fi';
 import Editor from '@monaco-editor/react';
 
@@ -31,6 +31,31 @@ const getFileCategory = (ext: string): 'image' | 'video' | 'code' | 'other' => {
 	if (['.mp4', '.mkv', '.mov', '.webm', '.ogg', '.3gp'].includes(e)) return 'video';
 	if (['.go', '.ts', '.tsx', '.js', '.jsx', '.css', '.scss', '.html', '.md', '.json', '.env', '.sh', '.yml', '.yaml', '.txt', '.ini', '.conf'].includes(e)) return 'code';
 	return 'other';
+};
+
+const isArchiveFile = (fileName: string): boolean => {
+	const lower = fileName.toLowerCase();
+	if (lower.endsWith('.zip') || 
+		lower.endsWith('.tar') || 
+		lower.endsWith('.tar.gz') || 
+		lower.endsWith('.tgz') || 
+		lower.endsWith('.rar') || 
+		lower.endsWith('.7z') || 
+		lower.endsWith('.gz') || 
+		lower.endsWith('.xz') || 
+		lower.endsWith('.bz2') || 
+		lower.endsWith('.zst')) {
+		return true;
+	}
+	if (/\.part\d+$/i.test(lower) || /\.\d{3,}$/i.test(lower)) {
+		return true;
+	}
+	return false;
+};
+
+const updateArchiveExtension = (name: string, ext: string): string => {
+	const base = name.replace(/\.(zip|tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz|tar\.zst|tzst|rar|7z)$/i, '');
+	return base ? base + ext : 'archive' + ext;
 };
 
 const getMonacoLanguage = (ext: string): string => {
@@ -715,7 +740,14 @@ export const FilesPage: React.FC = () => {
 	// Archive Modal
 	const [showArchiveModal, setShowArchiveModal] = useState<boolean>(false);
 	const [archiveName, setArchiveName] = useState<string>('archive.zip');
+	const [archiveFormat, setArchiveFormat] = useState<string>('.zip');
 	const [compressing, setCompressing] = useState<boolean>(false);
+	const [compressQueue, setCompressQueue] = useState<{ name: string; path: string }[]>([]);
+	const [showCompressQueueModal, setShowCompressQueueModal] = useState<boolean>(false);
+
+	// Archive Password Modal
+	const [passwordModal, setPasswordModal] = useState<{ show: boolean, targetPath: string, callback?: (password: string) => void }>({ show: false, targetPath: '' });
+	const [archivePassword, setArchivePassword] = useState<string>('');
 
 	// Share Modal
 	const [showShareModal, setShowShareModal] = useState<boolean>(false);
@@ -739,6 +771,48 @@ export const FilesPage: React.FC = () => {
 	// Upload State
 	const [uploading, setUploading] = useState<boolean>(false);
 	const fileInputRef = useRef<HTMLInputElement>(null);
+
+	// Global Physical Search Modal States
+	const [showSearchModal, setShowSearchModal] = useState<boolean>(false);
+	const [globalSearchQuery, setGlobalSearchQuery] = useState<string>('');
+	const [globalSearchResults, setGlobalSearchResults] = useState<(FileItem & { path: string })[]>([]);
+	const [globalSearchLoading, setGlobalSearchLoading] = useState<boolean>(false);
+
+	useEffect(() => {
+		if (!showSearchModal) {
+			setGlobalSearchQuery('');
+			setGlobalSearchResults([]);
+			return;
+		}
+	}, [showSearchModal]);
+
+	useEffect(() => {
+		if (globalSearchQuery.trim().length <= 3) {
+			setGlobalSearchResults([]);
+			return;
+		}
+
+		const delayDebounce = setTimeout(async () => {
+			setGlobalSearchLoading(true);
+			try {
+				const res = await fetch(`/api/files/search?path=${encodeURIComponent(currentPath)}&q=${encodeURIComponent(globalSearchQuery.trim())}`, {
+					headers: {
+						'Authorization': `Bearer ${token}`
+					}
+				});
+				if (res.ok) {
+					const data = await res.json();
+					setGlobalSearchResults(data || []);
+				}
+			} catch (err) {
+				console.error("Global search failed:", err);
+			} finally {
+				setGlobalSearchLoading(false);
+			}
+		}, 300);
+
+		return () => clearTimeout(delayDebounce);
+	}, [globalSearchQuery, currentPath, token]);
 
 	// Fetch current directory contents
 	const fetchFiles = async (path: string) => {
@@ -940,12 +1014,17 @@ export const FilesPage: React.FC = () => {
 				body: JSON.stringify({
 					parent_path: currentPath,
 					items: selectedItems,
-					zip_name: archiveName.trim().endsWith('.zip') ? archiveName.trim() : `${archiveName.trim()}.zip`
+					zip_name: archiveName.trim()
 				})
 			});
 			if (res.ok) {
+				const data = await res.json();
+				alert(`Compression job queued successfully! Job ID: ${data.job_id}`);
 				setShowArchiveModal(false);
 				fetchFiles(currentPath);
+			} else {
+				const errData = await res.json();
+				alert(`Compression failed: ${errData.error}`);
 			}
 		} catch (err) {
 			console.error(err);
@@ -969,12 +1048,114 @@ export const FilesPage: React.FC = () => {
 				body: JSON.stringify({ path: targetPath })
 			});
 			if (res.ok) {
+				const data = await res.json();
+				if (data.status === 'password_required') {
+					setPasswordModal({
+						show: true,
+						targetPath: targetPath,
+						callback: async (pwd: string) => {
+							setLoading(true);
+							try {
+								const finalRes = await fetch('/api/files/decompress', {
+									method: 'POST',
+									headers: {
+										'Content-Type': 'application/json',
+										'Authorization': `Bearer ${token}`
+									},
+									body: JSON.stringify({ path: targetPath, password: pwd })
+								});
+								const finalData = await finalRes.json();
+								if (finalRes.ok && finalData.status === 'success') {
+									alert(`Extraction job queued successfully! Job ID: ${finalData.job_id}`);
+									fetchFiles(currentPath);
+								} else {
+									alert(`Extraction failed: ${finalData.error || 'Wrong password or corrupt archive'}`);
+								}
+							} catch (e) {
+								console.error(e);
+							} finally {
+								setLoading(false);
+							}
+						}
+					});
+					return;
+				}
+				alert(`Extraction job queued successfully! Job ID: ${data.job_id}`);
 				fetchFiles(currentPath);
+			} else {
+				const errData = await res.json();
+				alert(`Extraction failed: ${errData.error}`);
 			}
 		} catch (err) {
 			console.error(err);
 		} finally {
 			setLoading(false);
+		}
+	};
+
+	const handleAddToCompressQueue = (file: FileItem) => {
+		const fullPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+		setCompressQueue(prev => {
+			if (prev.some(item => item.path === fullPath)) {
+				alert(`"${file.name}" is already in the compress queue.`);
+				return prev;
+			}
+			return [...prev, { name: file.name, path: fullPath }];
+		});
+	};
+
+	const handleAddSelectedToCompressQueue = () => {
+		setCompressQueue(prev => {
+			const newItems = [...prev];
+			let addedCount = 0;
+			selectedItems.forEach(name => {
+				const file = files.find(f => f.name === name);
+				if (file) {
+					const fullPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+					if (!newItems.some(item => item.path === fullPath)) {
+						newItems.push({ name: file.name, path: fullPath });
+						addedCount++;
+					}
+				}
+			});
+			if (addedCount > 0) {
+				alert(`Added ${addedCount} items to the compress queue.`);
+			}
+			return newItems;
+		});
+		setSelectedItems([]);
+	};
+
+	const handleCompressQueue = async () => {
+		if (compressQueue.length === 0 || !archiveName.trim()) return;
+		setCompressing(true);
+		try {
+			const res = await fetch('/api/files/compress', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${token}`
+				},
+				body: JSON.stringify({
+					parent_path: '',
+					items: compressQueue.map(item => item.path),
+					zip_name: archiveName.trim()
+				})
+			});
+			if (res.ok) {
+				const data = await res.json();
+				alert(`Compression job queued successfully for all queue items! Job ID: ${data.job_id}`);
+				setCompressQueue([]);
+				setShowCompressQueueModal(false);
+				fetchFiles(currentPath);
+			} else {
+				const errData = await res.json();
+				alert(`Compression failed: ${errData.error}`);
+			}
+		} catch (err) {
+			console.error(err);
+		} finally {
+			setCompressing(false);
 		}
 	};
 
@@ -1029,6 +1210,125 @@ export const FilesPage: React.FC = () => {
 
 	const handleCutSingle = (file: FileItem) => {
 		setClipboard({ action: 'cut', srcParent: currentPath, items: [file] });
+	};
+
+	// Bulk operations (one-by-one execution)
+	const handleSendToTelegramBulk = async () => {
+		if (selectedItems.length === 0) return;
+		setLoading(true);
+		try {
+			for (const name of selectedItems) {
+				const file = files.find(f => f.name === name);
+				if (file && !file.is_dir) {
+					const targetPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+					const res = await fetch('/api/telegram/send-file', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'Authorization': `Bearer ${token}`
+						},
+						body: JSON.stringify({ file_path: targetPath })
+					});
+					if (!res.ok) {
+						const errData = await res.json();
+						console.error(`Failed to send ${name}: ${errData.error}`);
+					}
+				}
+			}
+			alert(`Successfully queued ${selectedItems.length} send jobs to Telegram!`);
+		} catch (err: any) {
+			alert(`Error sending files to Telegram: ${err.message}`);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const handleDownloadBulk = () => {
+		if (selectedItems.length === 0) return;
+		selectedItems.forEach((name, index) => {
+			const targetPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
+			const downloadUrl = `/api/files/stream?path=${encodeURIComponent(targetPath)}&download=true&token=${encodeURIComponent(token || '')}`;
+			setTimeout(() => {
+				const link = document.createElement('a');
+				link.href = downloadUrl;
+				link.download = name;
+				document.body.appendChild(link);
+				link.click();
+				document.body.removeChild(link);
+			}, index * 800);
+		});
+	};
+
+	const handleRenameBulk = async () => {
+		if (selectedItems.length === 0) return;
+		setLoading(true);
+		try {
+			for (const name of selectedItems) {
+				const file = files.find(f => f.name === name);
+				if (!file) continue;
+				const newName = prompt(`Enter new name for "${file.name}":`, file.name);
+				if (!newName || newName.trim() === '' || newName === file.name) continue;
+
+				const src = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+				const dst = currentPath === '/' ? `/${newName.trim()}` : `${currentPath}/${newName.trim()}`;
+
+				await fetch('/api/files/move', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${token}`
+					},
+					body: JSON.stringify({ src_path: src, dst_path: dst })
+				});
+			}
+			fetchFiles(currentPath);
+		} catch (err) {
+			console.error("Bulk rename failed:", err);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const handleExtractBulk = async () => {
+		const archiveFiles = selectedItems.filter(name => isArchiveFile(name));
+		if (archiveFiles.length === 0) return;
+		setLoading(true);
+		try {
+			for (const name of archiveFiles) {
+				const targetPath = currentPath === '/' ? `/${name}` : `${currentPath}/${name}`;
+				await fetch('/api/files/decompress', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${token}`
+					},
+					body: JSON.stringify({ path: targetPath })
+				});
+			}
+			fetchFiles(currentPath);
+			alert(`Extraction jobs queued for ${archiveFiles.length} archives!`);
+		} catch (err) {
+			console.error("Bulk extract failed:", err);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const handleSearchResultClick = (result: FileItem & { path: string }) => {
+		const idx = result.path.lastIndexOf('/');
+		const parentPath = idx <= 0 ? '/' : result.path.substring(0, idx);
+
+		setCurrentPath(parentPath);
+		setShowSearchModal(false);
+
+		setTimeout(() => {
+			if (result.is_dir) {
+				setCurrentPath(result.path);
+			} else {
+				openPreview(result);
+				setSelectedItems([result.name]);
+			}
+		}, 150);
 	};
 
 	// Create Folder
@@ -1284,21 +1584,32 @@ export const FilesPage: React.FC = () => {
 					)}
 
 					{/* Search */}
-					<input 
-						type="text" 
-						placeholder="Search current folder..."
-						value={searchQuery}
-						onChange={(e) => setSearchQuery(e.target.value)}
-						style={{
-							padding: '6px 10px',
-							fontSize: 12,
-							borderRadius: 6,
-							border: '1px solid var(--color-brand-border)',
-							background: 'var(--color-brand-bg)',
-							color: 'var(--color-brand-heading)',
-							width: 150
-						}}
-					/>
+					<div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+						<input 
+							type="text" 
+							placeholder="Search current folder..."
+							value={searchQuery}
+							onChange={(e) => setSearchQuery(e.target.value)}
+							style={{
+								padding: '6px 10px',
+								fontSize: 12,
+								borderRadius: 6,
+								border: '1px solid var(--color-brand-border)',
+								background: 'var(--color-brand-bg)',
+								color: 'var(--color-brand-heading)',
+								width: 150
+							}}
+						/>
+						<button 
+							type="button"
+							className="btn btn--sm" 
+							onClick={() => setShowSearchModal(true)} 
+							style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '6px 8px', color: 'var(--color-brand)', background: 'var(--color-brand-light)', border: '1px solid var(--color-brand)', height: '28px' }}
+							title="Global Physical Disk Search"
+						>
+							<FiSearch size={14} />
+						</button>
+					</div>
 
 					{/* Sorting Dropdowns */}
 					<div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -1343,6 +1654,27 @@ export const FilesPage: React.FC = () => {
 							<FiList size={14} />
 						</button>
 					</div>
+
+					{/* Compress List Trigger Button */}
+					{(compressQueue.length > 0 || selectedItems.length > 0) && (
+						<button 
+							className="btn btn--sm" 
+							onClick={() => setShowCompressQueueModal(true)} 
+							style={{ 
+								display: 'flex', 
+								alignItems: 'center', 
+								gap: 6, 
+								background: 'rgba(99, 102, 241, 0.1)', 
+								border: '1px solid rgba(99, 102, 241, 0.3)', 
+								color: 'var(--color-brand)',
+								fontWeight: 600
+							}}
+							title="Open Compress List Queue"
+						>
+							<FiArchive size={14} />
+							<span>Compress List ({compressQueue.length})</span>
+						</button>
+					)}
 
 					<button className="btn btn--sm" onClick={() => fetchFiles(currentPath)} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
 						<FiRefreshCw size={13} className={loading ? 'spin-anim' : ''} />
@@ -1422,30 +1754,7 @@ export const FilesPage: React.FC = () => {
 				</div>
 			</div>
 
-			{/* Bulk toolbar shown when files selected */}
-			{selectedItems.length > 0 && (
-				<div 
-					className="g-card animate-slide-in" 
-					style={{ 
-						padding: '10px 18px', 
-						background: 'rgba(99,102,241,0.06)', 
-						border: '1px solid var(--color-brand-border)',
-						display: 'flex', 
-						justifyContent: 'space-between', 
-						alignItems: 'center' 
-					}}
-				>
-					<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
-						{selectedItems.length} items selected
-					</span>
-					<div style={{ display: 'flex', gap: 8 }}>
-						<button className="btn btn--sm" onClick={handleCopy} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiCopy size={13} /> Copy</button>
-						<button className="btn btn--sm" onClick={handleCut} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiScissors size={13} /> Cut</button>
-						<button className="btn btn--sm" onClick={() => setShowArchiveModal(true)} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FiArchive size={13} /> Zip Compress</button>
-						<button className="btn btn--sm" onClick={handleDeleteSelected} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(239,68,68,0.1)', color: '#ef4444', borderColor: '#ef4444' }}><FiTrash2 size={13} /> Delete</button>
-					</div>
-				</div>
-			)}
+
 
 			{/* Main Workspace Pane split into Sidebar Directory Tree and File Cards Grid */}
 			<div style={{ flex: 1, display: 'flex', gap: 14, overflow: 'hidden' }}>
@@ -1503,12 +1812,266 @@ export const FilesPage: React.FC = () => {
 					className="g-card" 
 					style={{ 
 						flex: 1, 
-						padding: '16px 18px', 
-						overflowY: 'auto',
+						display: 'flex',
+						flexDirection: 'column',
+						padding: 0, 
+						overflow: 'hidden',
 						boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.04)'
 					}}
 				>
-					{loading ? (
+					{/* Actions Header of the File List */}
+					<div style={{
+						display: 'flex',
+						alignItems: 'center',
+						justifyContent: 'space-between',
+						padding: '10px 14px',
+						borderBottom: '1px solid var(--color-brand-border)',
+						background: 'var(--color-brand-card)',
+						minHeight: '48px',
+						flexShrink: 0
+					}}>
+						{/* Left section: Title or selected info */}
+						<div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+							<span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
+								{selectedItems.length > 0 ? `${selectedItems.length} items selected` : 'File List Actions'}
+							</span>
+						</div>
+						
+						{/* Right section: Action Icons */}
+						<div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+							{/* Preview Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={() => {
+									const firstFile = files.find(f => f.name === selectedItems[0]);
+									if (firstFile) openPreview(firstFile);
+								}}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Preview first selected file"
+							>
+								<FiEye size={14} /> Preview
+							</button>
+
+							{/* Send to Telegram Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleSendToTelegramBulk}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-green, #22c55e)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Send selected files to Telegram one by one"
+							>
+								<FiSend size={14} /> Send Telegram
+							</button>
+
+							{/* Share Link / Download Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleDownloadBulk}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-blue, #3b82f6)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Download selected files one by one"
+							>
+								<FiDownload size={14} /> Download
+							</button>
+
+							{/* Rename Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleRenameBulk}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-indigo, #6366f1)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Rename selected files one by one"
+							>
+								<FiEdit3 size={14} /> Rename
+							</button>
+
+							{/* Copy Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleCopy}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-heading)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Copy selected items to clipboard"
+							>
+								<FiCopy size={14} /> Copy
+							</button>
+
+							{/* Cut Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleCut}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-heading)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Cut selected items to clipboard"
+							>
+								<FiScissors size={14} /> Cut
+							</button>
+
+							{/* Add to Compress List Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleAddSelectedToCompressQueue}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-indigo, #6366f1)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Add selected items to the compress queue"
+							>
+								<FiArchive size={14} /> Add to Compress List
+							</button>
+
+							{/* Uncompress Button */}
+							{selectedItems.some(name => isArchiveFile(name)) && (
+								<button 
+									type="button"
+									onClick={handleExtractBulk}
+									style={{
+										padding: '6px 10px',
+										borderRadius: 6,
+										border: '1px solid var(--color-brand-border)',
+										background: 'rgba(59,130,246,0.1)',
+										color: '#3b82f6',
+										cursor: 'pointer',
+										display: 'flex',
+										alignItems: 'center',
+										gap: 4,
+										fontSize: 12,
+										fontWeight: 600,
+										transition: 'all 0.15s'
+									}}
+									title="Uncompress selected archives near their original files"
+								>
+									<FiArchive size={14} /> Uncompress
+								</button>
+							)}
+
+							{/* Delete Button */}
+							<button 
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleDeleteSelected}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'rgba(239,68,68,0.1)' : 'transparent',
+									color: selectedItems.length > 0 ? 'var(--color-brand-red)' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Delete selected files one by one"
+							>
+								<FiTrash2 size={14} /> Delete
+							</button>
+						</div>
+					</div>
+
+					{/* File grid/list scroll wrapper */}
+					<div style={{ flex: 1, padding: '16px 18px', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+						{loading ? (
 						<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
 							<div style={{ width: 28, height: 28, border: '3px solid var(--color-brand-border)', borderTopColor: 'var(--color-brand)', borderRadius: '50%', animation: 'spin .6s linear infinite' }} />
 						</div>
@@ -1632,6 +2195,7 @@ export const FilesPage: React.FC = () => {
 							})}
 						</div>
 					)}
+					</div>
 				</div>
 
 				{/* Right Info Details & Previews Panel */}
@@ -1920,6 +2484,101 @@ export const FilesPage: React.FC = () => {
 				)}
 			</div>
 
+			{/* Global Physical Search Modal */}
+			{showSearchModal && (
+				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(10,12,18,0.6)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
+					<div className="g-card animate-zoom-in" style={{ width: 650, maxHeight: '80vh', display: 'flex', flexDirection: 'column', padding: 22, boxShadow: '0 20px 45px rgba(0,0,0,0.3)', border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)' }}>
+						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+							<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+								<FiSearch size={18} style={{ color: 'var(--color-brand)' }} />
+								<h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Physical Disk Search</h3>
+							</div>
+							<button onClick={() => setShowSearchModal(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 4, color: 'var(--color-brand-heading)', display: 'flex' }}><FiX size={18} /></button>
+						</div>
+						
+						<div style={{ position: 'relative', marginBottom: 14 }}>
+							<input 
+								type="text" 
+								required
+								autoFocus
+								value={globalSearchQuery}
+								onChange={(e) => setGlobalSearchQuery(e.target.value)}
+								placeholder="Search files physically on disk (type more than 3 characters)..."
+								style={{ width: '100%', padding: '10px 14px 10px 36px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13, outline: 'none', transition: 'border-color 0.2s' }}
+							/>
+							<FiSearch size={14} style={{ position: 'absolute', left: 12, top: 13, color: 'var(--color-brand-muted)' }} />
+							{globalSearchLoading && (
+								<div style={{ position: 'absolute', right: 12, top: 12 }}>
+									<div style={{ width: 14, height: 14, border: '2px solid var(--color-brand-border)', borderTopColor: 'var(--color-brand)', borderRadius: '50%', animation: 'spin .6s linear infinite' }} />
+								</div>
+							)}
+						</div>
+
+						{/* Results Area */}
+						<div style={{ flex: 1, overflowY: 'auto', minHeight: 250, maxHeight: 400, display: 'flex', flexDirection: 'column', gap: 6 }}>
+							{globalSearchQuery.trim().length <= 3 ? (
+								<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 8, color: 'var(--color-brand-muted)', padding: '40px 0' }}>
+									<FiInfo size={24} />
+									<span style={{ fontSize: 13 }}>Please enter more than 3 characters to search physically.</span>
+								</div>
+							) : globalSearchLoading ? (
+								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: '40px 0' }}>
+									<div style={{ width: 24, height: 24, border: '2.5px solid var(--color-brand-border)', borderTopColor: 'var(--color-brand)', borderRadius: '50%', animation: 'spin .6s linear infinite' }} />
+								</div>
+							) : globalSearchResults.length === 0 ? (
+								<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 8, color: 'var(--color-brand-muted)', padding: '40px 0' }}>
+									<FiFolder size={24} />
+									<span style={{ fontSize: 13 }}>No files found matching "{globalSearchQuery}".</span>
+								</div>
+							) : (
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', paddingBottom: 6, borderBottom: '1px solid var(--color-brand-border)', display: 'flex', justifyContent: 'space-between' }}>
+										<span>Found {globalSearchResults.length} results</span>
+										<span>Click to open location</span>
+									</div>
+									{globalSearchResults.map((result) => (
+										<div 
+											key={result.path}
+											onClick={() => handleSearchResultClick(result)}
+											style={{
+												display: 'flex',
+												alignItems: 'center',
+												justifyContent: 'space-between',
+												padding: '8px 12px',
+												borderRadius: 8,
+												background: 'var(--color-brand-card)',
+												border: '1px solid var(--color-brand-border)',
+												cursor: 'pointer',
+												transition: 'all 0.12s'
+											}}
+											className="file-row-hover"
+										>
+											<div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+												<div style={{ display: 'flex', flexShrink: 0 }}>
+													{result.is_dir ? <FiFolder style={{ color: '#eab308', fontSize: 18 }} /> : <FiFile style={{ color: '#64748b', fontSize: 18 }} />}
+												</div>
+												<div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+													<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+														{result.name}
+													</span>
+													<span style={{ fontSize: 10, color: 'var(--color-brand-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+														{result.path}
+													</span>
+												</div>
+											</div>
+											<div style={{ display: 'flex', alignItems: 'center', gap: 16, fontSize: 11, color: 'var(--color-brand-text)', flexShrink: 0 }}>
+												<span>{result.is_dir ? 'DIR' : formatSize(result.size)}</span>
+												<span style={{ color: 'var(--color-brand)', fontWeight: 600 }}>Open →</span>
+											</div>
+										</div>
+									))}
+								</div>
+							)}
+						</div>
+					</div>
+				</div>
+			)}
+
 			{/* Create Folder Modal */}
 			{showFolderModal && (
 				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
@@ -1946,28 +2605,187 @@ export const FilesPage: React.FC = () => {
 				</div>
 			)}
 
-			{/* Zip Archive Modal */}
+			{/* Archive Modal */}
 			{showArchiveModal && (
 				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
 					<div className="g-card animate-zoom-in" style={{ width: 360, padding: 22, boxShadow: '0 20px 40px rgba(0,0,0,0.2)' }}>
 						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-							<h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Compress Selected to ZIP</h3>
+							<h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Compress Selected</h3>
 							<button onClick={() => setShowArchiveModal(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}><FiX size={16} /></button>
 						</div>
 						<form onSubmit={handleCompress}>
+							<div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
+								<div>
+									<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Format</label>
+									<select 
+										value={archiveFormat} 
+										onChange={(e) => {
+											const fmt = e.target.value;
+											setArchiveFormat(fmt);
+											setArchiveName(prev => updateArchiveExtension(prev, fmt));
+										}}
+										style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+									>
+										<option value=".zip">ZIP Archive (.zip)</option>
+										<option value=".tar">TAR Archive (.tar)</option>
+										<option value=".tar.gz">TAR GZIP (.tar.gz)</option>
+										<option value=".tar.bz2">TAR BZIP2 (.tar.bz2)</option>
+										<option value=".tar.xz">TAR XZ (.tar.xz)</option>
+										<option value=".tar.zst">TAR Zstandard (.tar.zst)</option>
+										<option value=".rar">RAR Archive (.rar)</option>
+										<option value=".7z">7Z Archive (.7z)</option>
+									</select>
+								</div>
+								<div>
+									<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Archive Name</label>
+									<input 
+										type="text" 
+										required
+										value={archiveName}
+										onChange={(e) => setArchiveName(e.target.value)}
+										placeholder="archive.zip"
+										style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+									/>
+								</div>
+							</div>
+							<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+								<button type="button" className="btn" onClick={() => setShowArchiveModal(false)}>Cancel</button>
+								<button type="submit" className="btn btn--primary" disabled={compressing}>{compressing ? 'Archiving...' : 'Compress Items'}</button>
+							</div>
+						</form>
+					</div>
+				</div>
+			)}
+
+			{/* Archive Password Modal */}
+			{passwordModal.show && (
+				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
+					<div className="g-card animate-zoom-in" style={{ width: 360, padding: 22, boxShadow: '0 20px 40px rgba(0,0,0,0.2)' }}>
+						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+							<h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Archive Password Required</h3>
+							<button onClick={() => setPasswordModal({ show: false, targetPath: '' })} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}><FiX size={16} /></button>
+						</div>
+						<form onSubmit={(e) => {
+							e.preventDefault();
+							if (passwordModal.callback) {
+								passwordModal.callback(archivePassword);
+							}
+							setPasswordModal({ show: false, targetPath: '' });
+							setArchivePassword('');
+						}}>
+							<p style={{ fontSize: 13, color: 'var(--color-brand-text)', marginBottom: 12, lineHeight: '1.4' }}>
+								The archive <strong>{passwordModal.targetPath.split('/').pop()}</strong> is password-protected. Please enter its password:
+							</p>
 							<input 
-								type="text" 
+								type="password" 
 								required
-								value={archiveName}
-								onChange={(e) => setArchiveName(e.target.value)}
-								placeholder="archive.zip"
+								autoFocus
+								value={archivePassword}
+								onChange={(e) => setArchivePassword(e.target.value)}
+								placeholder="Enter archive password..."
 								style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13, marginBottom: 14 }}
 							/>
 							<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-								<button type="button" className="btn" onClick={() => setShowArchiveModal(false)}>Cancel</button>
-								<button type="submit" className="btn btn--primary" disabled={compressing}>{compressing ? 'Archiving...' : 'ZIP Items'}</button>
+								<button type="button" className="btn" onClick={() => {
+									setPasswordModal({ show: false, targetPath: '' });
+									setArchivePassword('');
+								}}>Cancel</button>
+								<button type="submit" className="btn btn--primary">Decrypt & Extract</button>
 							</div>
 						</form>
+					</div>
+				</div>
+			)}
+
+			{/* Compress Queue Modal */}
+			{showCompressQueueModal && (
+				<div style={{ position: 'fixed', left: 0, top: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, backdropFilter: 'blur(4px)' }}>
+					<div className="g-card animate-zoom-in" style={{ width: 480, padding: 22, boxShadow: '0 20px 50px rgba(0,0,0,0.4)', border: '1px solid var(--color-brand-border)', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+							<h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Compress Queue ({compressQueue.length} items)</h3>
+							<button onClick={() => setShowCompressQueueModal(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}><FiX size={18} /></button>
+						</div>
+						
+						<div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14, minHeight: 120, maxHeight: 320, paddingRight: 4 }}>
+							{compressQueue.length === 0 ? (
+								<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-brand-muted)', gap: 10, padding: '20px 0' }}>
+									<FiArchive size={32} style={{ opacity: 0.5 }} />
+									<span style={{ fontSize: 12 }}>No files added to the compression list yet.</span>
+								</div>
+							) : (
+								compressQueue.map((item, idx) => (
+									<div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', borderRadius: 6, background: 'var(--color-brand-bg)', border: '1px solid var(--color-brand-border)', gap: 10 }}>
+										<div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1 }}>
+											<span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</span>
+											<span style={{ fontSize: 10, color: 'var(--color-brand-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.path}</span>
+										</div>
+										<button 
+											className="btn btn--sm" 
+											onClick={() => setCompressQueue(prev => prev.filter((_, i) => i !== idx))}
+											style={{ padding: '3px 6px', fontSize: 10, color: 'var(--color-brand-red, #ef4444)', background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)' }}
+										>
+											Remove
+										</button>
+									</div>
+								))
+							)}
+						</div>
+						
+						{compressQueue.length > 0 ? (
+							<div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+								<div style={{ display: 'flex', gap: 10 }}>
+									<div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+										<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Format</label>
+										<select 
+											value={archiveFormat} 
+											onChange={(e) => {
+												const fmt = e.target.value;
+												setArchiveFormat(fmt);
+												setArchiveName(prev => updateArchiveExtension(prev, fmt));
+											}}
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+										>
+											<option value=".zip">ZIP (.zip)</option>
+											<option value=".tar">TAR (.tar)</option>
+											<option value=".tar.gz">TAR.GZ (.tar.gz)</option>
+											<option value=".tar.bz2">TAR.BZ2 (.tar.bz2)</option>
+											<option value=".tar.xz">TAR.XZ (.tar.xz)</option>
+											<option value=".tar.zst">TAR.ZST (.tar.zst)</option>
+											<option value=".rar">RAR (.rar)</option>
+											<option value=".7z">7Z (.7z)</option>
+										</select>
+									</div>
+									<div style={{ flex: 2, display: 'flex', flexDirection: 'column', gap: 4 }}>
+										<label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Archive Name</label>
+										<input 
+											type="text" 
+											required
+											value={archiveName}
+											onChange={(e) => setArchiveName(e.target.value)}
+											placeholder="archive.zip"
+											style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 13 }}
+										/>
+									</div>
+								</div>
+								
+								<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
+									<button type="button" className="btn btn--secondary btn--sm" onClick={() => setCompressQueue([])}>Clear All</button>
+									<button type="button" className="btn btn--sm" onClick={() => setShowCompressQueueModal(false)}>Close</button>
+									<button 
+										type="button" 
+										className="btn btn--primary btn--sm" 
+										disabled={compressing || !archiveName.trim()}
+										onClick={handleCompressQueue}
+									>
+										{compressing ? 'Archiving...' : 'Compress'}
+									</button>
+								</div>
+							</div>
+						) : (
+							<div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+								<button type="button" className="btn btn--sm" onClick={() => setShowCompressQueueModal(false)}>Close</button>
+							</div>
+						)}
 					</div>
 				</div>
 			)}
@@ -2377,6 +3195,24 @@ export const FilesPage: React.FC = () => {
 								<FiDownload size={14} style={{ color: '#a855f7' }} /> Get Download Link
 							</div>
 						</>
+					)}
+
+					<div 
+						className="context-menu-item" 
+						onClick={() => { handleAddToCompressQueue(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+						style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+					>
+						<FiArchive size={14} style={{ color: '#6366f1' }} /> Add to Compress List
+					</div>
+
+					{!contextMenu.file.is_dir && isArchiveFile(contextMenu.file.name) && (
+						<div 
+							className="context-menu-item" 
+							onClick={() => { handleExtract(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+							style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+						>
+							<FiArchive size={14} style={{ color: '#3b82f6' }} /> Uncompress
+						</div>
 					)}
 
 					<div style={{ height: 1, background: 'var(--color-brand-border, #2b2b40)', margin: '4px 0' }} />

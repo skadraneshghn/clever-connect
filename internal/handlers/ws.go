@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"math/rand"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -11,8 +13,10 @@ import (
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
 	"clever-connect/internal/downloader"
+	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
+	"clever-connect/internal/spotify"
 	"clever-connect/internal/torrent"
 	"clever-connect/internal/youtube"
 
@@ -322,6 +326,18 @@ func (h *WSHandler) ServeWSJobs(c *gin.Context) {
 				if cmd.JobID != "" && youtube.Manager != nil {
 					youtube.Manager.DeleteJob(cmd.JobID, cmd.DeleteFiles)
 				}
+			case "cancel_spotify":
+				if cmd.JobID != "" && spotify.Manager != nil {
+					spotify.Manager.CancelJob(cmd.JobID)
+				}
+			case "delete_spotify":
+				if cmd.JobID != "" && spotify.Manager != nil {
+					spotify.Manager.DeleteJob(cmd.JobID, cmd.DeleteFiles)
+				}
+			case "retry_spotify":
+				if cmd.JobID != "" && spotify.Manager != nil {
+					spotify.Manager.RetryJob(cmd.JobID)
+				}
 			}
 		}
 	}()
@@ -336,16 +352,67 @@ func (h *WSHandler) ServeWSJobs(c *gin.Context) {
 			var torrentList []models.TorrentJob
 			var leechList []models.LeechJob
 			var youtubeList []models.YouTubeJob
+			var spotifyList []models.SpotifyJob
 
 			// Fetch lists from database
 			_ = db.DB.Order("created_at desc").Find(&torrentList)
 			_ = db.DB.Order("created_at desc").Find(&leechList)
 			_ = db.DB.Order("created_at desc").Find(&youtubeList)
+			_ = db.DB.Order("created_at desc").Find(&spotifyList)
+
+			// Populate FileExists for completed or seeding torrent jobs
+			for i := range torrentList {
+				torrentList[i].FileExists = true
+				if torrentList[i].Status == "completed" || torrentList[i].Status == "seeding" {
+					absSaveDir := filecore.GetAbsoluteSavePath(torrentList[i].SaveDirectory)
+					destPath := filepath.Join(absSaveDir, torrentList[i].Name)
+					if _, err := os.Stat(destPath); os.IsNotExist(err) {
+						torrentList[i].FileExists = false
+					}
+				}
+			}
+
+			// Populate FileExists for completed leech jobs
+			for i := range leechList {
+				leechList[i].FileExists = true
+				if leechList[i].Status == "completed" {
+					absSaveDir := filecore.GetAbsoluteSavePath(leechList[i].SaveDirectory)
+					destPath := filepath.Join(absSaveDir, leechList[i].Filename)
+					if _, err := os.Stat(destPath); os.IsNotExist(err) {
+						leechList[i].FileExists = false
+					}
+				}
+			}
+
+			// Populate FileExists for completed youtube jobs
+			for i := range youtubeList {
+				youtubeList[i].FileExists = true
+				if youtubeList[i].Status == "completed" {
+					absSaveDir := filecore.GetAbsoluteSavePath(youtubeList[i].SaveDirectory)
+					destPath := filepath.Join(absSaveDir, youtubeList[i].Filename)
+					if _, err := os.Stat(destPath); os.IsNotExist(err) {
+						youtubeList[i].FileExists = false
+					}
+				}
+			}
+
+			// Populate FileExists for completed spotify jobs
+			for i := range spotifyList {
+				spotifyList[i].FileExists = true
+				if spotifyList[i].Status == "completed" {
+					absSaveDir := filecore.GetAbsoluteSavePath(spotifyList[i].SaveDirectory)
+					destPath := filepath.Join(absSaveDir, spotifyList[i].Filename)
+					if _, err := os.Stat(destPath); os.IsNotExist(err) {
+						spotifyList[i].FileExists = false
+					}
+				}
+			}
 
 			response := gin.H{
 				"torrents":    torrentList,
 				"leechJobs":   leechList,
 				"youtubeJobs": youtubeList,
+				"spotifyJobs": spotifyList,
 			}
 
 			if err := conn.WriteJSON(response); err != nil {
