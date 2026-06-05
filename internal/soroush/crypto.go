@@ -1,90 +1,9 @@
 package soroush
 
-import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"fmt"
-	"io"
-)
-
-// deriveKey derives a 32-byte AES key from a PIN string using SHA-256.
-func deriveKey(pin string) []byte {
-	h := sha256.Sum256([]byte(pin))
-	return h[:]
-}
-
-// EncryptPayload encrypts a plaintext string using AES-GCM with a key derived from a PIN,
-// returning a base64 encoded ciphertext.
-func EncryptPayload(plaintext string, pin string) (string, error) {
-	key := deriveKey(pin)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
-	}
-
-	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
-}
-
-// DecryptPayload decrypts a base64 encoded ciphertext using AES-GCM with a key derived from a PIN.
-func DecryptPayload(b64Ciphertext string, pin string) (string, error) {
-	key := deriveKey(pin)
-	ciphertext, err := base64.StdEncoding.DecodeString(b64Ciphertext)
-	if err != nil {
-		return "", err
-	}
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return "", fmt.Errorf("ciphertext too short")
-	}
-
-	nonce, actualCiphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, actualCiphertext, nil)
-	if err != nil {
-		return "", err
-	}
-
-	return string(plaintext), nil
-}
-
-// EncryptSDP encrypts raw SDP bytes using AES-GCM and a key derived from the PIN.
-func EncryptSDP(pin string, sdp []byte) string {
-	val, err := EncryptPayload(string(sdp), pin)
-	if err != nil {
-		return ""
-	}
-	return val
-}
-
-// DecryptSDP decrypts base64-encoded AES-GCM encrypted SDP payload.
-func DecryptSDP(pin string, b64Payload string) []byte {
-	val, err := DecryptPayload(b64Payload, pin)
-	if err != nil {
-		return nil
-	}
-	return []byte(val)
-}
+// This file previously contained AES-GCM encryption functions for SDP payloads
+// exchanged over MTProto text messages. With the migration to LiveKit SFU
+// DataChannels, all SDP signaling has been removed. The HKDF-based handshake
+// and PSK verification functions live in handshake.go.
+//
+// The AES-GCM functions (EncryptPayload, DecryptPayload, EncryptSDP, DecryptSDP)
+// have been deleted as they are no longer referenced by any production code.

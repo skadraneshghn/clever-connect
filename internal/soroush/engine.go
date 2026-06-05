@@ -140,7 +140,7 @@ func runServer(ctx context.Context, cfg *models.SoroushTunnelConfig, hostAccount
 func handleIncomingWorker(ctx context.Context, conn *LiveKitConn, cfg *models.SoroushTunnelConfig) {
 	logger.Info(component, "Server: Worker connection detected, executing Handshake", "target", conn.targetIdentity)
 
-	// 3-second zero-trust handshake
+	// 5-second zero-trust handshake (generous for Iranian SFU latency)
 	challenge := make([]byte, 64)
 	errChan := make(chan error, 1)
 	go func() {
@@ -149,7 +149,7 @@ func handleIncomingWorker(ctx context.Context, conn *LiveKitConn, cfg *models.So
 	}()
 
 	select {
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * time.Second):
 		logger.Warn(component, "Server: Handshake timeout, rejecting SFU pipe", "target", conn.targetIdentity)
 		conn.Close()
 		return

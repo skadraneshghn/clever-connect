@@ -120,8 +120,19 @@ func NewLiveKitListenerCallback(l *LiveKitListener) *lksdk.RoomCallback {
 
 		l.mu.Lock()
 		conn, exists := l.conns[id]
+
+		// [CRITICAL FIX] If a connection exists but was previously closed
+		// (e.g., Yamux drop, worker restart), purge it so a fresh pipe
+		// can be spawned for the reconnecting worker. Without this, the
+		// old closed PipeWriter silently drops all data, permanently
+		// locking out the reconnecting worker.
+		if exists && conn.closed {
+			delete(l.conns, id)
+			exists = false
+		}
+
 		if !exists {
-			// First time seeing data from this participant — spawn a new virtual connection
+			// First time seeing data from this participant (or after reconnect)
 			conn = NewLiveKitConn(l.room, id)
 			l.conns[id] = conn
 			l.acceptCh <- conn

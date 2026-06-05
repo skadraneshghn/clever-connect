@@ -1,62 +1,58 @@
 package soroush
 
 import (
-	"encoding/json"
 	"testing"
 )
 
-type FallbackConfigPayload struct {
-	GroupChatID     int64  `json:"group_chat_id"`
-	GroupAccessHash int64  `json:"group_access_hash"`
-	PSK             string `json:"psk"`
+func TestHandshakeChallenge(t *testing.T) {
+	psk := "super-secret-key-123"
+
+	// Build challenge from PSK
+	challenge, err := BuildHandshakeChallenge(psk)
+	if err != nil {
+		t.Fatalf("Failed to build handshake challenge: %v", err)
+	}
+
+	if len(challenge) != 64 {
+		t.Errorf("Expected challenge length 64, got %d", len(challenge))
+	}
+
+	// Verify the challenge with the same PSK
+	if err := VerifyHandshakeChallenge(psk, challenge); err != nil {
+		t.Fatalf("Failed to verify handshake challenge: %v", err)
+	}
+
+	// Verify with wrong PSK should fail
+	if err := VerifyHandshakeChallenge("wrong-key", challenge); err == nil {
+		t.Error("Expected verification to fail with wrong PSK, but it succeeded")
+	}
 }
 
-func TestEncryptDecrypt(t *testing.T) {
-	pin := "123456"
-	plaintext := "WAKEUP"
+func TestDeriveVerificationToken(t *testing.T) {
+	psk := "super-secret-key-123"
 
-	ciphertext, err := EncryptPayload(plaintext, pin)
+	token1, err := DeriveVerificationToken(psk)
 	if err != nil {
-		t.Fatalf("Failed to encrypt: %v", err)
+		t.Fatalf("Failed to derive verification token: %v", err)
 	}
 
-	decrypted, err := DecryptPayload(ciphertext, pin)
+	token2, err := DeriveVerificationToken(psk)
 	if err != nil {
-		t.Fatalf("Failed to decrypt: %v", err)
+		t.Fatalf("Failed to derive verification token: %v", err)
 	}
 
-	if decrypted != plaintext {
-		t.Errorf("Expected decrypted text to be '%s', got '%s'", plaintext, decrypted)
+	// Same PSK should produce same token (deterministic)
+	if token1 != token2 {
+		t.Errorf("Expected same token for same PSK, got '%s' vs '%s'", token1, token2)
 	}
 
-	// Test JSON payload
-	payload := FallbackConfigPayload{
-		GroupChatID:     12345678,
-		GroupAccessHash: 87654321,
-		PSK:             "super-secret-key-123",
-	}
-
-	rawJSON, err := json.Marshal(payload)
+	// Different PSK should produce different token
+	token3, err := DeriveVerificationToken("different-key")
 	if err != nil {
-		t.Fatalf("Failed to marshal: %v", err)
+		t.Fatalf("Failed to derive verification token: %v", err)
 	}
 
-	encryptedJSON, err := EncryptPayload(string(rawJSON), pin)
-	if err != nil {
-		t.Fatalf("Failed to encrypt JSON: %v", err)
-	}
-
-	decryptedJSON, err := DecryptPayload(encryptedJSON, pin)
-	if err != nil {
-		t.Fatalf("Failed to decrypt JSON: %v", err)
-	}
-
-	var decryptedPayload FallbackConfigPayload
-	if err := json.Unmarshal([]byte(decryptedJSON), &decryptedPayload); err != nil {
-		t.Fatalf("Failed to unmarshal JSON: %v", err)
-	}
-
-	if decryptedPayload.GroupChatID != payload.GroupChatID || decryptedPayload.PSK != payload.PSK {
-		t.Errorf("Payload mismatch: %+v vs %+v", decryptedPayload, payload)
+	if token1 == token3 {
+		t.Error("Expected different tokens for different PSKs")
 	}
 }
