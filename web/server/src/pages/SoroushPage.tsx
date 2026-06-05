@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FiPlay, FiSquare, FiSave, FiRefreshCw, FiPlus, FiTrash2, FiCpu, FiShield, FiUsers, FiSettings, FiSend, FiCheck, FiEye, FiEyeOff, FiActivity } from 'react-icons/fi';
+import { FiPlay, FiSquare, FiSave, FiRefreshCw, FiPlus, FiTrash2, FiCpu, FiShield, FiUsers, FiSettings, FiSend, FiCheck, FiEye, FiEyeOff, FiActivity, FiDownloadCloud, FiCopy } from 'react-icons/fi';
 
 interface SoroushAccount {
   ID: number;
@@ -39,6 +39,7 @@ export const SoroushPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showPSK, setShowPSK] = useState(false);
+  const [showSyncToken, setShowSyncToken] = useState(false);
 
   // Add account form
   const [newPhone, setNewPhone] = useState('');
@@ -226,6 +227,38 @@ export const SoroushPage: React.FC = () => {
         {/* Left Column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
+          {/* Server Sync Credentials Card */}
+          <div className="g-card" style={{ background: 'linear-gradient(135deg, var(--color-brand-card), var(--color-brand-light))', border: '1px solid var(--color-brand)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <FiDownloadCloud style={{ color: 'var(--color-brand)', fontSize: 18 }} />
+              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Server Sync Credentials</span>
+            </div>
+            <p style={{ fontSize: 11, color: 'var(--color-brand-text)', lineHeight: 1.5, margin: '0 0 14px' }}>
+              Copy these parameters and paste them into your <strong>client panel</strong> during the open internet window to automatically sync the tunnel configuration (Group ID, PSK, LiveKit URL).
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div>
+                <label style={labelStyle}>Server Sync URL</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input type="text" readOnly value={window.location.origin} style={{ ...inputStyle, fontFamily: 'Fira Code' }} onClick={(e) => (e.target as HTMLInputElement).select()} />
+                  <button type="button" className="btn btn--sm" onClick={() => { navigator.clipboard.writeText(window.location.origin); flash('success', 'URL copied!'); }}><FiCopy /></button>
+                </div>
+              </div>
+              <div>
+                <label style={labelStyle}>Auth Token</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ position: 'relative', flex: 1 }}>
+                    <input type={showSyncToken ? 'text' : 'password'} readOnly value={localStorage.getItem('cc_server_token') || ''} style={{ ...inputStyle, paddingRight: 40, fontFamily: 'Fira Code' }} onClick={(e) => (e.target as HTMLInputElement).select()} />
+                    <button type="button" onClick={() => setShowSyncToken(!showSyncToken)} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-muted)' }}>
+                      {showSyncToken ? <FiEyeOff size={16} /> : <FiEye size={16} />}
+                    </button>
+                  </div>
+                  <button type="button" className="btn btn--sm" onClick={() => { navigator.clipboard.writeText(localStorage.getItem('cc_server_token') || ''); flash('success', 'Token copied!'); }}><FiCopy /></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Accounts Card */}
           <div className="g-card">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -412,8 +445,9 @@ export const SoroushPage: React.FC = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 11 }}>
               <div><span style={{ color: 'var(--color-brand-muted)' }}>ICE Policy:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>RELAY only</strong></div>
               <div><span style={{ color: 'var(--color-brand-muted)' }}>TURN Nodes:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>185.60.137.x (Domestic)</strong></div>
-              <div><span style={{ color: 'var(--color-brand-muted)' }}>Auth:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>PSK In-Band + MTProto JWT</strong></div>
+              <div><span style={{ color: 'var(--color-brand-muted)' }}>Auth:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>HKDF Zero-Trust + MTProto JWT</strong></div>
               <div><span style={{ color: 'var(--color-brand-muted)' }}>DPI Stealth:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>Activity Noise + Jitter</strong></div>
+              <div><span style={{ color: 'var(--color-brand-muted)' }}>Handshake:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>64-byte HKDF + Timestamp Nonce</strong></div>
             </div>
           </div>
         </div>

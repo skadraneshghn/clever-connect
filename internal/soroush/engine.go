@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 )
@@ -149,6 +150,10 @@ func runClient(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []
 
 // runWorker manages a single worker connection lifecycle with auto-reconnect.
 func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *models.SoroushAccount, pool *MultiplexerPool) {
+	defer func() {
+		db.DB.Model(acct).Update("status", "idle")
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -157,10 +162,12 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 		}
 
 		logger.Info(component, "Worker starting", "phone", maskPhone(acct.PhoneNumber))
+		db.DB.Model(acct).Update("status", "connecting")
 
 		tm := NewTokenManager(acct, cfg)
 		if err := tm.Start(ctx); err != nil {
 			logger.Error(component, "Worker token manager failed", "phone", maskPhone(acct.PhoneNumber), "error", err)
+			db.DB.Model(acct).Update("status", "error")
 			sleepWithContext(ctx, 10*time.Second)
 			continue
 		}
@@ -168,6 +175,7 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 		token := tm.CurrentToken()
 		if token == nil {
 			logger.Error(component, "Worker got nil token", "phone", maskPhone(acct.PhoneNumber))
+			db.DB.Model(acct).Update("status", "error")
 			tm.Stop()
 			sleepWithContext(ctx, 10*time.Second)
 			continue
@@ -176,6 +184,7 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 		transport := NewLiveKitTransport(token, cfg, false)
 		if err := transport.Connect(ctx); err != nil {
 			logger.Error(component, "Worker transport connect failed", "phone", maskPhone(acct.PhoneNumber), "error", err)
+			db.DB.Model(acct).Update("status", "error")
 			tm.Stop()
 			sleepWithContext(ctx, 10*time.Second)
 			continue
@@ -184,6 +193,7 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 		yamuxSess := transport.YamuxSession()
 		if yamuxSess == nil {
 			logger.Error(component, "Worker yamux session is nil", "phone", maskPhone(acct.PhoneNumber))
+			db.DB.Model(acct).Update("status", "error")
 			transport.Close()
 			tm.Stop()
 			sleepWithContext(ctx, 10*time.Second)
@@ -199,6 +209,7 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 		pool.Inject(wc)
 
 		logger.Info(component, "Worker connected and injected into pool", "phone", maskPhone(acct.PhoneNumber))
+		db.DB.Model(acct).Update("status", "tunnel_active")
 
 		// Block until yamux session closes or context cancels
 		select {
@@ -209,6 +220,7 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 			return
 		case <-yamuxSess.CloseChan():
 			logger.Warn(component, "Worker yamux session closed, reconnecting", "phone", maskPhone(acct.PhoneNumber))
+			db.DB.Model(acct).Update("status", "error")
 			pool.Purge(wc.AccountID)
 			transport.Close()
 			tm.Stop()

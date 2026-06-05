@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -441,3 +442,159 @@ func maskPhoneForLog(phone string) string {
 	}
 	return phone[:3] + "****" + phone[len(phone)-2:]
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Sync Protocol (Phase 1 & 2 — Server Provisioning + Client Bootstrap)
+// ════════════════════════════════════════════════════════════════════════════════
+
+// SyncConfig handles GET /api/soroush/sync
+// Server-side: Serializes the tunnel configuration into a JSON payload
+// that the client can fetch during the temporary open internet window.
+// The PSK is included but a verification_token (HKDF-derived) is also
+// provided for the client to validate the payload integrity.
+func (h *SoroushHandler) SyncConfig(c *gin.Context) {
+	var cfg models.SoroushTunnelConfig
+	if err := db.DB.First(&cfg).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Soroush tunnel config not found"})
+		return
+	}
+
+	if cfg.GroupChatID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Server has no group call configured — initialize first"})
+		return
+	}
+
+	// Derive a verification token from PSK for integrity checking
+	verifyToken, err := soroush.DeriveVerificationToken(cfg.PSK)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to derive verification token"})
+		return
+	}
+
+	logger.Info("Soroush", "Sync config served to client",
+		"group_chat_id", cfg.GroupChatID,
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"sync_payload": gin.H{
+			"group_chat_id":      cfg.GroupChatID,
+			"group_access_hash":  cfg.GroupAccessHash,
+			"psk":                cfg.PSK,
+			"livekit_url":        cfg.LiveKitURL,
+			"socks_port":         cfg.SocksPort,
+			"max_workers":        cfg.MaxWorkers,
+			"load_balance_algo":  cfg.LoadBalanceAlgo,
+			"token_refresh_min":  cfg.TokenRefreshMinSec,
+			"token_refresh_max":  cfg.TokenRefreshMaxSec,
+			"verification_token": verifyToken,
+		},
+	})
+}
+
+// IngestSync handles POST /api/soroush/sync
+// Client-side: Receives the sync payload from the server and commits it
+// to the local SQLite database. This is the "open internet window" bootstrap.
+func (h *SoroushHandler) IngestSync(c *gin.Context) {
+	var req struct {
+		ServerURL string `json:"server_url" binding:"required"` // e.g. "https://my-server.example.com"
+		Token     string `json:"token" binding:"required"`      // Bearer token for the server
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	// Fetch the sync payload from the remote server
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", req.ServerURL+"/api/soroush/sync", nil)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid server URL: " + err.Error()})
+		return
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+req.Token)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to reach server: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Server returned status " + strconv.Itoa(resp.StatusCode)})
+		return
+	}
+
+	var syncResp struct {
+		SyncPayload struct {
+			GroupChatID     int64  `json:"group_chat_id"`
+			GroupAccessHash int64  `json:"group_access_hash"`
+			PSK             string `json:"psk"`
+			LiveKitURL      string `json:"livekit_url"`
+			SocksPort       int    `json:"socks_port"`
+			MaxWorkers      int    `json:"max_workers"`
+			LoadBalanceAlgo string `json:"load_balance_algo"`
+			TokenRefreshMin int    `json:"token_refresh_min"`
+			TokenRefreshMax int    `json:"token_refresh_max"`
+			VerifyToken     string `json:"verification_token"`
+		} `json:"sync_payload"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&syncResp); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to parse server response: " + err.Error()})
+		return
+	}
+
+	p := syncResp.SyncPayload
+
+	// Verify the payload integrity via HKDF-derived token
+	localVerify, err := soroush.DeriveVerificationToken(p.PSK)
+	if err != nil || localVerify != p.VerifyToken {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Sync payload integrity check failed — PSK verification mismatch"})
+		return
+	}
+
+	// Commit to local DB
+	var cfg models.SoroushTunnelConfig
+	if err := db.DB.First(&cfg).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Local Soroush tunnel config not initialized"})
+		return
+	}
+
+	cfg.GroupChatID = p.GroupChatID
+	cfg.GroupAccessHash = p.GroupAccessHash
+	cfg.PSK = p.PSK
+	cfg.LiveKitURL = p.LiveKitURL
+	if p.SocksPort > 0 {
+		cfg.SocksPort = p.SocksPort
+	}
+	if p.MaxWorkers > 0 {
+		cfg.MaxWorkers = p.MaxWorkers
+	}
+	if p.LoadBalanceAlgo != "" {
+		cfg.LoadBalanceAlgo = p.LoadBalanceAlgo
+	}
+	if p.TokenRefreshMin > 0 {
+		cfg.TokenRefreshMinSec = p.TokenRefreshMin
+	}
+	if p.TokenRefreshMax > 0 {
+		cfg.TokenRefreshMaxSec = p.TokenRefreshMax
+	}
+
+	db.DB.Save(&cfg)
+
+	logger.Info("Soroush", "Client synced with server",
+		"group_chat_id", cfg.GroupChatID,
+		"livekit_url", cfg.LiveKitURL,
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "synced",
+		"message": "Configuration ingested from server. Global internet window can now be closed.",
+		"config":  cfg,
+	})
+}
+

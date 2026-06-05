@@ -259,6 +259,8 @@ func main() {
 			protected.POST("/soroush/engine/stop", soroushHandler.StopSoroushEngine)
 			protected.GET("/soroush/engine/status", soroushHandler.GetSoroushEngineStatus)
 			protected.POST("/soroush/test-token", soroushHandler.TestTokenFetch)
+			protected.GET("/soroush/sync", soroushHandler.SyncConfig)
+			protected.POST("/soroush/sync", soroushHandler.IngestSync)
 		}
 	}
 

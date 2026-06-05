@@ -3,15 +3,17 @@ package soroush
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
+	"time"
 
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/soroushlib"
 
 	"github.com/hashicorp/yamux"
-	lksdk "github.com/livekit/server-sdk-go"
 	livekit "github.com/livekit/protocol/livekit"
+	lksdk "github.com/livekit/server-sdk-go"
 )
 
 // LiveKitTransport manages the LiveKit room connection and wraps the
@@ -32,8 +34,9 @@ type LiveKitTransport struct {
 	vconn    *soroushlib.VConn
 	yamuxSes *yamux.Session
 
-	// Server-side: authenticated peer registry
+	// Server-side: authenticated & pending peer registries
 	authenticatedPeers sync.Map // map[string]*soroushlib.VConn
+	pendingPeers       sync.Map // map[string]*soroushlib.VConn
 
 	mu     sync.Mutex
 	closed bool
@@ -119,17 +122,24 @@ func (t *LiveKitTransport) Connect(ctx context.Context) error {
 			t.vconn.OnData(data)
 		}
 
-		// Send PSK as first data packet for in-band authentication (Phase 8.4)
+		// Build HKDF zero-trust challenge (Phase 3 handshake protocol)
+		challenge, err := BuildHandshakeChallenge(t.cfg.PSK)
+		if err != nil {
+			room.Disconnect()
+			return fmt.Errorf("build handshake challenge: %w", err)
+		}
+
+		// Send 64-byte HKDF challenge as first data packet for in-band authentication
 		err = room.LocalParticipant.PublishDataPacket(
-			&livekit.UserPacket{Payload: []byte(t.cfg.PSK)},
+			&livekit.UserPacket{Payload: challenge},
 			livekit.DataPacket_RELIABLE,
 		)
 		if err != nil {
 			room.Disconnect()
-			return fmt.Errorf("failed to send PSK handshake: %w", err)
+			return fmt.Errorf("failed to send HKDF handshake: %w", err)
 		}
 
-		logger.Info(component, "LiveKitTransport: PSK handshake sent")
+		logger.Info(component, "LiveKitTransport: HKDF zero-trust handshake sent")
 
 		// Create yamux client session over VConn
 		yamuxCfg := yamux.DefaultConfig()
@@ -155,24 +165,78 @@ func (t *LiveKitTransport) handleServerDataReceived(data []byte, participantIden
 		return
 	}
 
-	// 2. Unauthenticated — check PSK
-	if string(data) == t.cfg.PSK {
-		logger.Info(component, "Worker authenticated via DataChannel",
-			"identity", participantIdentity,
+	// 2. Pending verification? Pipe directly to VConn (verification goroutine will read it)
+	if vc, ok := t.pendingPeers.Load(participantIdentity); ok {
+		vc.(*soroushlib.VConn).OnData(data)
+		return
+	}
+
+	// 3. New peer — initiate connection & verification goroutine
+	logger.Info(component, "New participant heard, instantiating raw connection stream",
+		"identity", participantIdentity,
+	)
+
+	vc := soroushlib.NewVConn(func(out []byte) error {
+		return t.room.LocalParticipant.PublishDataPacket(
+			&livekit.UserPacket{
+				Payload:             out,
+				DestinationIdentities: []string{participantIdentity},
+			},
+			livekit.DataPacket_RELIABLE,
+		)
+	}, 4*1024*1024) // 4MB buffer
+
+	val, loaded := t.pendingPeers.LoadOrStore(participantIdentity, vc)
+	actualVC := val.(*soroushlib.VConn)
+	actualVC.OnData(data)
+
+	if !loaded {
+		go t.verifyPendingPeer(ctx, participantIdentity, actualVC)
+	}
+}
+
+// verifyPendingPeer implements Phase 3: Zero-Trust In-Band Handshake.
+// Reads the 64-byte challenge block within a strict 3-second deadline.
+func (t *LiveKitTransport) verifyPendingPeer(ctx context.Context, identity string, vc *soroushlib.VConn) {
+	defer t.pendingPeers.Delete(identity)
+
+	challengeChan := make(chan []byte, 1)
+	errChan := make(chan error, 1)
+
+	go func() {
+		challenge := make([]byte, handshakeSize)
+		n, err := io.ReadFull(vc, challenge)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		challengeChan <- challenge[:n]
+	}()
+
+	select {
+	case <-time.After(3 * time.Second):
+		logger.Warn(component, "Zero-Trust Handshake read timeout (3s deadline), killing socket", "identity", identity)
+		vc.Close()
+		return
+	case err := <-errChan:
+		logger.Warn(component, "Zero-Trust Handshake read error, killing socket", "identity", identity, "error", err)
+		vc.Close()
+		return
+	case challenge := <-challengeChan:
+		if err := VerifyHandshakeChallenge(t.cfg.PSK, challenge); err != nil {
+			logger.Warn(component, "Zero-Trust Handshake verification failed, killing socket",
+				"identity", identity,
+				"error", err,
+			)
+			vc.Close()
+			return
+		}
+
+		logger.Info(component, "Worker authenticated successfully via HKDF zero-trust handshake",
+			"identity", identity,
 		)
 
-		// Create VConn targeting this specific worker via LiveKit data publish
-		vc := soroushlib.NewVConn(func(out []byte) error {
-			return t.room.LocalParticipant.PublishDataPacket(
-				&livekit.UserPacket{
-					Payload:             out,
-					DestinationIdentities: []string{participantIdentity},
-				},
-				livekit.DataPacket_RELIABLE,
-			)
-		}, 4*1024*1024) // 4MB ring buffer
-
-		t.authenticatedPeers.Store(participantIdentity, vc)
+		t.authenticatedPeers.Store(identity, vc)
 
 		// Start yamux server + relay in background
 		go func() {
@@ -181,9 +245,9 @@ func (t *LiveKitTransport) handleServerDataReceived(data []byte, participantIden
 			yamuxSess, err := yamux.Server(vc, yamuxCfg)
 			if err != nil {
 				logger.Error(component, "Failed to create yamux server for worker",
-					"identity", participantIdentity, "error", err,
+					"identity", identity, "error", err,
 				)
-				t.authenticatedPeers.Delete(participantIdentity)
+				t.authenticatedPeers.Delete(identity)
 				vc.Close()
 				return
 			}
@@ -191,18 +255,16 @@ func (t *LiveKitTransport) handleServerDataReceived(data []byte, participantIden
 			StartRelayHandler(ctx, yamuxSess)
 
 			// Cleanup on disconnect
-			t.authenticatedPeers.Delete(participantIdentity)
+			t.authenticatedPeers.Delete(identity)
 			vc.Close()
 			logger.Info(component, "Worker relay handler exited",
-				"identity", participantIdentity,
+				"identity", identity,
 			)
 		}()
-	} else {
-		// DPI prober or curious Soroush user — drop silently
-		logger.Warn(component, "Rogue participant sent invalid data, dropping",
-			"identity", participantIdentity,
-			"data_len", len(data),
-		)
+
+	case <-ctx.Done():
+		vc.Close()
+		return
 	}
 }
 
@@ -229,6 +291,15 @@ func (t *LiveKitTransport) Close() {
 			vc.Close()
 		}
 		t.authenticatedPeers.Delete(key)
+		return true
+	})
+
+	// Close all pending peer VConns
+	t.pendingPeers.Range(func(key, value interface{}) bool {
+		if vc, ok := value.(*soroushlib.VConn); ok {
+			vc.Close()
+		}
+		t.pendingPeers.Delete(key)
 		return true
 	})
 

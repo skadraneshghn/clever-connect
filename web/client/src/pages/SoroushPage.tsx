@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FiPlay, FiSquare, FiSave, FiRefreshCw, FiPlus, FiTrash2, FiCpu, FiShield, FiUsers, FiSettings, FiSend, FiCheck, FiEye, FiEyeOff, FiActivity } from 'react-icons/fi';
+import { FiPlay, FiSquare, FiSave, FiRefreshCw, FiPlus, FiTrash2, FiCpu, FiShield, FiUsers, FiSettings, FiSend, FiCheck, FiEye, FiEyeOff, FiActivity, FiDownloadCloud } from 'react-icons/fi';
 
 interface SoroushAccount {
   ID: number;
@@ -60,6 +60,11 @@ export const SoroushPage: React.FC = () => {
   const [cfgLoadBalanceAlgo, setCfgLoadBalanceAlgo] = useState('least-latency');
   const [cfgTokenRefreshMin, setCfgTokenRefreshMin] = useState(420);
   const [cfgTokenRefreshMax, setCfgTokenRefreshMax] = useState(540);
+
+  // Sync with server
+  const [syncServerURL, setSyncServerURL] = useState('');
+  const [syncToken, setSyncToken] = useState('');
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const flash = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text });
@@ -198,6 +203,22 @@ export const SoroushPage: React.FC = () => {
   const labelStyle: React.CSSProperties = { display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' };
   const inputStyle: React.CSSProperties = { width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', color: 'var(--color-brand-heading)', fontSize: 13 };
 
+  const syncWithServer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!syncServerURL || !syncToken) return;
+    setIsSyncing(true);
+    try {
+      const r = await fetch('/api/soroush/sync', {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ server_url: syncServerURL, token: syncToken }),
+      });
+      const d = await r.json();
+      if (r.ok) { flash('success', d.message || 'Synced with server!'); fetchConfig(); }
+      else flash('error', d.error);
+    } catch (e: any) { flash('error', e.message); }
+    finally { setIsSyncing(false); }
+  };
+
   return (
     <div>
       {/* Header */}
@@ -225,6 +246,30 @@ export const SoroushPage: React.FC = () => {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 24, alignItems: 'start' }}>
         {/* Left Column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+          {/* Sync with Server Card (Open Internet Window Bootstrap) */}
+          <div className="g-card" style={{ background: 'linear-gradient(135deg, var(--color-brand-card), var(--color-brand-light))', border: '1px solid var(--color-brand)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <FiDownloadCloud style={{ color: 'var(--color-brand)', fontSize: 18 }} />
+              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Sync with Server</span>
+            </div>
+            <p style={{ fontSize: 11, color: 'var(--color-brand-text)', lineHeight: 1.5, margin: '0 0 14px' }}>
+              Use this during the <strong>temporary open internet window</strong> to automatically pull Group ID, PSK, and LiveKit URL from your Clever Cloud server. Once synced, the global connection can be closed.
+            </p>
+            <form onSubmit={syncWithServer} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div>
+                <label style={labelStyle}>Server URL</label>
+                <input type="text" placeholder="https://your-server.example.com" value={syncServerURL} onChange={e => setSyncServerURL(e.target.value)} style={inputStyle} required />
+              </div>
+              <div>
+                <label style={labelStyle}>Auth Token</label>
+                <input type="password" placeholder="Bearer token from server panel" value={syncToken} onChange={e => setSyncToken(e.target.value)} style={inputStyle} required />
+              </div>
+              <button type="submit" className="btn btn--primary" disabled={isSyncing} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <FiDownloadCloud /> {isSyncing ? 'Syncing...' : 'Sync Configuration'}
+              </button>
+            </form>
+          </div>
 
           {/* Accounts Card */}
           <div className="g-card">
@@ -412,8 +457,9 @@ export const SoroushPage: React.FC = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 11 }}>
               <div><span style={{ color: 'var(--color-brand-muted)' }}>ICE Policy:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>RELAY only</strong></div>
               <div><span style={{ color: 'var(--color-brand-muted)' }}>TURN Nodes:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>185.60.137.x (Domestic)</strong></div>
-              <div><span style={{ color: 'var(--color-brand-muted)' }}>Auth:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>PSK In-Band + MTProto JWT</strong></div>
+              <div><span style={{ color: 'var(--color-brand-muted)' }}>Auth:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>HKDF Zero-Trust + MTProto JWT</strong></div>
               <div><span style={{ color: 'var(--color-brand-muted)' }}>DPI Stealth:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>Activity Noise + Jitter</strong></div>
+              <div><span style={{ color: 'var(--color-brand-muted)' }}>Handshake:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>64-byte HKDF + Timestamp Nonce</strong></div>
             </div>
           </div>
         </div>

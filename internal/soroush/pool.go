@@ -3,6 +3,7 @@ package soroush
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -124,15 +125,16 @@ func (p *MultiplexerPool) Purge(accountID string) {
 
 // HealthCheck runs periodic yamux ping checks on all workers.
 // Marks unhealthy workers and removes dead ones.
+// Implements Phase 4: Jittered Heartbeat Engineering (12s +/- 3s) to evade DPI traffic analysis.
 func (p *MultiplexerPool) HealthCheck(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-
 	for {
+		// Calculate random heartbeat delay between 9 and 15 seconds (12s +/- 3s jitter)
+		jitterSec := 9 + rand.Intn(7)
+		
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(time.Duration(jitterSec) * time.Second):
 			p.mu.Lock()
 			for _, w := range p.workers {
 				if w.YamuxSession.IsClosed() {
