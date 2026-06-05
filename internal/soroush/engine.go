@@ -6,6 +6,7 @@ package soroush
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -163,6 +164,10 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 
 		logger.Info(component, "Worker starting", "phone", maskPhone(acct.PhoneNumber))
 		db.DB.Model(acct).Update("status", "connecting")
+
+		// Pool Re-balancing Jitter: sleep 2-4 seconds (3s +/- 1s) to avoid bombarding Soroush login gateways simultaneously
+		jitter := time.Duration(2000+rand.Intn(2000)) * time.Millisecond
+		sleepWithContext(ctx, jitter)
 
 		tm := NewTokenManager(acct, cfg)
 		if err := tm.Start(ctx); err != nil {

@@ -7,9 +7,15 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/hkdf"
+)
+
+var (
+	replayMutex        sync.Mutex
+	verifiedSignatures = make(map[string]time.Time)
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -101,6 +107,24 @@ func VerifyHandshakeChallenge(psk string, challenge []byte) error {
 	if !hmac.Equal(receivedSig, expectedSig) {
 		return fmt.Errorf("signature mismatch — wrong PSK or tampered challenge")
 	}
+
+	// 3. Handshake Time Nonce Guard (Anti-Replay sliding window check)
+	replayMutex.Lock()
+	defer replayMutex.Unlock()
+
+	now := time.Now()
+	// Evict entries older than 10s (outside the max clock skew window)
+	for sig, addedTime := range verifiedSignatures {
+		if now.Sub(addedTime) > 10*time.Second {
+			delete(verifiedSignatures, sig)
+		}
+	}
+
+	sigStr := string(receivedSig)
+	if _, exists := verifiedSignatures[sigStr]; exists {
+		return fmt.Errorf("handshake signature already used — replay attack blocked")
+	}
+	verifiedSignatures[sigStr] = now
 
 	return nil
 }
