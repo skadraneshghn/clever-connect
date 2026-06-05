@@ -11,7 +11,7 @@ import (
 	"clever-connect/internal/db"
 	"clever-connect/internal/models"
 
-	"gorm.io/driver/sqlite"
+	sqlite "clever-connect/internal/db/sqlite"
 	"gorm.io/gorm"
 )
 

@@ -12,8 +12,8 @@ import (
 	"clever-connect/internal/models"
 
 	"golang.org/x/crypto/bcrypt"
+	sqlite "clever-connect/internal/db/sqlite"
 	"gorm.io/driver/mysql"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )

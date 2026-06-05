@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"gorm.io/driver/sqlite"
+	sqlite "clever-connect/internal/db/sqlite"
 	"gorm.io/gorm"
 )
 

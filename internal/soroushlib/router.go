@@ -127,11 +127,20 @@ func (mr *MessageRouter) Run(ctx context.Context) error {
 
 			cid := msg.CID
 			rawBytes := msg.Data
-			if rawBytes != nil {
+
+			// Lightweight filtering wrapper: immediately drop or ignore non-message update IDs
+			// before running heavy access hash scanning or processUpdate logic.
+			isUpdateContainer := cid == 0x74ccebf7 || // IDUpdates
+				cid == 0x78d4dec1 || // IDUpdateShort
+				cid == 0x91505477 || // IDUpdateShortMessage
+				cid == 0xf35c6d01 || // IDRPCResult
+				cid == 0x73f1f8dc    // IDMsgContainer
+
+			if rawBytes != nil && isUpdateContainer {
 				mr.ScanAndCacheAccessHashes(rawBytes)
 			}
 			var reader *TLReader
-			if rawBytes != nil {
+			if rawBytes != nil && isUpdateContainer {
 				reader = NewTLReader(rawBytes)
 			}
 

@@ -27,9 +27,9 @@ require (
 	golang.org/x/time v0.15.0
 	gopkg.in/telebot.v4 v4.0.0-beta.9
 	gorm.io/driver/mysql v1.6.0
-	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
 	lukechampine.com/blake3 v1.4.1
+	modernc.org/sqlite v1.46.1
 )
 
 require (
@@ -154,7 +154,6 @@ require (
 	github.com/lufia/plan9stats v0.0.0-20251013123823-9fd1530e3ec3 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/mattn/go-xmlrpc v0.0.3 // indirect
 	github.com/mdlayher/ethtool v0.5.1 // indirect
 	github.com/mdlayher/genetlink v1.3.2 // indirect
@@ -280,7 +279,6 @@ require (
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.46.1 // indirect
 	rsc.io/qr v0.2.0 // indirect
 	zombiezen.com/go/sqlite v0.13.1 // indirect
 )

@@ -227,6 +227,11 @@ func handleIncomingOffer(ctx context.Context, session *soroushlib.MTProtoSession
 
 			yamuxCfg := yamux.DefaultConfig()
 			yamuxCfg.LogOutput = nil
+			// Defense: Configure strict window and write buffer sizes to prevent stream drops under high speed P2P DataChannels.
+			yamuxCfg.MaxStreamWindowSize = 1024 * 1024       // 1MB Stream window
+			yamuxCfg.ConnectionWriteTimeout = 5 * time.Second // Strict write deadline
+			yamuxCfg.AcceptBacklog = 1024
+
 			yamuxSess, err := yamux.Server(conn, yamuxCfg)
 			if err != nil {
 				logger.Error(component, "Server: Failed to create Yamux server", "error", err)
@@ -327,6 +332,15 @@ func runClient(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []
 	logger.Info(component, "Client engine shutting down — all workers exited")
 }
 
+type SoroushSyncPayload struct {
+	ServerPhoneNumber string `json:"server_phone_number"`
+	PairingPIN        string `json:"pairing_pin"`
+	PSK               string `json:"psk"`
+	SocksPort         int    `json:"socks_port"`
+	MaxWorkers        int    `json:"max_workers"`
+	LoadBalanceAlgo   string `json:"load_balance_algo"`
+}
+
 // runWorker manages a single worker connection lifecycle with auto-reconnect.
 func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *models.SoroushAccount, pool *MultiplexerPool) {
 	defer func() {
@@ -387,6 +401,48 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 		}
 
 		logger.Info(component, "Worker resolved server phone successfully", "user_id", serverUserID, "access_hash", serverAccessHash)
+
+		// Defense: Query history for any bootstrapped config to avoid spamming Soroush history gateways on application restarts.
+		// Only perform this if we don't have a fully established PSK or PairingPIN yet.
+		if cfg.PSK == "" || cfg.PairingPIN == "" {
+			logger.Info(component, "Worker: Querying recent history for bootstrapped config payload", "phone", maskPhone(acct.PhoneNumber))
+			if msgs, err := session.FetchHistory(ctx, serverUserID, serverAccessHash, 5); err == nil {
+				for _, m := range msgs {
+					if m.FromUserID == serverUserID && strings.HasPrefix(m.Text, "CONFIG:") {
+						ciphertext := strings.TrimPrefix(m.Text, "CONFIG:")
+						pin := cfg.PairingPIN
+						if pin == "" {
+							pin = "123456" // Default pairing pin fallback
+						}
+						decrypted := DecryptSDP(pin, ciphertext)
+						if len(decrypted) > 0 {
+							var syncPayload SoroushSyncPayload
+							if err := json.Unmarshal(decrypted, &syncPayload); err == nil {
+								var localCfg models.SoroushTunnelConfig
+								if err := db.DB.First(&localCfg).Error; err == nil {
+									localCfg.ServerPhoneNumber = syncPayload.ServerPhoneNumber
+									localCfg.PairingPIN = syncPayload.PairingPIN
+									localCfg.PSK = syncPayload.PSK
+									if syncPayload.SocksPort > 0 {
+										localCfg.SocksPort = syncPayload.SocksPort
+									}
+									if syncPayload.MaxWorkers > 0 {
+										localCfg.MaxWorkers = syncPayload.MaxWorkers
+									}
+									if syncPayload.LoadBalanceAlgo != "" {
+										localCfg.LoadBalanceAlgo = syncPayload.LoadBalanceAlgo
+									}
+									db.DB.Save(&localCfg)
+									cfg = &localCfg
+									logger.Info(component, "Worker: Bootstrapped configuration successfully from chat history")
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 
 		// Create WebRTC PeerConnection
 		s := webrtc.SettingEngine{}
@@ -461,6 +517,11 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 
 			yamuxCfg := yamux.DefaultConfig()
 			yamuxCfg.LogOutput = nil
+			// Defense: Configure strict window and write buffer sizes to prevent stream drops under high speed P2P DataChannels.
+			yamuxCfg.MaxStreamWindowSize = 1024 * 1024       // 1MB Stream window
+			yamuxCfg.ConnectionWriteTimeout = 5 * time.Second // Strict write deadline
+			yamuxCfg.AcceptBacklog = 1024
+
 			yamuxSess, yamuxError = yamux.Client(conn, yamuxCfg)
 			if yamuxError != nil {
 				logger.Error(component, "Worker: Failed to create Yamux client", "error", yamuxError)
@@ -548,9 +609,37 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 				if !ok {
 					break waitLoop
 				}
-				if msg.FromUserID == serverUserID && !msg.IsGroup && strings.HasPrefix(msg.Text, "ANSWER:") {
-					answerStr = strings.TrimPrefix(msg.Text, "ANSWER:")
-					break waitLoop
+				if msg.FromUserID == serverUserID && !msg.IsGroup {
+					if strings.HasPrefix(msg.Text, "CONFIG:") {
+						ciphertext := strings.TrimPrefix(msg.Text, "CONFIG:")
+						decrypted := DecryptSDP(cfg.PairingPIN, ciphertext)
+						if len(decrypted) > 0 {
+							var syncPayload SoroushSyncPayload
+							if err := json.Unmarshal(decrypted, &syncPayload); err == nil {
+								var localCfg models.SoroushTunnelConfig
+								if err := db.DB.First(&localCfg).Error; err == nil {
+									localCfg.ServerPhoneNumber = syncPayload.ServerPhoneNumber
+									localCfg.PairingPIN = syncPayload.PairingPIN
+									localCfg.PSK = syncPayload.PSK
+									if syncPayload.SocksPort > 0 {
+										localCfg.SocksPort = syncPayload.SocksPort
+									}
+									if syncPayload.MaxWorkers > 0 {
+										localCfg.MaxWorkers = syncPayload.MaxWorkers
+									}
+									if syncPayload.LoadBalanceAlgo != "" {
+										localCfg.LoadBalanceAlgo = syncPayload.LoadBalanceAlgo
+									}
+									db.DB.Save(&localCfg)
+									cfg = &localCfg
+									logger.Info(component, "Worker: Successfully parsed and cached configuration from CONFIG: update")
+								}
+							}
+						}
+					} else if strings.HasPrefix(msg.Text, "ANSWER:") {
+						answerStr = strings.TrimPrefix(msg.Text, "ANSWER:")
+						break waitLoop
+					}
 				}
 			}
 		}
@@ -561,6 +650,19 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 			clientTransport.Close()
 			transport.Disconnect()
 			return
+		}
+
+		if answerStr == "" {
+			logger.Warn(component, "Worker: Timeout waiting for ANSWER, running Solution 2 fallback (chat history lookup)")
+			if msgs, err := session.FetchHistory(ctx, serverUserID, serverAccessHash, 5); err == nil {
+				for _, m := range msgs {
+					if m.FromUserID == serverUserID && !m.IsGroup && strings.HasPrefix(m.Text, "ANSWER:") {
+						answerStr = strings.TrimPrefix(m.Text, "ANSWER:")
+						logger.Info(component, "Worker: Found ANSWER in chat history via Solution 2 fallback")
+						break
+					}
+				}
+			}
 		}
 
 		if answerStr == "" {

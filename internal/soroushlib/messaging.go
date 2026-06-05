@@ -996,3 +996,91 @@ func (s *MTProtoSession) ResolvePhone(ctx context.Context, phone string) (int64,
 	raw := reader.data[reader.pos:]
 	return ScanForUserInRaw(raw)
 }
+
+// BuildGetUserHistoryRequest builds a messages.getHistory TL request for a private user chat.
+func BuildGetUserHistoryRequest(userID int64, accessHash int64, limit int32) []byte {
+	w := NewTLWriter()
+	w.WriteUint32(0xAFA92846) // messages.getHistory
+
+	// peer = InputPeerUser
+	w.WriteUint32(IDInputPeerUser)
+	w.WriteInt64(userID)
+	w.WriteInt64(accessHash)
+
+	w.WriteInt32(0)          // offset_id
+	w.WriteInt32(0)          // offset_date
+	w.WriteInt32(0)          // add_offset
+	w.WriteInt32(limit)      // limit
+	w.WriteInt32(0)          // max_id
+	w.WriteInt32(0)          // min_id
+	w.WriteInt64(0)          // hash
+
+	return w.GetBytes()
+}
+
+// FetchHistory fetches recent messages for a private chat and returns them.
+func (s *MTProtoSession) FetchHistory(ctx context.Context, userID int64, accessHash int64, limit int32) ([]IncomingMessage, error) {
+	body := BuildGetUserHistoryRequest(userID, accessHash, limit)
+	_, reader, err := s.SendAndWait(ctx, body, true)
+	if err != nil {
+		return nil, fmt.Errorf("fetch history: %w", err)
+	}
+
+	var messages []IncomingMessage
+
+	// Let's parse the response (messages.messages or messages.messagesSlice)
+	// To be extremely robust, we can scan the reader's remaining bytes for the message constructor IDMessage (0x38116EE0)
+	raw := reader.data[reader.pos:]
+	targetCID := uint32(0x38116EE0)
+
+	for i := 0; i+24 <= len(raw); i++ {
+		cidVal := binary.LittleEndian.Uint32(raw[i : i+4])
+		if cidVal == targetCID {
+			// Try to parse message starting here
+			msgReader := NewTLReader(raw[i:])
+			msgReader.ReadUint32() // skip msgCID
+
+			flags, _ := msgReader.ReadInt32()
+			msgID, _ := msgReader.ReadInt32()
+
+			var fromUserID int64
+			if flags&(1<<8) != 0 {
+				msgReader.ReadUint32() // PeerUser constructor
+				fromUserID, _ = msgReader.ReadInt64()
+			}
+
+			// peer_id
+			peerCID, err := msgReader.ReadUint32()
+			if err != nil {
+				continue
+			}
+			switch peerCID {
+			case IDPeerChat, IDPeerChannel:
+				msgReader.ReadInt64()
+			case IDPeerUser:
+				msgReader.ReadInt64()
+			default:
+				// If unrecognized constructor, we can't safely proceed
+				continue
+			}
+
+			// date
+			date, _ := msgReader.ReadInt32()
+
+			// text string
+			text, err := msgReader.ReadString()
+			if err != nil {
+				continue
+			}
+
+			messages = append(messages, IncomingMessage{
+				FromUserID: fromUserID,
+				Text:       text,
+				Date:       date,
+				MessageID:  msgID,
+			})
+		}
+	}
+
+	return messages, nil
+}
