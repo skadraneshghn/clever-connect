@@ -41,69 +41,59 @@ func main() {
 	}
 	defer transport.Disconnect()
 
-	// Capture updates by intercepting unsolicited updates in our own loops
 	fmt.Printf("Connected successfully. Warming up session...\n")
 	if err := session.WarmUpSession(ctx); err != nil {
 		log.Fatalf("failed to warm up Soroush session: %v", err)
 	}
 
-	// Start a goroutine to read from session updates or print incoming raw updates
-	fmt.Printf("\n--- Listening for unsolicited updates for 20 seconds ---\n")
-	
-	// Let's call updates.getState first
-	getStateBody := []byte{0xc7, 0x7c, 0xc1, 0xed} // updates.getState#edd17cc7
-	wrapped := soroushlib.WrapInitConnection(soroushlib.SoroushAppID, getStateBody)
-	_, reader, err := session.SendAndWait(ctx, wrapped, true)
+	chatID := int64(21791372)
+
+	// Step 1: Call messages.getFullChat
+	fmt.Printf("\n--- Method 2: messages.getFullChat ---\n")
+	bodyFullChat := soroushlib.BuildGetFullGroupRequest(chatID, 0)
+	wrappedFChat := soroushlib.WrapInitConnection(soroushlib.SoroushAppID, bodyFullChat)
+	cidFChat, readerFChat, err := session.SendAndWait(ctx, wrappedFChat, true)
 	if err == nil {
-		fmt.Printf("updates.getState succeeded. Response CID: 0x%08X, size: %d bytes\n",
-			binaryReaderCID(reader.GetData()), len(reader.GetData()))
-		parseAndPrintCall(reader.GetData())
+		fmt.Printf("getFullChat succeeded. CID: 0x%08X, size: %d bytes\n", cidFChat, len(readerFChat.GetData()))
+		dumpBytesAndInts(readerFChat.GetData())
 	} else {
-		fmt.Printf("updates.getState failed: %v\n", err)
+		fmt.Printf("getFullChat failed: %v\n", err)
 	}
 
-	// Keep connection alive and print any incoming packets
-	startTime := time.Now()
-	for time.Since(startTime) < 20*time.Second {
-		// Read a frame from transport
-		frame, err := transport.Recv(ctx)
-		if err != nil {
-			fmt.Printf("Recv error: %v\n", err)
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		if len(frame) < 8 {
-			continue
-		}
-		
-		cid := binaryReaderCID(frame)
-		fmt.Printf("[%s] Received raw frame: size=%d, CID=0x%08X\n",
-			time.Now().Format("15:04:05.000"), len(frame), cid)
-		
-		parseAndPrintCall(frame)
+	// Step 2: Fetch Chat History as chat (accessHash = 0)
+	fmt.Printf("\n--- Method 3: messages.getHistory (chat mode) ---\n")
+	historyBody := soroushlib.BuildGetHistoryRequest(chatID, 0, 0, 0, 0, 100)
+	wrappedHist := soroushlib.WrapInitConnection(soroushlib.SoroushAppID, historyBody)
+	cidHist, readerHist, err := session.SendAndWait(ctx, wrappedHist, true)
+	if err == nil {
+		fmt.Printf("getHistory succeeded. CID: 0x%08X, size: %d bytes\n", cidHist, len(readerHist.GetData()))
+		parseAndPrintCall(readerHist.GetData())
+	} else {
+		fmt.Printf("getHistory failed: %v\n", err)
 	}
 }
 
-func binaryReaderCID(data []byte) uint32 {
-	if len(data) < 4 {
-		return 0
-	}
-	// Try offsets to find a valid MTProto CID
-	for _, offset := range []int{0, 8, 16, 24, 32} {
-		if offset+4 <= len(data) {
-			val := uint32(data[offset]) | uint32(data[offset+1])<<8 | uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
-			if val == 0x74AE4240 || val == 0x1CB5C415 || val == 0x780E4B66 || val == 0x90C87230 || val == 0xD597650C || val == 0xD8AA840F || val == 0x0B783982 || val == 0x14B24500 {
-				return val
-			}
+func dumpBytesAndInts(data []byte) {
+	fmt.Printf("--- Raw data offsets, uint32 and int64 values ---\n")
+	for i := 0; i+4 <= len(data); i += 4 {
+		val := uint32(data[i]) | uint32(data[i+1])<<8 | uint32(data[i+2])<<16 | uint32(data[i+3])<<24
+		
+		// If 8-byte aligned, print as int64 too
+		var int64str string
+		if i%8 == 0 && i+8 <= len(data) {
+			val64 := int64(uint64(data[i]) | uint64(data[i+1])<<8 | uint64(data[i+2])<<16 | uint64(data[i+3])<<24 |
+				uint64(data[i+4])<<32 | uint64(data[i+5])<<40 | uint64(data[i+6])<<48 | uint64(data[i+7])<<56)
+			int64str = fmt.Sprintf(" | int64: %d (0x%016X)", val64, uint64(val64))
 		}
+		
+		// Also show hex representation of the 4 bytes
+		hexBytes := fmt.Sprintf("%02x %02x %02x %02x", data[i], data[i+1], data[i+2], data[i+3])
+		fmt.Printf("Offset %3d: hex: %s | uint32: 0x%08X (%d)%s\n", i, hexBytes, val, val, int64str)
 	}
-	return uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
 }
 
 func parseAndPrintCall(raw []byte) {
-	// Look for InputGroupCall constructor: 0xD8AA840F (LE: 0f 84 aa d8)
-	target := []byte{0x0f, 0x84, 0xaa, 0xd8}
+	target := []byte{0x0f, 0x84, 0xaa, 0xd8} // InputGroupCall (d8aa840f)
 	found := false
 	for i := 0; i <= len(raw)-20; i++ {
 		if raw[i] == target[0] && raw[i+1] == target[1] && raw[i+2] == target[2] && raw[i+3] == target[3] {
@@ -117,33 +107,14 @@ func parseAndPrintCall(raw []byte) {
 		}
 	}
 
-	// Also look for GroupCall constructor: 0xD597650C (LE: 0c 65 97 d5)
-	gcTarget := []byte{0x0c, 0x65, 0x97, 0xd5}
+	gcTarget := []byte{0x0c, 0x65, 0x97, 0xd5} // groupCall (d597650c)
 	for i := 0; i <= len(raw)-20; i++ {
 		if raw[i] == gcTarget[0] && raw[i+1] == gcTarget[1] && raw[i+2] == gcTarget[2] && raw[i+3] == gcTarget[3] {
 			cr := soroushlib.NewTLReader(raw[i+4:])
 			flags, _ := cr.ReadInt32()
 			id, _ := cr.ReadInt64()
 			accessHash, _ := cr.ReadInt64()
-			fmt.Printf("  >>> FOUND groupCall OBJECT IN RESPONSE: ID=%d, AccessHash=%d, Flags=0x%08X <<<\n", id, accessHash, flags)
-			found = true
-		}
-	}
-
-	// Also look for updateGroupCall: 0x14B24500 (LE: 00 45 b2 14)
-	ugcTarget := []byte{0x00, 0x45, 0xb2, 0x14}
-	for i := 0; i <= len(raw)-20; i++ {
-		if ugcTarget[0] == raw[i] && ugcTarget[1] == raw[i+1] && ugcTarget[2] == raw[i+2] && ugcTarget[3] == raw[i+3] {
-			fmt.Printf("  >>> FOUND updateGroupCall CONSTRUCTOR AT OFFSET %d <<<\n", i)
-			found = true
-		}
-	}
-
-	// Also look for updateGroupCallConnection: 0x0B783982 (LE: 82 39 78 0b)
-	ugccTarget := []byte{0x82, 0x39, 0x78, 0x0b}
-	for i := 0; i <= len(raw)-20; i++ {
-		if ugccTarget[0] == raw[i] && ugccTarget[1] == raw[i+1] && ugccTarget[2] == raw[i+2] && ugccTarget[3] == raw[i+3] {
-			fmt.Printf("  >>> FOUND updateGroupCallConnection CONSTRUCTOR AT OFFSET %d <<<\n", i)
+			fmt.Printf("  >>> FOUND groupCall OBJECT: ID=%d, AccessHash=%d, Flags=0x%08X <<<\n", id, accessHash, flags)
 			found = true
 		}
 	}
@@ -157,7 +128,9 @@ func parseAndPrintCall(raw []byte) {
 				cids = append(cids, fmt.Sprintf("offset %d: 0x%08X", i, val))
 			}
 		}
-		if len(cids) > 0 {
+		if len(cids) > 10 {
+			fmt.Printf("  Potential Constructor IDs (first 10): %v\n", cids[:10])
+		} else if len(cids) > 0 {
 			fmt.Printf("  Potential Constructor IDs: %v\n", cids)
 		}
 	}
