@@ -877,7 +877,7 @@ func BuildGetFullGroupRequest(chatID int64, accessHash int64) []byte {
 	if accessHash != 0 {
 		w := NewTLWriter()
 		w.WriteUint32(0x08736A09) // channels.getFullChannel
-		w.WriteUint32(0xAFB8849B) // inputChannel
+		w.WriteUint32(0xf35aec28) // inputChannel
 		w.WriteInt64(chatID)
 		w.WriteInt64(accessHash)
 		return w.GetBytes()

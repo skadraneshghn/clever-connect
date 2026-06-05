@@ -93,6 +93,8 @@ type SoroushAccount struct {
 // to prevent rogue participants from crashing the yamux multiplexer.
 type SoroushTunnelConfig struct {
 	gorm.Model
+	GroupChatID     int64  `json:"group_chat_id"`
+	GroupAccessHash int64  `json:"group_access_hash"`
 	ServerIdentity  string `json:"server_identity"`     // The exact Soroush UserID of the Queen (e.g., "64698297")
 	PSK             string `json:"psk"`                 // Pre-Shared Key for worker auth
 	LiveKitURL      string `json:"livekit_url"`         // LiveKit SFU WebSocket endpoint (e.g., wss://k.splus.ir)

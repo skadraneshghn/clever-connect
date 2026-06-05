@@ -310,6 +310,8 @@ func (h *SoroushHandler) GetSoroushConfig(c *gin.Context) {
 // UpdateSoroushConfig handles PUT /api/soroush/config
 func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 	var req struct {
+		GroupChatID     int64  `json:"group_chat_id"`
+		GroupAccessHash int64  `json:"group_access_hash"`
 		ServerIdentity  string `json:"server_identity"`
 		PSK             string `json:"psk"`
 		LiveKitURL      string `json:"livekit_url"`
@@ -330,6 +332,12 @@ func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 	}
 
 	// Update only non-zero fields
+	if req.GroupChatID != 0 {
+		cfg.GroupChatID = req.GroupChatID
+	}
+	if req.GroupAccessHash != 0 {
+		cfg.GroupAccessHash = req.GroupAccessHash
+	}
 	if req.ServerIdentity != "" {
 		cfg.ServerIdentity = req.ServerIdentity
 	}
@@ -491,6 +499,8 @@ func (h *SoroushHandler) SyncConfig(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"sync_payload": gin.H{
+			"group_chat_id":      cfg.GroupChatID,
+			"group_access_hash":  cfg.GroupAccessHash,
 			"server_identity":    cfg.ServerIdentity,
 			"psk":                cfg.PSK,
 			"livekit_url":        cfg.LiveKitURL,
@@ -540,6 +550,8 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 
 	var syncResp struct {
 		SyncPayload struct {
+			GroupChatID     int64  `json:"group_chat_id"`
+			GroupAccessHash int64  `json:"group_access_hash"`
 			ServerIdentity  string `json:"server_identity"`
 			PSK             string `json:"psk"`
 			LiveKitURL      string `json:"livekit_url"`
@@ -569,6 +581,12 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 		return
 	}
 
+	if p.GroupChatID != 0 {
+		cfg.GroupChatID = p.GroupChatID
+	}
+	if p.GroupAccessHash != 0 {
+		cfg.GroupAccessHash = p.GroupAccessHash
+	}
 	if p.ServerIdentity != "" {
 		cfg.ServerIdentity = p.ServerIdentity
 	}

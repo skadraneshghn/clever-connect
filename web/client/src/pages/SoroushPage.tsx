@@ -14,9 +14,11 @@ interface SoroushAccount {
 }
 
 interface TunnelConfig {
-  server_phone_number: string;
-  pairing_pin: string;
+  group_chat_id: number;
+  group_access_hash: number;
+  server_identity: string;
   psk: string;
+  livekit_url: string;
   socks_port: number;
   is_active: boolean;
   engine_mode: string;
@@ -38,6 +40,10 @@ export const SoroushPage: React.FC = () => {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showPSK, setShowPSK] = useState(false);
 
+  // Group Call target settings
+  const [groups, setGroups] = useState<any[]>([]);
+  const [isFetchingGroups, setIsFetchingGroups] = useState(false);
+
   // Add account form
   const [newPhone, setNewPhone] = useState('');
   const [newName, setNewName] = useState('');
@@ -48,10 +54,12 @@ export const SoroushPage: React.FC = () => {
   const [otpCode, setOtpCode] = useState('');
   const [phoneCodeHash, setPhoneCodeHash] = useState<number[] | null>(null);
 
-  // Config form
-  const [cfgServerPhoneNumber, setCfgServerPhoneNumber] = useState('');
-  const [cfgPairingPIN, setCfgPairingPIN] = useState('');
+  // Config form state
+  const [cfgGroupChatId, setCfgGroupChatId] = useState(0);
+  const [cfgGroupAccessHash, setCfgGroupAccessHash] = useState(0);
+  const [cfgServerIdentity, setCfgServerIdentity] = useState('');
   const [cfgPSK, setCfgPSK] = useState('');
+  const [cfgLiveKitURL, setCfgLiveKitURL] = useState('');
   const [cfgSocksPort, setCfgSocksPort] = useState(4046);
   const [cfgMaxWorkers, setCfgMaxWorkers] = useState(5);
   const [cfgLoadBalanceAlgo, setCfgLoadBalanceAlgo] = useState('least-latency');
@@ -73,6 +81,21 @@ export const SoroushPage: React.FC = () => {
     } catch {}
   };
 
+  const fetchGroups = async () => {
+    setIsFetchingGroups(true);
+    try {
+      const r = await fetch('/api/soroush/groups', { headers: authHeaders() });
+      if (r.ok) {
+        const d = await r.json();
+        setGroups(d || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch groups", err);
+    } finally {
+      setIsFetchingGroups(false);
+    }
+  };
+
   const fetchConfig = async () => {
     try {
       const r = await fetch('/api/soroush/config', { headers: authHeaders() });
@@ -82,9 +105,11 @@ export const SoroushPage: React.FC = () => {
         setConfig(c);
         setIsRunning(d.is_running || false);
         if (c) {
-          setCfgServerPhoneNumber(c.server_phone_number || '');
-          setCfgPairingPIN(c.pairing_pin || '');
+          setCfgGroupChatId(c.group_chat_id || 0);
+          setCfgGroupAccessHash(c.group_access_hash || 0);
+          setCfgServerIdentity(c.server_identity || '');
           setCfgPSK(c.psk || '');
+          setCfgLiveKitURL(c.livekit_url || '');
           setCfgSocksPort(c.socks_port || 4046);
           setCfgMaxWorkers(c.max_workers || 5);
           setCfgLoadBalanceAlgo(c.load_balance_algo || 'least-latency');
@@ -102,11 +127,22 @@ export const SoroushPage: React.FC = () => {
 
   const refreshAll = async () => {
     setIsLoading(true);
-    await Promise.all([fetchAccounts(), fetchConfig(), fetchEngineStatus()]);
+    await fetchAccounts();
+    await Promise.all([fetchConfig(), fetchEngineStatus()]);
     setIsLoading(false);
   };
 
-  useEffect(() => { refreshAll(); }, []);
+  useEffect(() => {
+    refreshAll();
+  }, []);
+
+  useEffect(() => {
+    if (accounts.some(a => a.status === 'verified')) {
+      fetchGroups();
+    } else {
+      setGroups([]);
+    }
+  }, [accounts]);
 
   const addAccount = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -162,9 +198,11 @@ export const SoroushPage: React.FC = () => {
       const r = await fetch('/api/soroush/config', {
         method: 'PUT', headers: authHeaders(),
         body: JSON.stringify({
-          server_phone_number: cfgServerPhoneNumber,
-          pairing_pin: cfgPairingPIN,
+          group_chat_id: cfgGroupChatId,
+          group_access_hash: cfgGroupAccessHash,
+          server_identity: cfgServerIdentity,
           psk: cfgPSK,
+          livekit_url: cfgLiveKitURL,
           socks_port: cfgSocksPort,
           max_workers: cfgMaxWorkers,
           load_balance_algo: cfgLoadBalanceAlgo,
@@ -249,7 +287,7 @@ export const SoroushPage: React.FC = () => {
               <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Sync with Server</span>
             </div>
             <p style={{ fontSize: 11, color: 'var(--color-brand-text)', lineHeight: 1.5, margin: '0 0 14px' }}>
-              Use this during the <strong>temporary open internet window</strong> to automatically pull Server Phone Number, Pairing PIN, and PSK from your Clever Cloud server. Once synced, the global connection can be closed.
+              Use this during the <strong>temporary open internet window</strong> to automatically pull Server Group ID, PSK, and LiveKit URL from your Clever Cloud server. Once synced, the global connection can be closed.
             </p>
             <form onSubmit={syncWithServer} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div>
@@ -337,15 +375,48 @@ export const SoroushPage: React.FC = () => {
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                <div style={{ gridColumn: 'span 2' }}>
+                  <label style={labelStyle}>Select Target Group (Auto-fills ID & Access Hash)</label>
+                  <select
+                    value={groups.some(g => g.id === cfgGroupChatId) ? cfgGroupChatId : ''}
+                    onChange={e => {
+                      const selectedId = Number(e.target.value);
+                      const g = groups.find(x => x.id === selectedId);
+                      if (g) {
+                        setCfgGroupChatId(g.id);
+                        setCfgGroupAccessHash(g.accessHash);
+                      }
+                    }}
+                    style={inputStyle}
+                    disabled={isFetchingGroups || groups.length === 0}
+                  >
+                    <option value="">{isFetchingGroups ? 'Fetching groups...' : groups.length === 0 ? 'No groups available (add/verify a Soroush account first)' : 'Select Soroush group...'}</option>
+                    {groups.map(g => (
+                      <option key={g.id} value={g.id}>{g.title} (ID: {g.id})</option>
+                    ))}
+                  </select>
+                </div>
+
                 <div>
-                  <label style={labelStyle}>Server Phone Number</label>
-                  <input type="text" placeholder="+98..." value={cfgServerPhoneNumber} onChange={e => setCfgServerPhoneNumber(e.target.value)} style={inputStyle} required />
-                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>The Soroush phone number of the Server node to query for config pings.</span>
+                  <label style={labelStyle}>Group Chat ID</label>
+                  <input type="number" value={cfgGroupChatId} onChange={e => setCfgGroupChatId(Number(e.target.value))} style={inputStyle} required />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>Target Soroush group for LiveKit room creation.</span>
                 </div>
                 <div>
-                  <label style={labelStyle}>Pairing PIN</label>
-                  <input type="text" maxLength={6} placeholder="123456" value={cfgPairingPIN} onChange={e => setCfgPairingPIN(e.target.value)} style={inputStyle} required />
-                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>6-digit symmetric key for encrypting and decrypting fallback payloads.</span>
+                  <label style={labelStyle}>Group Access Hash</label>
+                  <input type="number" value={cfgGroupAccessHash} onChange={e => setCfgGroupAccessHash(Number(e.target.value))} style={inputStyle} required />
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                <div>
+                  <label style={labelStyle}>Server Soroush ID</label>
+                  <input type="text" placeholder="e.g. 64698297" value={cfgServerIdentity} onChange={e => setCfgServerIdentity(e.target.value)} style={inputStyle} required />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>The Soroush UserID of the Server Queen.</span>
+                </div>
+                <div>
+                  <label style={labelStyle}>LiveKit URL</label>
+                  <input type="text" placeholder="wss://k.splus.ir" value={cfgLiveKitURL} onChange={e => setCfgLiveKitURL(e.target.value)} style={inputStyle} />
                 </div>
               </div>
 
@@ -437,7 +508,7 @@ export const SoroushPage: React.FC = () => {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 11 }}>
               <div><span style={{ color: 'var(--color-brand-muted)' }}>ICE Policy:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>host, srflx, relay</strong></div>
-              <div><span style={{ color: 'var(--color-brand-muted)' }}>Signaling:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>In-band Soroush Messages</strong></div>
+              <div><span style={{ color: 'var(--color-brand-muted)' }}>Signaling:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>LiveKit SFU Room</strong></div>
               <div><span style={{ color: 'var(--color-brand-muted)' }}>Encryption:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>Zero-Trust DTLS-SRTP</strong></div>
               <div><span style={{ color: 'var(--color-brand-muted)' }}>Protocol:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>SCTP over WebRTC</strong></div>
             </div>

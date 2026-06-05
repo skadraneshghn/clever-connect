@@ -91,49 +91,85 @@ func StartEngine(cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccou
 func runServer(ctx context.Context, cfg *models.SoroushTunnelConfig, hostAccount *models.SoroushAccount) {
 	logger.Info(component, "Server engine goroutine started, initializing SFU Listener")
 
-	if hostAccount.LiveKitToken == "" {
-		logger.Error(component, "Server: Host account is missing LiveKitToken")
-		return
-	}
-
-	url := cfg.LiveKitURL
-	if url == "" {
-		url = "wss://k.splus.ir" // Default Soroush LiveKit endpoint
-	}
-
-	// Create listener + callback BEFORE connecting (room.callback is unexported in v2 SDK)
-	listener, listenerCb := NewLiveKitListener()
-
-	room, err := lksdk.ConnectToRoomWithToken(url, hostAccount.LiveKitToken, listenerCb)
-	if err != nil {
-		logger.Error(component, "Server: Failed to connect to LiveKit Room", "error", err)
-		return
-	}
-	defer room.Disconnect()
-
-	// Bind the room reference so LiveKitConn.Write() can publish data
-	listener.BindRoom(room)
-
-	logger.Info(component, "Server: Connected to SFU. Virtual Listener active, awaiting worker traffic...",
-		"local_identity", room.LocalParticipant.Identity(),
-	)
-	defer listener.Close()
-
-	// Spin off context cancellation watcher
-	go func() {
-		<-ctx.Done()
-		room.Disconnect()
-		listener.Close()
-	}()
-
 	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			logger.Error(component, "Server: SFU Listener error", "error", err)
+		select {
+		case <-ctx.Done():
 			return
+		default:
 		}
 
-		go handleIncomingWorker(ctx, conn.(*LiveKitConn), cfg)
+		// Reload configuration dynamically
+		var latestCfg models.SoroushTunnelConfig
+		if err := db.DB.First(&latestCfg).Error; err == nil {
+			cfg = &latestCfg
+		}
+
+		// Reload account to pick up refreshed token
+		var latestAcct models.SoroushAccount
+		if err := db.DB.First(&latestAcct, hostAccount.ID).Error; err == nil {
+			hostAccount = &latestAcct
+		}
+
+		token, err := GetOrRefreshLiveKitToken(ctx, cfg, hostAccount, true)
+		if err != nil {
+			logger.Error(component, "Server: Failed to get or refresh LiveKitToken. Retrying in 10s...", "error", err)
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		}
+		hostAccount.LiveKitToken = token
+
+		url := cfg.LiveKitURL
+		if url == "" {
+			url = "wss://k.splus.ir" // Default Soroush LiveKit endpoint
+		}
+
+		// Create listener + callback BEFORE connecting (room.callback is unexported in v2 SDK)
+		listener, listenerCb := NewLiveKitListener()
+
+		room, err := lksdk.ConnectToRoomWithToken(url, hostAccount.LiveKitToken, listenerCb)
+		if err != nil {
+			logger.Error(component, "Server: Failed to connect to LiveKit Room", "error", err)
+			listener.Close()
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		}
+
+		// Bind the room reference so LiveKitConn.Write() can publish data
+		listener.BindRoom(room)
+
+		logger.Info(component, "Server: Connected to SFU. Virtual Listener active, awaiting worker traffic...",
+			"local_identity", room.LocalParticipant.Identity(),
+		)
+
+		// Spin off context cancellation and disconnect watcher
+		stopChan := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-stopChan:
+			}
+			room.Disconnect()
+			listener.Close()
+		}()
+
+		acceptErr := func() error {
+			defer close(stopChan)
+			defer room.Disconnect()
+			defer listener.Close()
+
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					return err
+				}
+				go handleIncomingWorker(ctx, conn.(*LiveKitConn), cfg)
+			}
+		}()
+
+		if acceptErr != nil {
+			logger.Warn(component, "Server: SFU Listener disconnected, reconnecting in 5s...", "error", acceptErr)
+			sleepWithContext(ctx, 5*time.Second)
+		}
 	}
 }
 
@@ -249,12 +285,14 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 			acct = &latestAcct
 		}
 
-		if acct.LiveKitToken == "" {
-			logger.Error(component, "Worker: LiveKitToken is empty for this account. Skipping.", "phone", maskPhone(acct.PhoneNumber))
+		token, err := GetOrRefreshLiveKitToken(ctx, cfg, acct, false)
+		if err != nil {
+			logger.Error(component, "Worker: Failed to get or refresh LiveKitToken. Skipping.", "phone", maskPhone(acct.PhoneNumber), "error", err)
 			db.DB.Model(acct).Update("status", "error")
 			sleepWithContext(ctx, 10*time.Second)
 			continue
 		}
+		acct.LiveKitToken = token
 
 		url := cfg.LiveKitURL
 		if url == "" {
