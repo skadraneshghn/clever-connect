@@ -1,6 +1,7 @@
 package soroushlib
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -130,7 +131,7 @@ func BuildLeaveGroupCallRequest(groupCallID, accessHash int64, source int32) []b
 
 // BuildCreateGroupCallRequest builds phone.createGroupCall TL request
 // Used to create a new group call in a chat (admin only)
-func BuildCreateGroupCallRequest(chatID int64) []byte {
+func BuildCreateGroupCallRequest(chatID int64, accessHash int64) []byte {
 	w := NewTLWriter()
 	w.WriteUint32(IDPhoneCreateGroupCall)
 
@@ -138,8 +139,14 @@ func BuildCreateGroupCallRequest(chatID int64) []byte {
 	w.WriteInt32(0)
 
 	// peer: InputPeer (the chat/group)
-	w.WriteUint32(IDInputPeerChat)
-	w.WriteInt64(chatID)
+	if accessHash != 0 {
+		w.WriteUint32(IDInputPeerChannel)
+		w.WriteInt64(chatID)
+		w.WriteInt64(accessHash)
+	} else {
+		w.WriteUint32(IDInputPeerChat)
+		w.WriteInt64(chatID)
+	}
 
 	// random_id
 	w.WriteInt32(int32(rand.Int31()))
@@ -365,4 +372,65 @@ func base64URLDecode(s string) ([]byte, error) {
 		s += "="
 	}
 	return base64.URLEncoding.DecodeString(s)
+}
+
+// ScanForInputGroupCall scans raw TL response bytes for InputGroupCall constructor (0xD8AA840F)
+// and returns the group call ID and access hash if found.
+func ScanForInputGroupCall(data []byte) (int64, int64, bool) {
+	// Little-endian representation of 0xD8AA840F
+	target := []byte{0x0f, 0x84, 0xaa, 0xd8}
+	for i := 0; i <= len(data)-20; i++ {
+		if data[i] == target[0] && data[i+1] == target[1] &&
+			data[i+2] == target[2] && data[i+3] == target[3] {
+			
+			r := NewTLReader(data[i+4:])
+			id, err1 := r.ReadInt64()
+			accessHash, err2 := r.ReadInt64()
+			if err1 == nil && err2 == nil {
+				return id, accessHash, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// ResolveGroupCall fetches the full chat/channel info and scans it to extract
+// the active group call ID and access hash.
+func ResolveGroupCall(ctx context.Context, session *MTProtoSession, chatID int64, chatAccessHash int64) (int64, int64, error) {
+	body := BuildGetFullGroupRequest(chatID, chatAccessHash)
+	wrapped := WrapInitConnection(SoroushAppID, body)
+
+	cid, reader, err := session.SendAndWait(ctx, wrapped, true)
+	if err != nil {
+		return 0, 0, fmt.Errorf("getFullGroup RPC failed: %w", err)
+	}
+
+	if cid == IDRPCError {
+		return 0, 0, ParseRPCError(reader)
+	}
+
+	raw := reader.GetData()
+	callID, callAccessHash, found := ScanForInputGroupCall(raw)
+	if !found {
+		return 0, 0, fmt.Errorf("no active group call found in chat %d", chatID)
+	}
+
+	return callID, callAccessHash, nil
+}
+
+// CreateGroupCall creates a new group call in the given chat/channel.
+func CreateGroupCall(ctx context.Context, session *MTProtoSession, chatID int64, chatAccessHash int64) error {
+	body := BuildCreateGroupCallRequest(chatID, chatAccessHash)
+	wrapped := WrapInitConnection(SoroushAppID, body)
+
+	cid, reader, err := session.SendAndWait(ctx, wrapped, true)
+	if err != nil {
+		return fmt.Errorf("createGroupCall RPC failed: %w", err)
+	}
+
+	if cid == IDRPCError {
+		return ParseRPCError(reader)
+	}
+
+	return nil
 }

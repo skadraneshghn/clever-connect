@@ -87,7 +87,7 @@ func runServer(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []
 
 	// Use the first account as the server's room participant
 	acct := accounts[0]
-	tm := NewTokenManager(&acct, cfg)
+	tm := NewTokenManager(&acct, cfg, true)
 
 	if err := tm.Start(ctx); err != nil {
 		logger.Error(component, "TokenManager failed to start", "error", err)
@@ -231,7 +231,7 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 			cfg = &latestCfg
 		}
 
-		tm := NewTokenManager(acct, cfg)
+		tm := NewTokenManager(acct, cfg, false)
 		if err := tm.Start(ctx); err != nil {
 			logger.Error(component, "Worker token manager failed", "phone", maskPhone(acct.PhoneNumber), "error", err)
 			db.DB.Model(acct).Update("status", "error")

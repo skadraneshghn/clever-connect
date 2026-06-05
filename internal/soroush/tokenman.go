@@ -36,13 +36,15 @@ type TokenManager struct {
 	onNewToken   func(*LiveKitToken)
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
+	isServer     bool
 }
 
 // NewTokenManager creates a new TokenManager for the given account.
-func NewTokenManager(account *models.SoroushAccount, cfg *models.SoroushTunnelConfig) *TokenManager {
+func NewTokenManager(account *models.SoroushAccount, cfg *models.SoroushTunnelConfig, isServer bool) *TokenManager {
 	return &TokenManager{
-		account: account,
-		cfg:     cfg,
+		account:  account,
+		cfg:      cfg,
+		isServer: isServer,
 	}
 }
 
@@ -217,41 +219,45 @@ func (tm *TokenManager) startActivityNoise(ctx context.Context) {
 //   2. phone.joinGroupCall(InputGroupCall{id, access_hash}, join_as=self, params={}) → Updates
 //      The server responds with an Updates wrapper containing
 //      updateGroupCallConnection{params: DataJSON{data: "<JWT>"}}
-//   3. Parse the JWT and extract room name from payload.video.room
+//   3. Parse the JWT and extract room name from payload.video
 func (tm *TokenManager) fetchToken(ctx context.Context) (*LiveKitToken, error) {
-	groupCallID := tm.cfg.GroupChatID
+	groupChatID := tm.cfg.GroupChatID
 	groupAccessHash := tm.cfg.GroupAccessHash
 
-	// Step 1: phone.getGroupCall — verify the group call exists
-	getCallBody := soroushlib.BuildGetGroupCallRequest(groupCallID, groupAccessHash)
-	wrapped := soroushlib.WrapInitConnection(soroushlib.SoroushAppID, getCallBody)
-
-	cid, reader, err := tm.session.SendAndWait(ctx, wrapped, true)
+	// Step 1: Resolve the active group call ID and access hash
+	callID, callAccessHash, err := soroushlib.ResolveGroupCall(ctx, tm.session, groupChatID, groupAccessHash)
 	if err != nil {
-		return nil, fmt.Errorf("phone.getGroupCall failed: %w", err)
+		// If we are the server and no call is active, we attempt to create it
+		if tm.isServer {
+			logger.Info(component, "TokenManager: No active group call found, creating one...", "chat_id", groupChatID)
+			if createErr := soroushlib.CreateGroupCall(ctx, tm.session, groupChatID, groupAccessHash); createErr != nil {
+				return nil, fmt.Errorf("failed to create group call: %w", createErr)
+			}
+			// Resolve again after creating
+			callID, callAccessHash, err = soroushlib.ResolveGroupCall(ctx, tm.session, groupChatID, groupAccessHash)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve group call after creation: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to resolve active group call: %w", err)
+		}
 	}
 
-	callInfo, err := soroushlib.ParseGetGroupCallResponse(cid, reader)
-	if err != nil {
-		return nil, fmt.Errorf("parse getGroupCall response: %w", err)
-	}
-
-	logger.Info(component, "TokenManager: Group call found",
-		"call_id", callInfo.ID,
-		"participants", callInfo.ParticipantCount,
-		"title", callInfo.Title,
+	logger.Info(component, "TokenManager: Active group call resolved",
+		"call_id", callID,
+		"call_access_hash", callAccessHash,
 	)
 
 	// Step 2: phone.joinGroupCall — get the LiveKit JWT
 	joinBody := soroushlib.BuildJoinGroupCallRequest(
-		callInfo.ID,
-		callInfo.AccessHash,
+		callID,
+		callAccessHash,
 		tm.account.SoroushUserID,
 		tm.account.AccessHash,
 		true, // muted = true (data-only, no audio)
 	)
 
-	cid, reader, err = tm.session.SendAndWait(ctx, joinBody, true)
+	cid, reader, err := tm.session.SendAndWait(ctx, joinBody, true)
 	if err != nil {
 		return nil, fmt.Errorf("phone.joinGroupCall failed: %w", err)
 	}
