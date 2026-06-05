@@ -255,6 +255,7 @@ func main() {
 			protected.POST("/soroush/accounts/:id/verify", soroushHandler.VerifyAccount)
 			protected.GET("/soroush/config", soroushHandler.GetSoroushConfig)
 			protected.PUT("/soroush/config", soroushHandler.UpdateSoroushConfig)
+			protected.GET("/soroush/groups", soroushHandler.GetSoroushGroups)
 			protected.POST("/soroush/engine/start", soroushHandler.StartSoroushEngine)
 			protected.POST("/soroush/engine/stop", soroushHandler.StopSoroushEngine)
 			protected.GET("/soroush/engine/status", soroushHandler.GetSoroushEngineStatus)

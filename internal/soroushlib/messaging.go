@@ -916,3 +916,83 @@ func BuildGetHistoryRequest(chatID int64, accessHash int64, offsetID int32, offs
 
 	return w.GetBytes()
 }
+
+// AutoResolveTunnelGroup fetches all dialogs and returns the ID and AccessHash 
+// of the first available regular group or supergroup chat.
+// Part of Approach 1: Zero-Click Backend Auto-Resolve.
+func (s *MTProtoSession) AutoResolveTunnelGroup(ctx context.Context) (int64, int64, error) {
+	// 1. Fetch dialogs from Soroush
+	body := BuildGetDialogsRequest()
+	wrapped := WrapInitConnection(SoroushAppID, body)
+	cid, reader, err := s.SendAndWait(ctx, wrapped, true)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	groups, err := ParseDialogsForGroups(cid, reader)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// 2. Find the first valid group (group or supergroup)
+	for _, g := range groups {
+		if g.Type == "group" || g.Type == "supergroup" {
+			log.Printf("[AutoResolve] Auto-resolved tunnel group: title=%q, id=%d, access_hash=%d", g.Title, g.ID, g.AccessHash)
+			return g.ID, g.AccessHash, nil
+		}
+	}
+
+	return 0, 0, fmt.Errorf("no groups found in this Soroush account")
+}
+
+// BuildImportContactRequest builds a contacts.importContacts request for a single phone.
+func BuildImportContactRequest(phone string) []byte {
+	w := NewTLWriter()
+	w.WriteUint32(0x2C800BE5) // contacts.importContacts
+
+	w.WriteUint32(0x1CB5C415) // Vector marker
+	w.WriteInt32(1)           // Count
+
+	w.WriteUint32(0xF392B7F4) // inputPhoneContact
+	w.WriteInt64(0)           // client_id
+	w.WriteString(phone)      // phone
+	w.WriteString("server")   // first_name
+	w.WriteString("")         // last_name
+
+	return w.GetBytes()
+}
+
+// ScanForUserInRaw scans raw bytes for Soroush user constructor and returns ID & AccessHash.
+func ScanForUserInRaw(raw []byte) (int64, int64, error) {
+	for i := 0; i+4 <= len(raw); i += 4 {
+		cid := binary.LittleEndian.Uint32(raw[i:])
+		if cid == 0x21BB815E { // user
+			r := NewTLReader(raw[i+4:])
+			flags, _ := r.ReadInt32()
+			id, _ := r.ReadInt64()
+			var accessHash int64
+			if flags&(1<<0) != 0 {
+				accessHash, _ = r.ReadInt64()
+			}
+			return id, accessHash, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("user not found in contacts.importContacts response")
+}
+
+// ResolvePhone imports the given phone number as a contact to resolve its user ID and access hash.
+func (s *MTProtoSession) ResolvePhone(ctx context.Context, phone string) (int64, int64, error) {
+	body := BuildImportContactRequest(phone)
+	wrapped := WrapInitConnection(SoroushAppID, body)
+	cid, reader, err := s.SendAndWait(ctx, wrapped, true)
+	if err != nil {
+		return 0, 0, fmt.Errorf("importContacts RPC failed: %w", err)
+	}
+
+	if cid == IDRPCError {
+		return 0, 0, ParseRPCError(reader)
+	}
+
+	raw := reader.data[reader.pos:]
+	return ScanForUserInRaw(raw)
+}

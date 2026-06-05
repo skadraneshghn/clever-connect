@@ -27,7 +27,7 @@ interface TunnelConfig {
 }
 
 const authHeaders = () => ({
-  'Authorization': `Bearer ${localStorage.getItem('cc_server_token') || ''}`,
+  'Authorization': `Bearer ${localStorage.getItem('cc_client_token') || ''}`,
   'Content-Type': 'application/json',
 });
 
@@ -60,6 +60,9 @@ export const SoroushPage: React.FC = () => {
   const [cfgLoadBalanceAlgo, setCfgLoadBalanceAlgo] = useState('least-latency');
   const [cfgTokenRefreshMin, setCfgTokenRefreshMin] = useState(420);
   const [cfgTokenRefreshMax, setCfgTokenRefreshMax] = useState(540);
+
+  const [cfgServerHostPhone, setCfgServerHostPhone] = useState('');
+  const [cfgPairingPIN, setCfgPairingPIN] = useState('');
 
   // Sync with server
   const [syncServerURL, setSyncServerURL] = useState('');
@@ -96,6 +99,8 @@ export const SoroushPage: React.FC = () => {
           setCfgLoadBalanceAlgo(c.load_balance_algo || 'least-latency');
           setCfgTokenRefreshMin(c.token_refresh_min_sec || 420);
           setCfgTokenRefreshMax(c.token_refresh_max_sec || 540);
+          setCfgServerHostPhone(c.server_host_phone || '');
+          setCfgPairingPIN(c.pairing_pin || '');
         }
       }
     } catch {}
@@ -173,6 +178,7 @@ export const SoroushPage: React.FC = () => {
           group_chat_id: cfgGroupChatId, group_access_hash: cfgGroupAccessHash, psk: cfgPSK,
           livekit_url: cfgLiveKitURL, socks_port: cfgSocksPort, max_workers: cfgMaxWorkers,
           load_balance_algo: cfgLoadBalanceAlgo, token_refresh_min_sec: cfgTokenRefreshMin, token_refresh_max_sec: cfgTokenRefreshMax,
+          server_host_phone: cfgServerHostPhone, pairing_pin: cfgPairingPIN,
         }),
       });
       if (r.ok) { flash('success', 'Configuration saved'); fetchConfig(); }
@@ -364,6 +370,19 @@ export const SoroushPage: React.FC = () => {
                   </div>
                 </div>
                 <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>In-band DataChannel authentication key. Must match on both server and client.</span>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                <div>
+                  <label style={labelStyle}>Server Host Phone Number (In-band Fallback)</label>
+                  <input type="text" placeholder="+98..." value={cfgServerHostPhone} onChange={e => setCfgServerHostPhone(e.target.value)} style={inputStyle} />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>The Soroush phone number of the Server node to query for config pings.</span>
+                </div>
+                <div>
+                  <label style={labelStyle}>Pairing PIN (Fallback decryption key)</label>
+                  <input type="text" maxLength={6} placeholder="123456" value={cfgPairingPIN} onChange={e => setCfgPairingPIN(e.target.value)} style={inputStyle} />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>6-digit symmetric key for encrypting and decrypting fallback payloads.</span>
+                </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 16 }}>

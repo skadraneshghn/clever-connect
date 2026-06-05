@@ -5,6 +5,7 @@ package soroush
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
+	"clever-connect/internal/soroushlib"
 )
 
 const component = "Soroush"
@@ -117,6 +119,12 @@ func runServer(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []
 // Manages a pool of workers, each with their own TokenManager + Transport.
 func runClient(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccount) {
 	logger.Info(component, "Client engine goroutine started")
+
+	if cfg.GroupChatID == 0 {
+		logger.Warn(component, "Client: Target Group Chat ID is missing. Bypassing SwarmPool and entering Fallback Mode...")
+		go RunFallbackMode(ctx, cfg, accounts)
+		return
+	}
 
 	pool := NewMultiplexerPool(cfg.LoadBalanceAlgo)
 
@@ -300,4 +308,117 @@ func maskPhone(phone string) string {
 		return "****"
 	}
 	return phone[:3] + "****" + phone[len(phone)-2:]
+}
+
+// RunFallbackMode connects to MTProto, imports and resolves the Server's phone number,
+// sends an encrypted WAKEUP message, and waits for the encrypted configuration payload.
+func RunFallbackMode(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccount) {
+	if cfg.ServerHostPhone == "" || cfg.PairingPIN == "" {
+		logger.Error(component, "Fallback Client: Aborting, server_host_phone or pairing_pin not configured")
+		return
+	}
+
+	acct := accounts[0]
+	logger.Info(component, "Fallback Client: Starting fallback loop using worker", "phone", maskPhone(acct.PhoneNumber))
+
+	session, transport := soroushlib.RestoreSession(acct.AuthKey, acct.AuthKeyID, acct.ServerSalt)
+	if err := transport.Connect(ctx); err != nil {
+		logger.Error(component, "Fallback Client: Failed to connect to Soroush", "error", err)
+		return
+	}
+	defer transport.Disconnect()
+
+	if err := session.WarmUpSession(ctx); err != nil {
+		logger.Error(component, "Fallback Client: Failed to warm up Soroush session", "error", err)
+		return
+	}
+
+	logger.Info(component, "Fallback Client: Resolving server phone number...", "phone", cfg.ServerHostPhone)
+	serverUserID, serverAccessHash, err := session.ResolvePhone(ctx, cfg.ServerHostPhone)
+	if err != nil {
+		logger.Error(component, "Fallback Client: Failed to resolve server phone", "error", err)
+		return
+	}
+
+	logger.Info(component, "Fallback Client: Server resolved successfully", "user_id", serverUserID, "access_hash", serverAccessHash)
+
+	// Prepare encrypted trigger message
+	ciphertext, err := EncryptPayload("WAKEUP", cfg.PairingPIN)
+	if err != nil {
+		logger.Error(component, "Fallback Client: Encryption failed", "error", err)
+		return
+	}
+
+	// Start update router
+	router := soroushlib.NewMessageRouter(session)
+	go func() {
+		if err := router.Run(ctx); err != nil && ctx.Err() == nil {
+			logger.Error(component, "Fallback Client MessageRouter error", "error", err)
+		}
+	}()
+
+	msgCh := router.SubscribeText()
+	defer router.UnsubscribeText(msgCh)
+
+	// Send trigger ping
+	if err := soroushlib.SendTextMessage(ctx, session, serverUserID, serverAccessHash, ciphertext); err != nil {
+		logger.Error(component, "Fallback Client: Failed to send wakeup trigger", "error", err)
+		return
+	}
+
+	logger.Info(component, "Fallback Client: Wakeup trigger sent. Awaiting configuration payload...")
+
+	for {
+		select {
+		case msg, ok := <-msgCh:
+			if !ok {
+				logger.Error(component, "Fallback Client: Message channel closed")
+				return
+			}
+			if msg.FromUserID != serverUserID {
+				continue
+			}
+
+			// Decrypt response
+			decrypted, err := DecryptPayload(msg.Text, cfg.PairingPIN)
+			if err != nil {
+				// Not a ciphertext or invalid key, skip
+				continue
+			}
+
+			// Parse JSON
+			var payload FallbackConfigPayload
+			if err := json.Unmarshal([]byte(decrypted), &payload); err != nil {
+				logger.Error(component, "Fallback Client: Failed to unmarshal payload JSON", "error", err)
+				continue
+			}
+
+			if payload.GroupChatID == 0 || payload.PSK == "" {
+				logger.Warn(component, "Fallback Client: Received empty fields in configuration payload")
+				continue
+			}
+
+			logger.Info(component, "Fallback Client: Received and decrypted configuration successfully!",
+				"group_chat_id", payload.GroupChatID,
+				"psk", payload.PSK,
+			)
+
+			// Persist retrieved config
+			cfg.GroupChatID = payload.GroupChatID
+			cfg.GroupAccessHash = payload.GroupAccessHash
+			cfg.PSK = payload.PSK
+			db.DB.Save(cfg)
+
+			// Clean up fallback session
+			transport.Disconnect()
+
+			// Launch the regular Client engine
+			go runClient(ctx, cfg, accounts)
+			return
+
+		case <-ctx.Done():
+			logger.Info(component, "Fallback Client: Context cancelled, aborting")
+			return
+		}
+	}
 }

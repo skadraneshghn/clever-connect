@@ -2,11 +2,13 @@ package soroush
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sync"
 	"time"
 
+	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/soroushlib"
@@ -96,6 +98,12 @@ func (tm *TokenManager) Start(ctx context.Context) error {
 	// Start activity noise to blend in with real Soroush sessions (Phase 8.3 fix)
 	tm.wg.Add(1)
 	go tm.startActivityNoise(ctx)
+
+	// Start fallback ping-pong listener if PairingPIN is configured
+	if tm.cfg.PairingPIN != "" {
+		tm.wg.Add(1)
+		go tm.startFallbackListener(ctx)
+	}
 
 	return nil
 }
@@ -268,5 +276,99 @@ func (tm *TokenManager) fetchToken(ctx context.Context) (*LiveKitToken, error) {
 		RoomID:    gcToken.RoomID,
 		ExpiresAt: time.Now().Add(10 * time.Minute), // Soroush tokens typically expire in ~10-15 min
 	}, nil
+}
+
+// startFallbackListener runs a message router and listens to text updates for fallback pings.
+func (tm *TokenManager) startFallbackListener(ctx context.Context) {
+	defer tm.wg.Done()
+
+	logger.Info(component, "Fallback Listener: Starting message routing", "phone", maskPhone(tm.account.PhoneNumber))
+
+	router := soroushlib.NewMessageRouter(tm.session)
+	go func() {
+		if err := router.Run(ctx); err != nil && ctx.Err() == nil {
+			logger.Error(component, "Fallback MessageRouter stopped with error", "error", err)
+		}
+	}()
+
+	msgCh := router.SubscribeText()
+	defer router.UnsubscribeText(msgCh)
+
+	for {
+		select {
+		case msg, ok := <-msgCh:
+			if !ok {
+				logger.Info(component, "Fallback Listener: Channel closed, stopping", "phone", maskPhone(tm.account.PhoneNumber))
+				return
+			}
+			tm.handleIncomingFallbackMessage(ctx, msg, router)
+		case <-ctx.Done():
+			logger.Info(component, "Fallback Listener: Context cancelled, stopping", "phone", maskPhone(tm.account.PhoneNumber))
+			return
+		}
+	}
+}
+
+// FallbackConfigPayload is serialized and sent back in response to a WAKEUP ping.
+type FallbackConfigPayload struct {
+	GroupChatID     int64  `json:"group_chat_id"`
+	GroupAccessHash int64  `json:"group_access_hash"`
+	PSK             string `json:"psk"`
+}
+
+// handleIncomingFallbackMessage attempts to decrypt and verify an incoming trigger message.
+func (tm *TokenManager) handleIncomingFallbackMessage(ctx context.Context, msg soroushlib.IncomingMessage, router *soroushlib.MessageRouter) {
+	decrypted, err := DecryptPayload(msg.Text, tm.cfg.PairingPIN)
+	if err != nil {
+		// Normal case: not for us or not ciphertext
+		return
+	}
+
+	if decrypted != "WAKEUP" {
+		logger.Debug(component, "Fallback Listener: Decrypted payload is not WAKEUP", "payload", decrypted)
+		return
+	}
+
+	logger.Info(component, "Fallback Listener: Received WAKEUP ping", "from_user_id", msg.FromUserID)
+
+	// Verify sender role (must be a registered account)
+	var acct models.SoroushAccount
+	if err := db.DB.Where("soroush_user_id = ?", msg.FromUserID).First(&acct).Error; err != nil {
+		logger.Warn(component, "Fallback Listener: Rejected WAKEUP from unregistered user", "from_user_id", msg.FromUserID)
+		return
+	}
+
+	// Prepare config response payload
+	payload := FallbackConfigPayload{
+		GroupChatID:     tm.cfg.GroupChatID,
+		GroupAccessHash: tm.cfg.GroupAccessHash,
+		PSK:             tm.cfg.PSK,
+	}
+
+	rawJSON, err := json.Marshal(payload)
+	if err != nil {
+		logger.Error(component, "Fallback Listener: Failed to marshal payload", "error", err)
+		return
+	}
+
+	encryptedReply, err := EncryptPayload(string(rawJSON), tm.cfg.PairingPIN)
+	if err != nil {
+		logger.Error(component, "Fallback Listener: Failed to encrypt payload", "error", err)
+		return
+	}
+
+	// Resolve target access hash (either from DB, router cache, or default to msg.FromUserID)
+	accessHash := acct.AccessHash
+	if accessHash == 0 {
+		accessHash = router.GetUserAccessHash(msg.FromUserID)
+	}
+
+	logger.Info(component, "Fallback Listener: Sending encrypted configuration reply", "to_user_id", msg.FromUserID)
+
+	if err := soroushlib.SendTextMessage(ctx, tm.session, msg.FromUserID, accessHash, encryptedReply); err != nil {
+		logger.Error(component, "Fallback Listener: Failed to send reply message", "error", err)
+	} else {
+		logger.Info(component, "Fallback Listener: Reply message sent successfully", "to_user_id", msg.FromUserID)
+	}
 }
 

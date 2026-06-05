@@ -278,6 +278,8 @@ func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 		LoadBalanceAlgo    string `json:"load_balance_algo"`
 		TokenRefreshMinSec int    `json:"token_refresh_min_sec"`
 		TokenRefreshMaxSec int    `json:"token_refresh_max_sec"`
+		ServerHostPhone    string `json:"server_host_phone"`
+		PairingPIN         string `json:"pairing_pin"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -319,11 +321,69 @@ func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 	if req.TokenRefreshMaxSec != 0 {
 		cfg.TokenRefreshMaxSec = req.TokenRefreshMaxSec
 	}
+	if req.ServerHostPhone != "" {
+		cfg.ServerHostPhone = req.ServerHostPhone
+	}
+	if req.PairingPIN != "" {
+		cfg.PairingPIN = req.PairingPIN
+	}
 
 	db.DB.Save(&cfg)
 
 	logger.Info("Soroush", "Tunnel configuration updated")
 	c.JSON(http.StatusOK, gin.H{"status": "saved", "config": cfg})
+}
+
+// GetSoroushGroups handles GET /api/soroush/groups
+// Fetches dialogs using the first verified account and returns groups.
+func (h *SoroushHandler) GetSoroushGroups(c *gin.Context) {
+	var accounts []models.SoroushAccount
+	db.DB.Where("status = ?", "verified").Find(&accounts)
+	if len(accounts) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No verified Soroush accounts available to fetch groups"})
+		return
+	}
+
+	resolverAcct := accounts[0]
+	session, transport := soroushlib.RestoreSession(resolverAcct.AuthKey, resolverAcct.AuthKeyID, resolverAcct.ServerSalt)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := transport.Connect(ctx); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to connect to Soroush: " + err.Error()})
+		return
+	}
+	defer transport.Disconnect()
+
+	if err := session.WarmUpSession(ctx); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to warm up Soroush session: " + err.Error()})
+		return
+	}
+
+	body := soroushlib.BuildGetDialogsRequest()
+	wrapped := soroushlib.WrapInitConnection(soroushlib.SoroushAppID, body)
+	cid, reader, err := session.SendAndWait(ctx, wrapped, true)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch dialogs: " + err.Error()})
+		return
+	}
+
+	groups, err := soroushlib.ParseDialogsForGroups(cid, reader)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse dialogs: " + err.Error()})
+		return
+	}
+
+	// Filter for only group chats (group or supergroup)
+	var filtered []soroushlib.DialogInfo
+	for _, g := range groups {
+		if g.Type == "group" || g.Type == "supergroup" {
+			filtered = append(filtered, g)
+		}
+	}
+
+	c.JSON(http.StatusOK, filtered)
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -345,6 +405,40 @@ func (h *SoroushHandler) StartSoroushEngine(c *gin.Context) {
 		return
 	}
 
+	// Approach 1: Zero-Click Backend Auto-Resolve
+	// Automatically fetch the target group call chat ID and access hash if they are missing
+	if cfg.GroupChatID == 0 || cfg.GroupAccessHash == 0 {
+		logger.Info("Soroush", "Group details missing. Attempting backend auto-resolve...")
+		
+		resolverAcct := accounts[0]
+		session, transport := soroushlib.RestoreSession(resolverAcct.AuthKey, resolverAcct.AuthKeyID, resolverAcct.ServerSalt)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := transport.Connect(ctx); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to connect to Soroush to auto-resolve group: " + err.Error()})
+			return
+		}
+		defer transport.Disconnect()
+
+		if err := session.WarmUpSession(ctx); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to warm up Soroush session for auto-resolve: " + err.Error()})
+			return
+		}
+
+		groupID, groupHash, err := session.AutoResolveTunnelGroup(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to auto-resolve group: " + err.Error()})
+			return
+		}
+
+		cfg.GroupChatID = groupID
+		cfg.GroupAccessHash = groupHash
+		db.DB.Save(&cfg)
+		logger.Info("Soroush", "Auto-resolved and saved tunnel group details", "id", groupID, "hash", groupHash)
+	}
+
 	isServer := h.cfg.AppMode == "server"
 	if err := soroush.StartEngine(&cfg, accounts, isServer); err != nil {
 		logger.Error("Soroush", "Failed to start engine", "error", err)
@@ -359,6 +453,7 @@ func (h *SoroushHandler) StartSoroushEngine(c *gin.Context) {
 		"status":     "started",
 		"is_running": true,
 		"workers":    len(accounts),
+		"config":     cfg,
 	})
 }
 

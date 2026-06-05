@@ -62,6 +62,27 @@ export const SoroushPage: React.FC = () => {
   const [cfgTokenRefreshMin, setCfgTokenRefreshMin] = useState(420);
   const [cfgTokenRefreshMax, setCfgTokenRefreshMax] = useState(540);
 
+  const [cfgServerHostPhone, setCfgServerHostPhone] = useState('');
+  const [cfgPairingPIN, setCfgPairingPIN] = useState('');
+
+  const [groups, setGroups] = useState<any[]>([]);
+  const [isFetchingGroups, setIsFetchingGroups] = useState(false);
+
+  const fetchGroups = async () => {
+    setIsFetchingGroups(true);
+    try {
+      const r = await fetch('/api/soroush/groups', { headers: authHeaders() });
+      if (r.ok) {
+        const d = await r.json();
+        setGroups(d || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch groups", err);
+    } finally {
+      setIsFetchingGroups(false);
+    }
+  };
+
   const flash = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text });
     setTimeout(() => setMessage(null), 5000);
@@ -92,6 +113,8 @@ export const SoroushPage: React.FC = () => {
           setCfgLoadBalanceAlgo(c.load_balance_algo || 'least-latency');
           setCfgTokenRefreshMin(c.token_refresh_min_sec || 420);
           setCfgTokenRefreshMax(c.token_refresh_max_sec || 540);
+          setCfgServerHostPhone(c.server_host_phone || '');
+          setCfgPairingPIN(c.pairing_pin || '');
         }
       }
     } catch {}
@@ -106,11 +129,22 @@ export const SoroushPage: React.FC = () => {
 
   const refreshAll = async () => {
     setIsLoading(true);
-    await Promise.all([fetchAccounts(), fetchConfig(), fetchEngineStatus()]);
+    await fetchAccounts();
+    await Promise.all([fetchConfig(), fetchEngineStatus()]);
     setIsLoading(false);
   };
 
-  useEffect(() => { refreshAll(); }, []);
+  useEffect(() => {
+    refreshAll();
+  }, []);
+
+  useEffect(() => {
+    if (accounts.some(a => a.status === 'verified')) {
+      fetchGroups();
+    } else {
+      setGroups([]);
+    }
+  }, [accounts]);
 
   const addAccount = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -169,6 +203,7 @@ export const SoroushPage: React.FC = () => {
           group_chat_id: cfgGroupChatId, group_access_hash: cfgGroupAccessHash, psk: cfgPSK,
           livekit_url: cfgLiveKitURL, socks_port: cfgSocksPort, max_workers: cfgMaxWorkers,
           load_balance_algo: cfgLoadBalanceAlgo, token_refresh_min_sec: cfgTokenRefreshMin, token_refresh_max_sec: cfgTokenRefreshMax,
+          server_host_phone: cfgServerHostPhone, pairing_pin: cfgPairingPIN,
         }),
       });
       if (r.ok) { flash('success', 'Configuration saved'); fetchConfig(); }
@@ -330,6 +365,28 @@ export const SoroushPage: React.FC = () => {
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                <div style={{ gridColumn: 'span 2' }}>
+                  <label style={labelStyle}>Select Target Group (Auto-fills ID & Access Hash)</label>
+                  <select
+                    value={groups.some(g => g.id === cfgGroupChatId) ? cfgGroupChatId : ''}
+                    onChange={e => {
+                      const selectedId = Number(e.target.value);
+                      const g = groups.find(x => x.id === selectedId);
+                      if (g) {
+                        setCfgGroupChatId(g.id);
+                        setCfgGroupAccessHash(g.accessHash);
+                      }
+                    }}
+                    style={inputStyle}
+                    disabled={isFetchingGroups || groups.length === 0}
+                  >
+                    <option value="">{isFetchingGroups ? 'Fetching groups...' : groups.length === 0 ? 'No groups available (add/verify a Soroush account first)' : 'Select Soroush group...'}</option>
+                    {groups.map(g => (
+                      <option key={g.id} value={g.id}>{g.title} (ID: {g.id})</option>
+                    ))}
+                  </select>
+                </div>
+
                 <div>
                   <label style={labelStyle}>Group Chat ID</label>
                   <input type="number" value={cfgGroupChatId} onChange={e => setCfgGroupChatId(Number(e.target.value))} style={inputStyle} />
@@ -352,6 +409,19 @@ export const SoroushPage: React.FC = () => {
                   </div>
                 </div>
                 <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>In-band DataChannel authentication key. Must match on both server and client.</span>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                <div>
+                  <label style={labelStyle}>Server Host Phone Number (In-band Fallback)</label>
+                  <input type="text" placeholder="+98..." value={cfgServerHostPhone} onChange={e => setCfgServerHostPhone(e.target.value)} style={inputStyle} />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>The Soroush phone number of the Server node to query for config pings.</span>
+                </div>
+                <div>
+                  <label style={labelStyle}>Pairing PIN (Fallback encryption key)</label>
+                  <input type="text" maxLength={6} placeholder="123456" value={cfgPairingPIN} onChange={e => setCfgPairingPIN(e.target.value)} style={inputStyle} />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>6-digit symmetric key for encrypting and decrypting fallback payloads.</span>
+                </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 16 }}>

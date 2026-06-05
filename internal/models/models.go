@@ -95,6 +95,8 @@ type SoroushTunnelConfig struct {
 	GroupAccessHash int64  `json:"group_access_hash"`
 	// Security & Routing (In-band DataChannel authentication)
 	PSK             string `json:"psk"`                                           // Pre-Shared Key for worker auth
+	ServerHostPhone string `json:"server_host_phone"`                             // Soroush phone number of the server
+	PairingPIN      string `json:"pairing_pin"`                                   // Symmetric PIN to encrypt bootstrap payloads
 	// LiveKit Settings (from log analysis: wss://k.splus.ir:8446)
 	LiveKitURL      string `json:"livekit_url" gorm:"default:'wss://k.splus.ir:8446'"`
 	// Local Proxy
