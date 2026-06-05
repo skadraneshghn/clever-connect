@@ -126,6 +126,13 @@ const router = createBrowserRouter([
   { path: '*', element: <Navigate to="/dashboard" replace /> },
 ]);
 
+import { GlobalDialog } from './components/molecules/GlobalDialog';
+
 export default function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <>
+      <RouterProvider router={router} />
+      <GlobalDialog />
+    </>
+  );
 }

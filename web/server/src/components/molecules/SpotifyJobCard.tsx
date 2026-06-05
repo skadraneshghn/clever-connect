@@ -1,6 +1,7 @@
 import React from 'react';
 import type { SpotifyJob } from '../../store/jobsStore';
 import { FiTrash2, FiDownload, FiRefreshCw, FiXCircle, FiMusic, FiExternalLink } from 'react-icons/fi';
+import { showGlobalConfirm } from '../../store/dialogStore';
 
 interface SpotifyJobCardProps {
   job: SpotifyJob;
@@ -229,7 +230,7 @@ export const SpotifyJobCard: React.FC<SpotifyJobCardProps> = ({ job, token, onCa
             )}
             <button
               className="btn btn--sm"
-              onClick={() => { if (confirm('Remove this job?')) onDelete(job.id, isCompleted); }}
+              onClick={async () => { if (await showGlobalConfirm('Remove this job?', { title: 'Remove Job', variant: 'warning' })) onDelete(job.id, isCompleted); }}
               title="Delete"
               style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.3)' }}
             >

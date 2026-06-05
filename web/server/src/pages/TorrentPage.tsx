@@ -6,6 +6,7 @@ import {
 	FiGlobe, FiCheck, FiX, FiLink, FiDownloadCloud, FiServer,
 	FiChevronLeft, FiFolderPlus, FiInfo, FiDownload, FiLayers
 } from 'react-icons/fi';
+import { showGlobalAlert } from '../store/dialogStore';
 
 interface TorrentJob {
 	info_hash: string;
@@ -307,7 +308,7 @@ export const TorrentPage: React.FC = () => {
 				fetchConfig();
 			} else {
 				const data = await res.json();
-				alert(data.error || 'Failed to save configuration');
+				showGlobalAlert(data.error || 'Failed to save configuration', { title: 'Configuration Error', variant: 'error' });
 			}
 		} catch (err) {
 			console.error(err);
@@ -381,7 +382,7 @@ export const TorrentPage: React.FC = () => {
 				fetchDirectories(currentPath);
 			} else {
 				const err = await res.json();
-				alert(`Failed: ${err.error || 'Unknown error'}`);
+				showGlobalAlert(`Failed: ${err.error || 'Unknown error'}`, { title: 'Directory Error', variant: 'error' });
 			}
 		} catch (err) {
 			console.error('Create folder error', err);
@@ -488,12 +489,12 @@ export const TorrentPage: React.FC = () => {
 						}
 					} else {
 						setAddStep('input');
-						alert('Failed to add torrent: info hash missing');
+						showGlobalAlert('Failed to add torrent: info hash missing', { title: 'Add Torrent Failed', variant: 'error' });
 					}
 				} else {
 					const data = res ? await res.json() : {};
 					setAddStep('input');
-					alert(data.error || 'Failed to add torrent');
+					showGlobalAlert(data.error || 'Failed to add torrent', { title: 'Add Torrent Failed', variant: 'error' });
 				}
 			} else {
 				const isBulk = magnets.length > 1;
@@ -532,14 +533,14 @@ export const TorrentPage: React.FC = () => {
 								}
 							} else {
 								setAddStep('input');
-								alert('Failed to add torrent: info hash missing');
+								showGlobalAlert('Failed to add torrent: info hash missing', { title: 'Add Torrent Failed', variant: 'error' });
 							}
 						}
 					} else {
 						const data = res ? await res.json() : {};
 						if (!isBulk) {
 							setAddStep('input');
-							alert(data.error || 'Failed to add torrent');
+							showGlobalAlert(data.error || 'Failed to add torrent', { title: 'Add Torrent Failed', variant: 'error' });
 							return;
 						} else {
 							console.error(`Failed to add magnet: ${magnet}`, data.error);
@@ -558,7 +559,7 @@ export const TorrentPage: React.FC = () => {
 		} catch (err) {
 			console.error(err);
 			setAddStep('input');
-			alert('Network error adding torrent');
+			showGlobalAlert('Network error adding torrent', { title: 'Network Error', variant: 'error' });
 		}
 	};
 
@@ -622,7 +623,7 @@ export const TorrentPage: React.FC = () => {
 			if (res.ok) {
 				const data = await res.json();
 				if (data.status === 'fetching_metadata') {
-					alert('Torrent metadata is still fetching from peers. Please wait.');
+					showGlobalAlert('Torrent metadata is still fetching from peers. Please wait.', { title: 'Metadata Fetching', variant: 'info' });
 					setSelectedTorrent(null);
 				} else {
 					setTorrentFiles(data || []);

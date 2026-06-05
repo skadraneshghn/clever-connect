@@ -6,6 +6,7 @@ import {
   FiChevronDown, FiChevronUp, FiActivity, FiCpu, FiArrowUp, FiArrowDown,
   FiTerminal, FiSliders, FiCalendar
 } from 'react-icons/fi';
+import { showGlobalConfirm } from '../store/dialogStore';
 
 interface SchedulerJob {
   id: number; uuid: string; type: string; name: string; description: string;
@@ -132,7 +133,7 @@ export const JobSchedulerPage: React.FC = () => {
   };
 
   const purge = async()=>{
-    if(!confirm('Purge all completed/failed jobs older than '+config.purge_after_days+' days?')) return;
+    if(!(await showGlobalConfirm('Purge all completed/failed jobs older than '+config.purge_after_days+' days?', { title: 'Purge Jobs', variant: 'warning' }))) return;
     await api('/purge',{method:'POST',body:JSON.stringify({older_than_days:config.purge_after_days})});
     refresh();
   };
