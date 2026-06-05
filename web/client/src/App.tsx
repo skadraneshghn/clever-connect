@@ -17,6 +17,7 @@ const YouTubePage = lazy(() => import('./pages/YouTubePage').then(m => ({ defaul
 const SpotifyPage = lazy(() => import('./pages/SpotifyPage').then(m => ({ default: m.SpotifyPage })));
 const JobSchedulerPage = lazy(() => import('./pages/JobSchedulerPage').then(m => ({ default: m.JobSchedulerPage })));
 const TelegramSettingsPage = lazy(() => import('./pages/TelegramSettingsPage').then(m => ({ default: m.TelegramSettingsPage })));
+const SoroushPage = lazy(() => import('./pages/SoroushPage').then(m => ({ default: m.SoroushPage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -52,6 +53,7 @@ const ProtectedLayout: React.FC = () => {
     spotify: ['Storage', 'Spotify Downloader'],
     scheduler: ['System', 'Job Scheduler'],
     'telegram-settings': ['Settings', 'Telegram Bot'],
+    'soroush-tunnel': ['Protocol', 'Soroush WebRTC Tunnel'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -119,6 +121,7 @@ const router = createBrowserRouter([
       { path: 'spotify', element: <SpotifyPage /> },
       { path: 'scheduler', element: <JobSchedulerPage /> },
       { path: 'telegram-settings', element: <TelegramSettingsPage /> },
+      { path: 'soroush-tunnel', element: <SoroushPage /> },
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },

@@ -14,6 +14,7 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/scheduler"
+	"clever-connect/internal/soroush"
 	"clever-connect/internal/spotify"
 	"clever-connect/internal/telegram"
 	"clever-connect/internal/torrent"
@@ -94,6 +95,25 @@ func main() {
 		}
 	}
 
+	// Auto-start Soroush WebRTC tunnel engine if configured and active
+	{
+		var soroushCfg models.SoroushTunnelConfig
+		if err := db.DB.First(&soroushCfg).Error; err == nil && soroushCfg.IsActive {
+			var accounts []models.SoroushAccount
+			db.DB.Where("status = ?", "verified").Find(&accounts)
+			if len(accounts) > 0 {
+				isServer := cfg.AppMode == "server"
+				logger.Info("Soroush", "Auto-starting Soroush tunnel engine",
+					"mode", cfg.AppMode,
+					"accounts", len(accounts),
+				)
+				if err := soroush.StartEngine(&soroushCfg, accounts, isServer); err != nil {
+					logger.Error("Soroush", "Failed to auto-start tunnel engine", "error", err)
+				}
+			}
+		}
+	}
+
 	// Setup Gin Router in release mode
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = logger.GinWriter()
@@ -117,6 +137,7 @@ func main() {
 	spotifyHandler := handlers.NewSpotifyHandler(cfg)
 	telegramHandler := handlers.NewTelegramHandler(cfg)
 	schedulerHandler := handlers.NewSchedulerHandler(cfg)
+	soroushHandler := handlers.NewSoroushHandler(cfg)
 
 	// API Group
 	api := router.Group("/api")
@@ -225,6 +246,19 @@ func main() {
 			protected.POST("/scheduler/config", schedulerHandler.SaveConfig)
 			protected.GET("/scheduler/stats", schedulerHandler.GetStats)
 			protected.POST("/scheduler/purge", schedulerHandler.PurgeJobs)
+
+			// Soroush WebRTC Tunnel API Endpoints (ADDITIVE — parallel to Ehco)
+			protected.GET("/soroush/accounts", soroushHandler.GetSoroushAccounts)
+			protected.POST("/soroush/accounts", soroushHandler.AddSoroushAccount)
+			protected.DELETE("/soroush/accounts/:id", soroushHandler.DeleteSoroushAccount)
+			protected.POST("/soroush/accounts/:id/send-code", soroushHandler.SendVerificationCode)
+			protected.POST("/soroush/accounts/:id/verify", soroushHandler.VerifyAccount)
+			protected.GET("/soroush/config", soroushHandler.GetSoroushConfig)
+			protected.PUT("/soroush/config", soroushHandler.UpdateSoroushConfig)
+			protected.POST("/soroush/engine/start", soroushHandler.StartSoroushEngine)
+			protected.POST("/soroush/engine/stop", soroushHandler.StopSoroushEngine)
+			protected.GET("/soroush/engine/status", soroushHandler.GetSoroushEngineStatus)
+			protected.POST("/soroush/test-token", soroushHandler.TestTokenFetch)
 		}
 	}
 

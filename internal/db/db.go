@@ -1,6 +1,8 @@
 package db
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,7 +90,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 	if DB.Dialector.Name() == "mysql" {
 		migrateDB = DB.Set("gorm:table_options", "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
 	}
-	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}, &models.SchedulerJob{}, &models.SchedulerJobLog{}, &models.SchedulerConfig{}, &models.TelegramSubscriber{}, &models.YouTubeJob{}, &models.YouTubeConfig{}, &models.FileRegistry{}, &models.SpotifyConfig{}, &models.SpotifyJob{}); err != nil {
+	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.SoroushAccount{}, &models.SoroushTunnelConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}, &models.SchedulerJob{}, &models.SchedulerJobLog{}, &models.SchedulerConfig{}, &models.TelegramSubscriber{}, &models.YouTubeJob{}, &models.YouTubeConfig{}, &models.FileRegistry{}, &models.SpotifyConfig{}, &models.SpotifyJob{}); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
 	
@@ -147,6 +149,27 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			EmbedMetadata:    true,
 			EmbedLyrics:      true,
 			FileNameTemplate: "{artist} - {title}",
+		})
+	}
+
+	// Seed default SoroushTunnelConfig
+	var soroushCfg models.SoroushTunnelConfig
+	if err := DB.First(&soroushCfg).Error; err != nil {
+		logger.Info("DB", "Seeding default Soroush tunnel configuration")
+		// Generate a cryptographically secure random PSK
+		pskBytes := make([]byte, 32)
+		if _, err := rand.Read(pskBytes); err != nil {
+			logger.Fatal("DB", "Failed to generate PSK for Soroush tunnel", "error", err)
+		}
+		DB.Create(&models.SoroushTunnelConfig{
+			PSK:                hex.EncodeToString(pskBytes),
+			LiveKitURL:          "wss://k.splus.ir:8446",
+			SocksPort:           4046,
+			EngineMode:          "hybrid",
+			MaxWorkers:          5,
+			LoadBalanceAlgo:     "least-latency",
+			TokenRefreshMinSec:  420,
+			TokenRefreshMaxSec:  540,
 		})
 	}
 

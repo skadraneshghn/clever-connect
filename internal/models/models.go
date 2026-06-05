@@ -60,6 +60,56 @@ type EhcoClientConfig struct {
 	BridgeSNI    string `json:"bridge_sni"`
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Soroush WebRTC "The Hive" Tunnel Models (ADDITIVE — parallel to Ehco)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// SoroushAccount stores authenticated Soroush messenger accounts used as
+// tunnel workers. Each account holds its MTProto auth key material for
+// autonomous JWT token generation via the Soroush LiveKit SFU.
+type SoroushAccount struct {
+	gorm.Model
+	PhoneNumber   string `gorm:"size:20;uniqueIndex;not null" json:"phone_number"`
+	Name          string `gorm:"size:100" json:"name"`
+	SoroushUserID int64  `json:"soroush_user_id"`
+	AccessHash    int64  `json:"access_hash"`
+	DisplayName   string `gorm:"size:100" json:"display_name"`
+	AuthKey       []byte `json:"-"`                              // 256-byte MTProto auth key
+	AuthKeyID     []byte `json:"-"`                              // 8-byte auth key ID
+	ServerSalt    []byte `json:"-"`                              // 8-byte server salt
+	DcID          int    `json:"dc_id" gorm:"default:2"`
+	Role          string `json:"role" gorm:"size:20;default:'worker'"`   // 'host' or 'worker'
+	IsServerNode  bool   `json:"is_server_node" gorm:"default:false"`
+	Status        string `json:"status" gorm:"size:30;default:'idle'"`   // idle, connected, busy, tunnel_active, error
+	LastActive    string `json:"last_active"`
+}
+
+// SoroushTunnelConfig stores the Hive tunnel engine configuration.
+// This is a singleton row — only one config exists at a time.
+// The PSK field is required for in-band DataChannel authentication
+// to prevent rogue participants from crashing the yamux multiplexer.
+type SoroushTunnelConfig struct {
+	gorm.Model
+	// Group Settings (for token generation via MTProto)
+	GroupChatID     int64  `json:"group_chat_id"`
+	GroupAccessHash int64  `json:"group_access_hash"`
+	// Security & Routing (In-band DataChannel authentication)
+	PSK             string `json:"psk"`                                           // Pre-Shared Key for worker auth
+	// LiveKit Settings (from log analysis: wss://k.splus.ir:8446)
+	LiveKitURL      string `json:"livekit_url" gorm:"default:'wss://k.splus.ir:8446'"`
+	// Local Proxy
+	SocksPort       int    `json:"socks_port" gorm:"default:4046"`
+	// Engine State
+	IsActive        bool   `json:"is_active" gorm:"default:false"`
+	EngineMode      string `json:"engine_mode" gorm:"size:30;default:'hybrid'"`    // 'hybrid' (LiveKit via MTProto token)
+	// Swarm Settings
+	MaxWorkers      int    `json:"max_workers" gorm:"default:5"`
+	LoadBalanceAlgo string `json:"load_balance_algo" gorm:"size:30;default:'least-latency'"` // 'round-robin', 'least-latency'
+	// Token Refresh (with jitter to avoid behavioral fingerprinting)
+	TokenRefreshMinSec int `json:"token_refresh_min_sec" gorm:"default:420"` // 7 minutes
+	TokenRefreshMaxSec int `json:"token_refresh_max_sec" gorm:"default:540"` // 9 minutes
+}
+
 // LeechConfig stores the advanced settings for the download manager
 type LeechConfig struct {
 	gorm.Model

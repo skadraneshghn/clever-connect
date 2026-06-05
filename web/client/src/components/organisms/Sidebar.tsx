@@ -14,6 +14,7 @@ const navItems = [
     id: 'protocol', label: 'Protocol', icon: FiCpu,
     children: [
       { id: 'ehco-tunnel', label: 'Ehco' },
+      { id: 'soroush-tunnel', label: 'Soroush' },
     ]
   },
   {

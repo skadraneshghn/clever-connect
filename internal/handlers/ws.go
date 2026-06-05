@@ -16,6 +16,7 @@ import (
 	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
+	"clever-connect/internal/soroush"
 	"clever-connect/internal/spotify"
 	"clever-connect/internal/torrent"
 	"clever-connect/internal/youtube"
@@ -80,12 +81,13 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 				totalUpload += uploadSpeed / 10
 
 				msg = gin.H{
-					"type":          "bandwidth",
-					"upload":        uploadSpeed,
-					"download":      downloadSpeed,
-					"totalDownload": totalDownload,
-					"totalUpload":   totalUpload,
-					"latency":       latency,
+					"type":           "bandwidth",
+					"upload":         uploadSpeed,
+					"download":       downloadSpeed,
+					"totalDownload":  totalDownload,
+					"totalUpload":    totalUpload,
+					"latency":        latency,
+					"soroush_tunnel": soroush.GetStatus(),
 				}
 			} else {
 				// Server Telemetry
@@ -153,6 +155,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 					"active_leeches":        activeLeechCount,
 					"active_torrents":       activeTorrentCount,
 					"active_scheds":         activeSchedulerCount,
+					"soroush_tunnel":        soroush.GetStatus(),
 				}
 			}
 
