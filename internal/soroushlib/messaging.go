@@ -966,9 +966,20 @@ func BuildImportContactRequest(phone string) []byte {
 func ScanForUserInRaw(raw []byte) (int64, int64, error) {
 	for i := 0; i+4 <= len(raw); i += 4 {
 		cid := binary.LittleEndian.Uint32(raw[i:])
-		if cid == 0x21BB815E { // user
+		if cid == 0x21BB815E { // user (old layout)
 			r := NewTLReader(raw[i+4:])
 			flags, _ := r.ReadInt32()
+			id, _ := r.ReadInt64()
+			var accessHash int64
+			if flags&(1<<0) != 0 {
+				accessHash, _ = r.ReadInt64()
+			}
+			return id, accessHash, nil
+		}
+		if cid == 0x274DB727 { // user (new layout with flags2)
+			r := NewTLReader(raw[i+4:])
+			flags, _ := r.ReadInt32()
+			_, _ = r.ReadInt32() // flags2
 			id, _ := r.ReadInt64()
 			var accessHash int64
 			if flags&(1<<0) != 0 {
