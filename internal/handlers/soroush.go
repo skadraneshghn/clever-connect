@@ -279,17 +279,12 @@ func (h *SoroushHandler) GetSoroushConfig(c *gin.Context) {
 // UpdateSoroushConfig handles PUT /api/soroush/config
 func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 	var req struct {
-		GroupChatID        int64  `json:"group_chat_id"`
-		GroupAccessHash    int64  `json:"group_access_hash"`
-		PSK                string `json:"psk"`
-		LiveKitURL         string `json:"livekit_url"`
-		SocksPort          int    `json:"socks_port"`
+		ServerPhoneNumber string `json:"server_phone_number"`
+		PairingPIN        string `json:"pairing_pin"`
+		PSK               string `json:"psk"`
+		SocksPort         int    `json:"socks_port"`
 		MaxWorkers         int    `json:"max_workers"`
 		LoadBalanceAlgo    string `json:"load_balance_algo"`
-		TokenRefreshMinSec int    `json:"token_refresh_min_sec"`
-		TokenRefreshMaxSec int    `json:"token_refresh_max_sec"`
-		ServerHostPhone    string `json:"server_host_phone"`
-		PairingPIN         string `json:"pairing_pin"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -304,17 +299,14 @@ func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 	}
 
 	// Update only non-zero fields
-	if req.GroupChatID != 0 {
-		cfg.GroupChatID = req.GroupChatID
+	if req.ServerPhoneNumber != "" {
+		cfg.ServerPhoneNumber = req.ServerPhoneNumber
 	}
-	if req.GroupAccessHash != 0 {
-		cfg.GroupAccessHash = req.GroupAccessHash
+	if req.PairingPIN != "" {
+		cfg.PairingPIN = req.PairingPIN
 	}
 	if req.PSK != "" {
 		cfg.PSK = req.PSK
-	}
-	if req.LiveKitURL != "" {
-		cfg.LiveKitURL = req.LiveKitURL
 	}
 	if req.SocksPort != 0 {
 		cfg.SocksPort = req.SocksPort
@@ -324,18 +316,6 @@ func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 	}
 	if req.LoadBalanceAlgo != "" {
 		cfg.LoadBalanceAlgo = req.LoadBalanceAlgo
-	}
-	if req.TokenRefreshMinSec != 0 {
-		cfg.TokenRefreshMinSec = req.TokenRefreshMinSec
-	}
-	if req.TokenRefreshMaxSec != 0 {
-		cfg.TokenRefreshMaxSec = req.TokenRefreshMaxSec
-	}
-	if req.ServerHostPhone != "" {
-		cfg.ServerHostPhone = req.ServerHostPhone
-	}
-	if req.PairingPIN != "" {
-		cfg.PairingPIN = req.PairingPIN
 	}
 
 	db.DB.Save(&cfg)
@@ -415,40 +395,6 @@ func (h *SoroushHandler) StartSoroushEngine(c *gin.Context) {
 		return
 	}
 
-	// Approach 1: Zero-Click Backend Auto-Resolve
-	// Automatically fetch the target group call chat ID and access hash if they are missing
-	if cfg.GroupChatID == 0 || cfg.GroupAccessHash == 0 {
-		logger.Info("Soroush", "Group details missing. Attempting backend auto-resolve...")
-		
-		resolverAcct := accounts[0]
-		session, transport := soroushlib.RestoreSession(resolverAcct.AuthKey, resolverAcct.AuthKeyID, resolverAcct.ServerSalt)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		if err := transport.Connect(ctx); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to connect to Soroush to auto-resolve group: " + err.Error()})
-			return
-		}
-		defer transport.Disconnect()
-
-		if err := session.WarmUpSession(ctx); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to warm up Soroush session for auto-resolve: " + err.Error()})
-			return
-		}
-
-		groupID, groupHash, err := session.AutoResolveTunnelGroup(ctx)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to auto-resolve group: " + err.Error()})
-			return
-		}
-
-		cfg.GroupChatID = groupID
-		cfg.GroupAccessHash = groupHash
-		db.DB.Save(&cfg)
-		logger.Info("Soroush", "Auto-resolved and saved tunnel group details", "id", groupID, "hash", groupHash)
-	}
-
 	isServer := h.cfg.AppMode == "server"
 	if err := soroush.StartEngine(&cfg, accounts, isServer); err != nil {
 		logger.Error("Soroush", "Failed to start engine", "error", err)
@@ -486,77 +432,17 @@ func (h *SoroushHandler) GetSoroushEngineStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": status})
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// Token Testing / Debug
-// ════════════════════════════════════════════════════════════════════════════════
-
 // TestTokenFetch handles POST /api/soroush/test-token
-// Tests GetGroupCallToken() for a specific account — useful for debugging.
 func (h *SoroushHandler) TestTokenFetch(c *gin.Context) {
-	var req struct {
-		AccountID uint `json:"account_id" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
-		return
-	}
-
-	var account models.SoroushAccount
-	if err := db.DB.First(&account, req.AccountID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found"})
-		return
-	}
-
-	if len(account.AuthKey) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Account not verified — no auth key"})
-		return
-	}
-
-	var cfg models.SoroushTunnelConfig
-	if err := db.DB.First(&cfg).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Soroush tunnel config not found"})
-		return
-	}
-
-	// TODO: Actually call fetchToken when the TL constructor is implemented
-	logger.Info("Soroush", "Token test requested",
-		"account_id", req.AccountID,
-		"phone", maskPhoneForLog(account.PhoneNumber),
-	)
-
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "placeholder",
-		"message": "Token fetch TL constructor not yet implemented — pending JS bundle reverse engineering",
-		"account": gin.H{
-			"id":    account.ID,
-			"phone": maskPhoneForLog(account.PhoneNumber),
-			"name":  account.DisplayName,
-		},
-		"config": gin.H{
-			"group_chat_id": cfg.GroupChatID,
-			"livekit_url":   cfg.LiveKitURL,
-		},
+		"status":  "not_needed",
+		"message": "Direct P2P WebRTC DataChannel swarm does not require group call room tokens.",
 	})
 }
-
-// maskPhoneForLog masks a phone number for safe logging output.
-func maskPhoneForLog(phone string) string {
-	if len(phone) < 4 {
-		return "****"
-	}
-	return phone[:3] + "****" + phone[len(phone)-2:]
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// Sync Protocol (Phase 1 & 2 — Server Provisioning + Client Bootstrap)
-// ════════════════════════════════════════════════════════════════════════════════
 
 // SyncConfig handles GET /api/soroush/sync
 // Server-side: Serializes the tunnel configuration into a JSON payload
 // that the client can fetch during the temporary open internet window.
-// The PSK is included but a verification_token (HKDF-derived) is also
-// provided for the client to validate the payload integrity.
 func (h *SoroushHandler) SyncConfig(c *gin.Context) {
 	var cfg models.SoroushTunnelConfig
 	if err := db.DB.First(&cfg).Error; err != nil {
@@ -564,33 +450,22 @@ func (h *SoroushHandler) SyncConfig(c *gin.Context) {
 		return
 	}
 
-	if cfg.GroupChatID == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Server has no group call configured — initialize first"})
-		return
-	}
-
-	// Derive a verification token from PSK for integrity checking
 	verifyToken, err := soroush.DeriveVerificationToken(cfg.PSK)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to derive verification token"})
 		return
 	}
 
-	logger.Info("Soroush", "Sync config served to client",
-		"group_chat_id", cfg.GroupChatID,
-	)
+	logger.Info("Soroush", "Sync config served to client")
 
 	c.JSON(http.StatusOK, gin.H{
 		"sync_payload": gin.H{
-			"group_chat_id":      cfg.GroupChatID,
-			"group_access_hash":  cfg.GroupAccessHash,
+			"server_phone_number": cfg.ServerPhoneNumber,
+			"pairing_pin":        cfg.PairingPIN,
 			"psk":                cfg.PSK,
-			"livekit_url":        cfg.LiveKitURL,
 			"socks_port":         cfg.SocksPort,
 			"max_workers":        cfg.MaxWorkers,
 			"load_balance_algo":  cfg.LoadBalanceAlgo,
-			"token_refresh_min":  cfg.TokenRefreshMinSec,
-			"token_refresh_max":  cfg.TokenRefreshMaxSec,
 			"verification_token": verifyToken,
 		},
 	})
@@ -598,11 +473,11 @@ func (h *SoroushHandler) SyncConfig(c *gin.Context) {
 
 // IngestSync handles POST /api/soroush/sync
 // Client-side: Receives the sync payload from the server and commits it
-// to the local SQLite database. This is the "open internet window" bootstrap.
+// to the local SQLite database.
 func (h *SoroushHandler) IngestSync(c *gin.Context) {
 	var req struct {
-		ServerURL string `json:"server_url" binding:"required"` // e.g. "https://my-server.example.com"
-		Token     string `json:"token" binding:"required"`      // Bearer token for the server
+		ServerURL string `json:"server_url" binding:"required"`
+		Token     string `json:"token" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -610,7 +485,6 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 		return
 	}
 
-	// Fetch the sync payload from the remote server
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -635,16 +509,13 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 
 	var syncResp struct {
 		SyncPayload struct {
-			GroupChatID     int64  `json:"group_chat_id"`
-			GroupAccessHash int64  `json:"group_access_hash"`
-			PSK             string `json:"psk"`
-			LiveKitURL      string `json:"livekit_url"`
-			SocksPort       int    `json:"socks_port"`
-			MaxWorkers      int    `json:"max_workers"`
-			LoadBalanceAlgo string `json:"load_balance_algo"`
-			TokenRefreshMin int    `json:"token_refresh_min"`
-			TokenRefreshMax int    `json:"token_refresh_max"`
-			VerifyToken     string `json:"verification_token"`
+			ServerPhoneNumber string `json:"server_phone_number"`
+			PairingPIN        string `json:"pairing_pin"`
+			PSK               string `json:"psk"`
+			SocksPort         int    `json:"socks_port"`
+			MaxWorkers         int    `json:"max_workers"`
+			LoadBalanceAlgo    string `json:"load_balance_algo"`
+			VerifyToken       string `json:"verification_token"`
 		} `json:"sync_payload"`
 	}
 
@@ -655,24 +526,21 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 
 	p := syncResp.SyncPayload
 
-	// Verify the payload integrity via HKDF-derived token
 	localVerify, err := soroush.DeriveVerificationToken(p.PSK)
 	if err != nil || localVerify != p.VerifyToken {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Sync payload integrity check failed — PSK verification mismatch"})
 		return
 	}
 
-	// Commit to local DB
 	var cfg models.SoroushTunnelConfig
 	if err := db.DB.First(&cfg).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Local Soroush tunnel config not initialized"})
 		return
 	}
 
-	cfg.GroupChatID = p.GroupChatID
-	cfg.GroupAccessHash = p.GroupAccessHash
+	cfg.ServerPhoneNumber = p.ServerPhoneNumber
+	cfg.PairingPIN = p.PairingPIN
 	cfg.PSK = p.PSK
-	cfg.LiveKitURL = p.LiveKitURL
 	if p.SocksPort > 0 {
 		cfg.SocksPort = p.SocksPort
 	}
@@ -682,18 +550,11 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 	if p.LoadBalanceAlgo != "" {
 		cfg.LoadBalanceAlgo = p.LoadBalanceAlgo
 	}
-	if p.TokenRefreshMin > 0 {
-		cfg.TokenRefreshMinSec = p.TokenRefreshMin
-	}
-	if p.TokenRefreshMax > 0 {
-		cfg.TokenRefreshMaxSec = p.TokenRefreshMax
-	}
 
 	db.DB.Save(&cfg)
 
 	logger.Info("Soroush", "Client synced with server",
-		"group_chat_id", cfg.GroupChatID,
-		"livekit_url", cfg.LiveKitURL,
+		"server_phone", cfg.ServerPhoneNumber,
 	)
 
 	c.JSON(http.StatusOK, gin.H{
@@ -701,5 +562,13 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 		"message": "Configuration ingested from server. Global internet window can now be closed.",
 		"config":  cfg,
 	})
+}
+
+// maskPhoneForLog masks a phone number for safe logging output.
+func maskPhoneForLog(phone string) string {
+	if len(phone) < 4 {
+		return "****"
+	}
+	return phone[:3] + "****" + phone[len(phone)-2:]
 }
 

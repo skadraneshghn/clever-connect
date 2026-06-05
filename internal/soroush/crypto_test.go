@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+type FallbackConfigPayload struct {
+	GroupChatID     int64  `json:"group_chat_id"`
+	GroupAccessHash int64  `json:"group_access_hash"`
+	PSK             string `json:"psk"`
+}
+
 func TestEncryptDecrypt(t *testing.T) {
 	pin := "123456"
 	plaintext := "WAKEUP"

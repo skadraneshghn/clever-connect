@@ -92,26 +92,14 @@ type SoroushAccount struct {
 // to prevent rogue participants from crashing the yamux multiplexer.
 type SoroushTunnelConfig struct {
 	gorm.Model
-	// Group Settings (for token generation via MTProto)
-	GroupChatID     int64  `json:"group_chat_id"`
-	GroupAccessHash int64  `json:"group_access_hash"`
-	// Security & Routing (In-band DataChannel authentication)
-	PSK             string `json:"psk"`                                           // Pre-Shared Key for worker auth
-	ServerHostPhone string `json:"server_host_phone"`                             // Soroush phone number of the server
-	PairingPIN      string `json:"pairing_pin"`                                   // Symmetric PIN to encrypt bootstrap payloads
-	// LiveKit Settings (from log analysis: wss://k.splus.ir:8446)
-	LiveKitURL      string `json:"livekit_url" gorm:"default:'wss://k.splus.ir:8446'"`
-	// Local Proxy
-	SocksPort       int    `json:"socks_port" gorm:"default:4046"`
-	// Engine State
-	IsActive        bool   `json:"is_active" gorm:"default:false"`
-	EngineMode      string `json:"engine_mode" gorm:"size:30;default:'hybrid'"`    // 'hybrid' (LiveKit via MTProto token)
-	// Swarm Settings
-	MaxWorkers      int    `json:"max_workers" gorm:"default:5"`
-	LoadBalanceAlgo string `json:"load_balance_algo" gorm:"size:30;default:'least-latency'"` // 'round-robin', 'least-latency'
-	// Token Refresh (with jitter to avoid behavioral fingerprinting)
-	TokenRefreshMinSec int `json:"token_refresh_min_sec" gorm:"default:420"` // 7 minutes
-	TokenRefreshMaxSec int `json:"token_refresh_max_sec" gorm:"default:540"` // 9 minutes
+	ServerPhoneNumber string `json:"server_phone_number"` // Soroush phone number of the server
+	PairingPIN        string `json:"pairing_pin"`         // Symmetric AES key to encrypt SDP messages
+	PSK               string `json:"psk"`                 // Pre-Shared Key for worker auth
+	SocksPort         int    `json:"socks_port" gorm:"default:4046"`
+	IsActive          bool   `json:"is_active" gorm:"default:false"`
+	EngineMode        string `json:"engine_mode" gorm:"size:30;default:'swarm'"` // 'swarm' (Message-Signaled P2P Swarm)
+	MaxWorkers        int    `json:"max_workers" gorm:"default:5"`
+	LoadBalanceAlgo   string `json:"load_balance_algo" gorm:"size:30;default:'least-latency'"` // 'round-robin', 'least-latency'
 }
 
 // LeechConfig stores the advanced settings for the download manager

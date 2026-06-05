@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { FiPlay, FiSquare, FiSave, FiRefreshCw, FiPlus, FiTrash2, FiCpu, FiShield, FiUsers, FiSettings, FiSend, FiCheck, FiEye, FiEyeOff, FiActivity, FiDownloadCloud } from 'react-icons/fi';
 import { showGlobalConfirm } from '../store/dialogStore';
 
-
 interface SoroushAccount {
   id: number;
   phone_number: string;
@@ -15,17 +14,14 @@ interface SoroushAccount {
 }
 
 interface TunnelConfig {
-  group_chat_id: number;
-  group_access_hash: number;
+  server_phone_number: string;
+  pairing_pin: string;
   psk: string;
-  livekit_url: string;
   socks_port: number;
   is_active: boolean;
   engine_mode: string;
   max_workers: number;
   load_balance_algo: string;
-  token_refresh_min_sec: number;
-  token_refresh_max_sec: number;
 }
 
 const authHeaders = () => ({
@@ -53,18 +49,12 @@ export const SoroushPage: React.FC = () => {
   const [phoneCodeHash, setPhoneCodeHash] = useState<number[] | null>(null);
 
   // Config form
-  const [cfgGroupChatId, setCfgGroupChatId] = useState(0);
-  const [cfgGroupAccessHash, setCfgGroupAccessHash] = useState(0);
+  const [cfgServerPhoneNumber, setCfgServerPhoneNumber] = useState('');
+  const [cfgPairingPIN, setCfgPairingPIN] = useState('');
   const [cfgPSK, setCfgPSK] = useState('');
-  const [cfgLiveKitURL, setCfgLiveKitURL] = useState('');
   const [cfgSocksPort, setCfgSocksPort] = useState(4046);
   const [cfgMaxWorkers, setCfgMaxWorkers] = useState(5);
   const [cfgLoadBalanceAlgo, setCfgLoadBalanceAlgo] = useState('least-latency');
-  const [cfgTokenRefreshMin, setCfgTokenRefreshMin] = useState(420);
-  const [cfgTokenRefreshMax, setCfgTokenRefreshMax] = useState(540);
-
-  const [cfgServerHostPhone, setCfgServerHostPhone] = useState('');
-  const [cfgPairingPIN, setCfgPairingPIN] = useState('');
 
   // Sync with server
   const [syncServerURL, setSyncServerURL] = useState('');
@@ -92,17 +82,12 @@ export const SoroushPage: React.FC = () => {
         setConfig(c);
         setIsRunning(d.is_running || false);
         if (c) {
-          setCfgGroupChatId(c.group_chat_id || 0);
-          setCfgGroupAccessHash(c.group_access_hash || 0);
+          setCfgServerPhoneNumber(c.server_phone_number || '');
+          setCfgPairingPIN(c.pairing_pin || '');
           setCfgPSK(c.psk || '');
-          setCfgLiveKitURL(c.livekit_url || '');
           setCfgSocksPort(c.socks_port || 4046);
           setCfgMaxWorkers(c.max_workers || 5);
           setCfgLoadBalanceAlgo(c.load_balance_algo || 'least-latency');
-          setCfgTokenRefreshMin(c.token_refresh_min_sec || 420);
-          setCfgTokenRefreshMax(c.token_refresh_max_sec || 540);
-          setCfgServerHostPhone(c.server_host_phone || '');
-          setCfgPairingPIN(c.pairing_pin || '');
         }
       }
     } catch {}
@@ -177,10 +162,12 @@ export const SoroushPage: React.FC = () => {
       const r = await fetch('/api/soroush/config', {
         method: 'PUT', headers: authHeaders(),
         body: JSON.stringify({
-          group_chat_id: cfgGroupChatId, group_access_hash: cfgGroupAccessHash, psk: cfgPSK,
-          livekit_url: cfgLiveKitURL, socks_port: cfgSocksPort, max_workers: cfgMaxWorkers,
-          load_balance_algo: cfgLoadBalanceAlgo, token_refresh_min_sec: cfgTokenRefreshMin, token_refresh_max_sec: cfgTokenRefreshMax,
-          server_host_phone: cfgServerHostPhone, pairing_pin: cfgPairingPIN,
+          server_phone_number: cfgServerPhoneNumber,
+          pairing_pin: cfgPairingPIN,
+          psk: cfgPSK,
+          socks_port: cfgSocksPort,
+          max_workers: cfgMaxWorkers,
+          load_balance_algo: cfgLoadBalanceAlgo,
         }),
       });
       if (r.ok) { flash('success', 'Configuration saved'); fetchConfig(); }
@@ -232,9 +219,9 @@ export const SoroushPage: React.FC = () => {
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Soroush WebRTC Tunnel</h1>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>Soroush P2P Swarm Tunnel</h1>
           <p style={{ fontSize: 12, color: 'var(--color-brand-text)', margin: '4px 0 0' }}>
-            Route traffic through Soroush's domestic LiveKit SFU infrastructure. Operates in parallel with Ehco.
+            Route traffic through an indestructible P2P WebRTC DataChannel swarm. Operates in parallel with Ehco.
           </p>
         </div>
         <button className="btn btn--sm" onClick={refreshAll} disabled={isLoading}>
@@ -262,7 +249,7 @@ export const SoroushPage: React.FC = () => {
               <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Sync with Server</span>
             </div>
             <p style={{ fontSize: 11, color: 'var(--color-brand-text)', lineHeight: 1.5, margin: '0 0 14px' }}>
-              Use this during the <strong>temporary open internet window</strong> to automatically pull Group ID, PSK, and LiveKit URL from your Clever Cloud server. Once synced, the global connection can be closed.
+              Use this during the <strong>temporary open internet window</strong> to automatically pull Server Phone Number, Pairing PIN, and PSK from your Clever Cloud server. Once synced, the global connection can be closed.
             </p>
             <form onSubmit={syncWithServer} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div>
@@ -351,13 +338,14 @@ export const SoroushPage: React.FC = () => {
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
                 <div>
-                  <label style={labelStyle}>Group Chat ID</label>
-                  <input type="number" value={cfgGroupChatId} onChange={e => setCfgGroupChatId(Number(e.target.value))} style={inputStyle} />
-                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>Target Soroush group for LiveKit room creation.</span>
+                  <label style={labelStyle}>Server Phone Number</label>
+                  <input type="text" placeholder="+98..." value={cfgServerPhoneNumber} onChange={e => setCfgServerPhoneNumber(e.target.value)} style={inputStyle} required />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>The Soroush phone number of the Server node to query for config pings.</span>
                 </div>
                 <div>
-                  <label style={labelStyle}>Group Access Hash</label>
-                  <input type="number" value={cfgGroupAccessHash} onChange={e => setCfgGroupAccessHash(Number(e.target.value))} style={inputStyle} />
+                  <label style={labelStyle}>Pairing PIN</label>
+                  <input type="text" maxLength={6} placeholder="123456" value={cfgPairingPIN} onChange={e => setCfgPairingPIN(e.target.value)} style={inputStyle} required />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>6-digit symmetric key for encrypting and decrypting fallback payloads.</span>
                 </div>
               </div>
 
@@ -365,7 +353,7 @@ export const SoroushPage: React.FC = () => {
                 <label style={labelStyle}>Pre-Shared Key (PSK)</label>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <div style={{ position: 'relative', flex: 1 }}>
-                    <input type={showPSK ? 'text' : 'password'} value={cfgPSK} onChange={e => setCfgPSK(e.target.value)} style={{ ...inputStyle, paddingRight: 40, fontFamily: 'Fira Code' }} />
+                    <input type={showPSK ? 'text' : 'password'} value={cfgPSK} onChange={e => setCfgPSK(e.target.value)} style={{ ...inputStyle, paddingRight: 40, fontFamily: 'Fira Code' }} required />
                     <button type="button" onClick={() => setShowPSK(!showPSK)} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-muted)' }}>
                       {showPSK ? <FiEyeOff size={16} /> : <FiEye size={16} />}
                     </button>
@@ -374,49 +362,21 @@ export const SoroushPage: React.FC = () => {
                 <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>In-band DataChannel authentication key. Must match on both server and client.</span>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-                <div>
-                  <label style={labelStyle}>Server Host Phone Number (In-band Fallback)</label>
-                  <input type="text" placeholder="+98..." value={cfgServerHostPhone} onChange={e => setCfgServerHostPhone(e.target.value)} style={inputStyle} />
-                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>The Soroush phone number of the Server node to query for config pings.</span>
-                </div>
-                <div>
-                  <label style={labelStyle}>Pairing PIN (Fallback decryption key)</label>
-                  <input type="text" maxLength={6} placeholder="123456" value={cfgPairingPIN} onChange={e => setCfgPairingPIN(e.target.value)} style={inputStyle} />
-                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>6-digit symmetric key for encrypting and decrypting fallback payloads.</span>
-                </div>
-              </div>
-
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 16 }}>
                 <div>
-                  <label style={labelStyle}>LiveKit URL</label>
-                  <input type="text" value={cfgLiveKitURL} onChange={e => setCfgLiveKitURL(e.target.value)} style={inputStyle} />
-                </div>
-                <div>
                   <label style={labelStyle}>SOCKS5 Port</label>
-                  <input type="number" value={cfgSocksPort} onChange={e => setCfgSocksPort(Number(e.target.value))} style={inputStyle} />
+                  <input type="number" value={cfgSocksPort} onChange={e => setCfgSocksPort(Number(e.target.value))} style={inputStyle} required />
                 </div>
                 <div>
                   <label style={labelStyle}>Max Workers</label>
-                  <input type="number" value={cfgMaxWorkers} onChange={e => setCfgMaxWorkers(Number(e.target.value))} style={inputStyle} />
+                  <input type="number" value={cfgMaxWorkers} onChange={e => setCfgMaxWorkers(Number(e.target.value))} style={inputStyle} required />
                 </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 16 }}>
                 <div>
                   <label style={labelStyle}>Load Balance</label>
                   <select value={cfgLoadBalanceAlgo} onChange={e => setCfgLoadBalanceAlgo(e.target.value)} style={inputStyle}>
                     <option value="least-latency">Least Latency</option>
                     <option value="round-robin">Round Robin</option>
                   </select>
-                </div>
-                <div>
-                  <label style={labelStyle}>Refresh Min (sec)</label>
-                  <input type="number" value={cfgTokenRefreshMin} onChange={e => setCfgTokenRefreshMin(Number(e.target.value))} style={inputStyle} />
-                </div>
-                <div>
-                  <label style={labelStyle}>Refresh Max (sec)</label>
-                  <input type="number" value={cfgTokenRefreshMax} onChange={e => setCfgTokenRefreshMax(Number(e.target.value))} style={inputStyle} />
                 </div>
               </div>
 
@@ -434,15 +394,15 @@ export const SoroushPage: React.FC = () => {
             <div style={{ width: 54, height: 54, borderRadius: '50%', background: isRunning ? 'var(--color-brand-light)' : 'var(--color-brand-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: isRunning ? 'var(--color-brand)' : 'var(--color-brand-muted)', marginBottom: 14, border: '1px solid var(--color-brand-border)' }}>
               <FiCpu size={24} />
             </div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>Hive Engine</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>Hive Swarm Engine</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, marginBottom: 14 }}>
               <span className="live-dot" style={{ background: isRunning ? '#10b981' : '#ef4444' }} />
               <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)' }}>{isRunning ? 'RUNNING' : 'STOPPED'}</span>
             </div>
             <p style={{ fontSize: 11, color: 'var(--color-brand-text)', lineHeight: 1.4, margin: '0 0 16px' }}>
-              {isRunning ? 'Soroush tunnel is active. Traffic is flowing through domestic SFU relay nodes.' : 'Engine is offline. Start to route traffic through Soroush WebRTC infrastructure.'}
+              {isRunning ? 'P2P WebRTC swarm is active. Traffic is flowing through direct peer-to-peer DataChannels.' : 'Engine is offline. Start to route traffic through Soroush WebRTC swarm infrastructure.'}
             </p>
-            <button onClick={toggleEngine} disabled={isLoading}
+            <button type="button" onClick={toggleEngine} disabled={isLoading}
               style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, background: isRunning ? '#ef4444' : 'var(--color-brand)', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
               {isRunning ? <><FiSquare /> Stop Engine</> : <><FiPlay /> Start Engine</>}
             </button>
@@ -457,7 +417,7 @@ export const SoroushPage: React.FC = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12 }}>
               {[
                 ['Uptime', engineStatus?.uptime || '—'],
-                ['Total Streams', engineStatus?.total_streams ?? '—'],
+                ['Total Swarm Connections', engineStatus?.total_streams ?? '—'],
                 ['Bytes Relayed', engineStatus?.bytes_relayed ? `${(engineStatus.bytes_relayed / 1024 / 1024).toFixed(1)} MB` : '—'],
                 ['Verified Accounts', accounts.filter(a => a.status === 'verified').length],
               ].map(([label, val]) => (
@@ -476,11 +436,10 @@ export const SoroushPage: React.FC = () => {
               <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Security Profile</span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 11 }}>
-              <div><span style={{ color: 'var(--color-brand-muted)' }}>ICE Policy:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>RELAY only</strong></div>
-              <div><span style={{ color: 'var(--color-brand-muted)' }}>TURN Nodes:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>185.60.137.x (Domestic)</strong></div>
-              <div><span style={{ color: 'var(--color-brand-muted)' }}>Auth:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>HKDF Zero-Trust + MTProto JWT</strong></div>
-              <div><span style={{ color: 'var(--color-brand-muted)' }}>DPI Stealth:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>Activity Noise + Jitter</strong></div>
-              <div><span style={{ color: 'var(--color-brand-muted)' }}>Handshake:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>64-byte HKDF + Timestamp Nonce</strong></div>
+              <div><span style={{ color: 'var(--color-brand-muted)' }}>ICE Policy:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>host, srflx, relay</strong></div>
+              <div><span style={{ color: 'var(--color-brand-muted)' }}>Signaling:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>In-band Soroush Messages</strong></div>
+              <div><span style={{ color: 'var(--color-brand-muted)' }}>Encryption:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>Zero-Trust DTLS-SRTP</strong></div>
+              <div><span style={{ color: 'var(--color-brand-muted)' }}>Protocol:</span> <strong style={{ color: 'var(--color-brand-heading)' }}>SCTP over WebRTC</strong></div>
             </div>
           </div>
         </div>

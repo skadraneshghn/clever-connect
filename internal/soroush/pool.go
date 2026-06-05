@@ -25,7 +25,7 @@ type PoolStats struct {
 // WorkerChannel represents a single worker's tunnel connection.
 type WorkerChannel struct {
 	AccountID    string
-	Transport    *LiveKitTransport
+	Transport    *WebRTCTransport
 	YamuxSession *yamux.Session
 	LatencyMs    int64
 	LastPingAt   time.Time

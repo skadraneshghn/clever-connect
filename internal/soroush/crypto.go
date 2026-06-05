@@ -70,3 +70,21 @@ func DecryptPayload(b64Ciphertext string, pin string) (string, error) {
 
 	return string(plaintext), nil
 }
+
+// EncryptSDP encrypts raw SDP bytes using AES-GCM and a key derived from the PIN.
+func EncryptSDP(pin string, sdp []byte) string {
+	val, err := EncryptPayload(string(sdp), pin)
+	if err != nil {
+		return ""
+	}
+	return val
+}
+
+// DecryptSDP decrypts base64-encoded AES-GCM encrypted SDP payload.
+func DecryptSDP(pin string, b64Payload string) []byte {
+	val, err := DecryptPayload(b64Payload, pin)
+	if err != nil {
+		return nil
+	}
+	return []byte(val)
+}

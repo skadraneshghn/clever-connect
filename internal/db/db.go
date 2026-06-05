@@ -163,13 +163,10 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		}
 		DB.Create(&models.SoroushTunnelConfig{
 			PSK:                hex.EncodeToString(pskBytes),
-			LiveKitURL:          "wss://k.splus.ir:8446",
 			SocksPort:           4046,
-			EngineMode:          "hybrid",
+			EngineMode:          "swarm",
 			MaxWorkers:          5,
 			LoadBalanceAlgo:     "least-latency",
-			TokenRefreshMinSec:  420,
-			TokenRefreshMaxSec:  540,
 		})
 	}
 

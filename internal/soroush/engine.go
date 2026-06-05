@@ -1,13 +1,15 @@
-// Package soroush implements the Soroush WebRTC "The Hive" tunnel engine.
+// Package soroush implements the Soroush Message-Signaled P2P Swarm tunnel engine.
 // It operates as an additive, parallel service to the existing Ehco infrastructure,
-// routing traffic through Soroush's domestic LiveKit SFU group calls to bypass DPI.
+// routing traffic through Pion WebRTC P2P DataChannels signaled via encrypted text messages.
 package soroush
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +18,9 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/soroushlib"
+
+	"github.com/hashicorp/yamux"
+	"github.com/pion/webrtc/v4"
 )
 
 const component = "Soroush"
@@ -27,15 +32,13 @@ var (
 	running      bool
 
 	// Telemetry counters
-	totalStreams  atomic.Int64
+	totalStreams atomic.Int64
 	bytesRelayed atomic.Int64
 	startedAt    time.Time
 )
 
 // StartEngine starts the Soroush tunnel in either server or client mode.
 // Mode is determined by isServer parameter (derived from APP_MODE env var).
-// Server mode: joins LiveKit room, accepts authenticated DataChannels → relays to internet
-// Client mode: joins LiveKit room, opens DataChannels → SOCKS5 proxy
 func StartEngine(cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccount, isServer bool) error {
 	engineMu.Lock()
 	defer engineMu.Unlock()
@@ -52,6 +55,10 @@ func StartEngine(cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccou
 		return fmt.Errorf("PSK is required for in-band DataChannel authentication")
 	}
 
+	if cfg.PairingPIN == "" {
+		return fmt.Errorf("PairingPIN is required to encrypt SDP messages")
+	}
+
 	engineCtx, engineCancel = context.WithCancel(context.Background())
 	running = true
 	startedAt = time.Now()
@@ -66,7 +73,7 @@ func StartEngine(cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccou
 	logger.Info(component, "Starting Soroush tunnel engine",
 		"mode", mode,
 		"accounts", len(accounts),
-		"group_chat_id", cfg.GroupChatID,
+		"server_phone", cfg.ServerPhoneNumber,
 		"socks_port", cfg.SocksPort,
 		"max_workers", cfg.MaxWorkers,
 	)
@@ -81,50 +88,213 @@ func StartEngine(cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccou
 }
 
 // runServer starts the server-side (Queen) engine.
-// Each account gets a TokenManager → LiveKitTransport → yamux.Server → relay handler.
 func runServer(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccount) {
 	logger.Info(component, "Server engine goroutine started")
 
-	// Use the first account as the server's room participant
+	// Use the first account as the server's listener
 	acct := accounts[0]
-	tm := NewTokenManager(&acct, cfg, true)
-
-	if err := tm.Start(ctx); err != nil {
-		logger.Error(component, "TokenManager failed to start", "error", err)
-		return
-	}
-	defer tm.Stop()
-
-	token := tm.CurrentToken()
-	if token == nil {
-		logger.Error(component, "No token available after TokenManager start")
-		return
-	}
-
-	transport := NewLiveKitTransport(token, cfg, true)
+	session, transport := soroushlib.RestoreSession(acct.AuthKey, acct.AuthKeyID, acct.ServerSalt)
 	if err := transport.Connect(ctx); err != nil {
-		logger.Error(component, "LiveKit transport connect failed", "error", err)
+		logger.Error(component, "Server: Failed to connect to Soroush", "error", err)
 		return
 	}
-	defer transport.Close()
+	defer transport.Disconnect()
 
-	logger.Info(component, "Server joined LiveKit room, waiting for authenticated workers")
+	if err := session.WarmUpSession(ctx); err != nil {
+		logger.Error(component, "Server: Failed to warm up Soroush session", "error", err)
+		return
+	}
 
-	// Block until context is cancelled
-	<-ctx.Done()
-	logger.Info(component, "Server engine shutting down")
+	router := soroushlib.NewMessageRouter(session)
+	go func() {
+		if err := router.Run(ctx); err != nil && ctx.Err() == nil {
+			logger.Error(component, "Server MessageRouter error", "error", err)
+		}
+	}()
+
+	msgCh := router.SubscribeText()
+	defer router.UnsubscribeText(msgCh)
+
+	logger.Info(component, "Server SDP Listening Engine is active, polling for incoming offers...")
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info(component, "Server engine shutting down")
+			return
+		case msg, ok := <-msgCh:
+			if !ok {
+				return
+			}
+			// Filter out standard group/channels and only process DMs
+			if msg.IsGroup {
+				continue
+			}
+			if !strings.HasPrefix(msg.Text, "OFFER:") {
+				continue
+			}
+
+			// Handle the incoming offer in a separate goroutine
+			go handleIncomingOffer(ctx, session, router, cfg, msg)
+		}
+	}
+}
+
+func handleIncomingOffer(ctx context.Context, session *soroushlib.MTProtoSession, router *soroushlib.MessageRouter, cfg *models.SoroushTunnelConfig, msg soroushlib.IncomingMessage) {
+	logger.Info(component, "Server: Received SDP Offer", "from_user", msg.FromUserID)
+
+	// 1. Decrypt Offer
+	ciphertext := strings.TrimPrefix(msg.Text, "OFFER:")
+	decrypted := DecryptSDP(cfg.PairingPIN, ciphertext)
+	if len(decrypted) == 0 {
+		logger.Error(component, "Server: Failed to decrypt SDP Offer")
+		return
+	}
+
+	var offer webrtc.SessionDescription
+	if err := json.Unmarshal(decrypted, &offer); err != nil {
+		logger.Error(component, "Server: Failed to unmarshal SDP Offer JSON", "error", err)
+		return
+	}
+
+	// 2. Create PeerConnection
+	s := webrtc.SettingEngine{}
+	s.DetachDataChannels()
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(s))
+
+	pc, err := api.NewPeerConnection(webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{
+			{
+				URLs: []string{"stun:stun.l.google.com:19302"},
+			},
+		},
+	})
+	if err != nil {
+		logger.Error(component, "Server: Failed to create PeerConnection", "error", err)
+		return
+	}
+
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		if dc.Label() != "clever-tunnel" {
+			dc.Close()
+			return
+		}
+
+		logger.Info(component, "Server: DataChannel opened, waiting to detach")
+
+		dc.OnOpen(func() {
+			logger.Info(component, "Server: DataChannel OnOpen fired, detaching")
+			raw, err := dc.Detach()
+			if err != nil {
+				logger.Error(component, "Server: Failed to detach DataChannel", "error", err)
+				return
+			}
+
+			conn := &DataChannelConn{
+				ReadWriteCloser: raw,
+				localAddr:       &WebRTCAddr{network: "webrtc", address: "server"},
+				remoteAddr:      &WebRTCAddr{network: "webrtc", address: fmt.Sprintf("user-%d", msg.FromUserID)},
+			}
+
+			// 3-second zero-trust handshake
+			challenge := make([]byte, 64)
+			errChan := make(chan error, 1)
+			go func() {
+				_, err := io.ReadFull(conn, challenge)
+				errChan <- err
+			}()
+
+			select {
+			case <-time.After(3 * time.Second):
+				logger.Warn(component, "Server: Handshake timeout (3s deadline), closing connection")
+				conn.Close()
+				return
+			case err := <-errChan:
+				if err != nil {
+					logger.Warn(component, "Server: Handshake read error, closing connection", "error", err)
+					conn.Close()
+					return
+				}
+			}
+
+			if err := VerifyHandshakeChallenge(cfg.PSK, challenge); err != nil {
+				logger.Warn(component, "Server: Handshake challenge verification failed", "error", err)
+				conn.Close()
+				return
+			}
+
+			logger.Info(component, "Server: Handshake verified, starting Yamux server")
+
+			yamuxCfg := yamux.DefaultConfig()
+			yamuxCfg.LogOutput = nil
+			yamuxSess, err := yamux.Server(conn, yamuxCfg)
+			if err != nil {
+				logger.Error(component, "Server: Failed to create Yamux server", "error", err)
+				conn.Close()
+				return
+			}
+
+			StartRelayHandler(ctx, yamuxSess)
+		})
+	})
+
+	if err := pc.SetRemoteDescription(offer); err != nil {
+		logger.Error(component, "Server: Failed to set remote description", "error", err)
+		pc.Close()
+		return
+	}
+
+	answer, err := pc.CreateAnswer(nil)
+	if err != nil {
+		logger.Error(component, "Server: Failed to create SDP Answer", "error", err)
+		pc.Close()
+		return
+	}
+
+	if err := pc.SetLocalDescription(answer); err != nil {
+		logger.Error(component, "Server: Failed to set local description", "error", err)
+		pc.Close()
+		return
+	}
+
+	gatherComplete := webrtc.GatheringCompletePromise(pc)
+	select {
+	case <-gatherComplete:
+	case <-time.After(10 * time.Second):
+		logger.Warn(component, "Server: ICE gathering timeout")
+	case <-ctx.Done():
+		pc.Close()
+		return
+	}
+
+	answerSDP, err := json.Marshal(pc.LocalDescription())
+	if err != nil {
+		logger.Error(component, "Server: Failed to marshal local answer SDP", "error", err)
+		pc.Close()
+		return
+	}
+
+	encryptedAnswer := EncryptSDP(cfg.PairingPIN, answerSDP)
+	if encryptedAnswer == "" {
+		logger.Error(component, "Server: Failed to encrypt Answer SDP")
+		pc.Close()
+		return
+	}
+
+	accessHash := router.GetUserAccessHash(msg.FromUserID)
+	err = soroushlib.SendTextMessage(ctx, session, msg.FromUserID, accessHash, "ANSWER:"+encryptedAnswer)
+	if err != nil {
+		logger.Error(component, "Server: Failed to send ANSWER message via Soroush", "error", err)
+		pc.Close()
+		return
+	}
+
+	logger.Info(component, "Server: Answer successfully sent back to client")
 }
 
 // runClient starts the client-side (Swarm) engine.
-// Manages a pool of workers, each with their own TokenManager + Transport.
 func runClient(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccount) {
 	logger.Info(component, "Client engine goroutine started")
-
-	if cfg.GroupChatID == 0 {
-		logger.Warn(component, "Client: Target Group Chat ID is missing. Bypassing SwarmPool and entering Fallback Mode...")
-		go RunFallbackMode(ctx, cfg, accounts)
-		return
-	}
 
 	pool := NewMultiplexerPool(cfg.LoadBalanceAlgo)
 
@@ -137,54 +307,6 @@ func runClient(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []
 
 	// Start health checker
 	go pool.HealthCheck(ctx)
-
-	// Start pool health monitor to trigger fallback sync if we lose all healthy connections (e.g. room replaced)
-	if cfg.ServerHostPhone != "" && cfg.PairingPIN != "" {
-		go func() {
-			ticker := time.NewTicker(15 * time.Second)
-			defer ticker.Stop()
-
-			var lastHealthy time.Time = time.Now()
-			var fallbackActive atomic.Bool
-
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					stats := pool.Stats()
-					if stats.HealthyWorkers > 0 {
-						lastHealthy = time.Now()
-						continue
-					}
-
-					// If we've had 0 healthy workers for more than 45 seconds, trigger fallback sync
-					if time.Since(lastHealthy) > 45*time.Second {
-						if fallbackActive.CompareAndSwap(false, true) {
-							logger.Warn(component, "Pool Health Monitor: All workers unhealthy for >45s. Triggering fallback config sync...")
-							
-							go func() {
-								defer fallbackActive.Store(false)
-								
-								// Fetch current config from DB to get the latest settings
-								var latestCfg models.SoroushTunnelConfig
-								if err := db.DB.First(&latestCfg).Error; err != nil {
-									logger.Error(component, "Pool Health Monitor: Failed to load config from database", "error", err)
-									return
-								}
-
-								// Execute in-band fallback sync to retrieve the new group call room details
-								RunFallbackSync(ctx, &latestCfg, accounts)
-							}()
-							
-							// Reset timer to avoid spamming fallback sync triggers
-							lastHealthy = time.Now()
-						}
-					}
-				}
-			}
-		}()
-	}
 
 	// Launch worker goroutines (up to MaxWorkers or len(accounts))
 	maxWorkers := cfg.MaxWorkers
@@ -221,7 +343,6 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 		logger.Info(component, "Worker starting", "phone", maskPhone(acct.PhoneNumber))
 		db.DB.Model(acct).Update("status", "connecting")
 
-		// Pool Re-balancing Jitter: sleep 2-4 seconds (3s +/- 1s) to avoid bombarding Soroush login gateways simultaneously
 		jitter := time.Duration(2000+rand.Intn(2000)) * time.Millisecond
 		sleepWithContext(ctx, jitter)
 
@@ -231,45 +352,285 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 			cfg = &latestCfg
 		}
 
-		tm := NewTokenManager(acct, cfg, false)
-		if err := tm.Start(ctx); err != nil {
-			logger.Error(component, "Worker token manager failed", "phone", maskPhone(acct.PhoneNumber), "error", err)
+		if cfg.ServerPhoneNumber == "" {
+			logger.Error(component, "Worker: ServerPhoneNumber is missing, cannot start client worker")
 			db.DB.Model(acct).Update("status", "error")
 			sleepWithContext(ctx, 10*time.Second)
 			continue
 		}
 
-		token := tm.CurrentToken()
-		if token == nil {
-			logger.Error(component, "Worker got nil token", "phone", maskPhone(acct.PhoneNumber))
-			db.DB.Model(acct).Update("status", "error")
-			tm.Stop()
-			sleepWithContext(ctx, 10*time.Second)
-			continue
-		}
-
-		transport := NewLiveKitTransport(token, cfg, false)
+		// Connect to Soroush MTProto
+		session, transport := soroushlib.RestoreSession(acct.AuthKey, acct.AuthKeyID, acct.ServerSalt)
 		if err := transport.Connect(ctx); err != nil {
-			logger.Error(component, "Worker transport connect failed", "phone", maskPhone(acct.PhoneNumber), "error", err)
+			logger.Error(component, "Worker: Failed to connect to Soroush", "phone", maskPhone(acct.PhoneNumber), "error", err)
 			db.DB.Model(acct).Update("status", "error")
-			tm.Stop()
 			sleepWithContext(ctx, 10*time.Second)
 			continue
 		}
 
-		yamuxSess := transport.YamuxSession()
-		if yamuxSess == nil {
-			logger.Error(component, "Worker yamux session is nil", "phone", maskPhone(acct.PhoneNumber))
+		if err := session.WarmUpSession(ctx); err != nil {
+			logger.Error(component, "Worker: Failed to warm up session", "phone", maskPhone(acct.PhoneNumber), "error", err)
+			transport.Disconnect()
 			db.DB.Model(acct).Update("status", "error")
-			transport.Close()
-			tm.Stop()
 			sleepWithContext(ctx, 10*time.Second)
 			continue
+		}
+
+		// Resolve Server's phone number
+		serverUserID, serverAccessHash, err := session.ResolvePhone(ctx, cfg.ServerPhoneNumber)
+		if err != nil {
+			logger.Error(component, "Worker: Failed to resolve server phone number", "phone", maskPhone(acct.PhoneNumber), "error", err)
+			transport.Disconnect()
+			db.DB.Model(acct).Update("status", "error")
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		}
+
+		logger.Info(component, "Worker resolved server phone successfully", "user_id", serverUserID, "access_hash", serverAccessHash)
+
+		// Create WebRTC PeerConnection
+		s := webrtc.SettingEngine{}
+		s.DetachDataChannels()
+		api := webrtc.NewAPI(webrtc.WithSettingEngine(s))
+
+		pc, err := api.NewPeerConnection(webrtc.Configuration{
+			ICEServers: []webrtc.ICEServer{
+				{
+					URLs: []string{"stun:stun.l.google.com:19302"},
+				},
+			},
+		})
+		if err != nil {
+			logger.Error(component, "Worker: Failed to create PeerConnection", "error", err)
+			transport.Disconnect()
+			db.DB.Model(acct).Update("status", "error")
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		}
+
+		dc, err := pc.CreateDataChannel("clever-tunnel", nil)
+		if err != nil {
+			logger.Error(component, "Worker: Failed to create DataChannel", "error", err)
+			pc.Close()
+			transport.Disconnect()
+			db.DB.Model(acct).Update("status", "error")
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		}
+
+		clientTransport := NewWebRTCTransport()
+		clientTransport.pc = pc
+		clientTransport.dc = dc
+
+		var yamuxSess *yamux.Session
+		var yamuxError error
+		yamuxEstablished := make(chan struct{})
+
+		dc.OnOpen(func() {
+			logger.Info(component, "Worker: DataChannel opened, detaching")
+			raw, err := dc.Detach()
+			if err != nil {
+				logger.Error(component, "Worker: Failed to detach DataChannel", "error", err)
+				pc.Close()
+				return
+			}
+
+			conn := &DataChannelConn{
+				ReadWriteCloser: raw,
+				localAddr:       &WebRTCAddr{network: "webrtc", address: "client"},
+				remoteAddr:      &WebRTCAddr{network: "webrtc", address: "server"},
+			}
+
+			// Send 64-byte HKDF challenge
+			challenge, err := BuildHandshakeChallenge(cfg.PSK)
+			if err != nil {
+				logger.Error(component, "Worker: Failed to build handshake challenge", "error", err)
+				conn.Close()
+				pc.Close()
+				return
+			}
+
+			if _, err := conn.Write(challenge); err != nil {
+				logger.Error(component, "Worker: Failed to write handshake challenge", "error", err)
+				conn.Close()
+				pc.Close()
+				return
+			}
+
+			logger.Info(component, "Worker: Handshake challenge sent, starting yamux client")
+
+			yamuxCfg := yamux.DefaultConfig()
+			yamuxCfg.LogOutput = nil
+			yamuxSess, yamuxError = yamux.Client(conn, yamuxCfg)
+			if yamuxError != nil {
+				logger.Error(component, "Worker: Failed to create Yamux client", "error", yamuxError)
+				conn.Close()
+				pc.Close()
+				return
+			}
+
+			clientTransport.rawConn = conn
+			clientTransport.yamuxSes = yamuxSess
+			close(yamuxEstablished)
+		})
+
+		// Create Offer
+		offer, err := pc.CreateOffer(nil)
+		if err != nil {
+			logger.Error(component, "Worker: Failed to create Offer", "error", err)
+			clientTransport.Close()
+			transport.Disconnect()
+			continue
+		}
+
+		if err := pc.SetLocalDescription(offer); err != nil {
+			logger.Error(component, "Worker: Failed to set local description", "error", err)
+			clientTransport.Close()
+			transport.Disconnect()
+			continue
+		}
+
+		// Wait for ICE gathering
+		gatherComplete := webrtc.GatheringCompletePromise(pc)
+		select {
+		case <-gatherComplete:
+		case <-time.After(10 * time.Second):
+			logger.Warn(component, "Worker: ICE gathering timeout")
+		case <-ctx.Done():
+			clientTransport.Close()
+			transport.Disconnect()
+			return
+		}
+
+		// Encrypt and send OFFER
+		offerSDP, err := json.Marshal(pc.LocalDescription())
+		if err != nil {
+			logger.Error(component, "Worker: Failed to marshal offer SDP", "error", err)
+			clientTransport.Close()
+			transport.Disconnect()
+			continue
+		}
+
+		encryptedOffer := EncryptSDP(cfg.PairingPIN, offerSDP)
+		if err := soroushlib.SendTextMessage(ctx, session, serverUserID, serverAccessHash, "OFFER:"+encryptedOffer); err != nil {
+			logger.Error(component, "Worker: Failed to send OFFER message", "error", err)
+			clientTransport.Close()
+			transport.Disconnect()
+			continue
+		}
+
+		logger.Info(component, "Worker: OFFER sent, starting message router to wait for ANSWER")
+
+		router := soroushlib.NewMessageRouter(session)
+		go func() {
+			if err := router.Run(ctx); err != nil && ctx.Err() == nil {
+				logger.Error(component, "Worker MessageRouter error", "error", err)
+			}
+		}()
+
+		msgCh := router.SubscribeText()
+
+		// Await ANSWER
+		var answerStr string
+		timeout := time.After(30 * time.Second)
+		cancelled := false
+
+	waitLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				cancelled = true
+				break waitLoop
+			case <-timeout:
+				logger.Error(component, "Worker: Timeout waiting for ANSWER from server")
+				break waitLoop
+			case msg, ok := <-msgCh:
+				if !ok {
+					break waitLoop
+				}
+				if msg.FromUserID == serverUserID && !msg.IsGroup && strings.HasPrefix(msg.Text, "ANSWER:") {
+					answerStr = strings.TrimPrefix(msg.Text, "ANSWER:")
+					break waitLoop
+				}
+			}
+		}
+
+		router.UnsubscribeText(msgCh)
+
+		if cancelled {
+			clientTransport.Close()
+			transport.Disconnect()
+			return
+		}
+
+		if answerStr == "" {
+			logger.Error(component, "Worker: Did not receive valid ANSWER")
+			clientTransport.Close()
+			transport.Disconnect()
+			db.DB.Model(acct).Update("status", "error")
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		}
+
+		// Decrypt and apply ANSWER description
+		decryptedAnswer := DecryptSDP(cfg.PairingPIN, answerStr)
+		if len(decryptedAnswer) == 0 {
+			logger.Error(component, "Worker: Failed to decrypt ANSWER SDP")
+			clientTransport.Close()
+			transport.Disconnect()
+			db.DB.Model(acct).Update("status", "error")
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		}
+
+		var answer webrtc.SessionDescription
+		if err := json.Unmarshal(decryptedAnswer, &answer); err != nil {
+			logger.Error(component, "Worker: Failed to unmarshal ANSWER SDP JSON", "error", err)
+			clientTransport.Close()
+			transport.Disconnect()
+			db.DB.Model(acct).Update("status", "error")
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		}
+
+		if err := pc.SetRemoteDescription(answer); err != nil {
+			logger.Error(component, "Worker: Failed to set remote description", "error", err)
+			clientTransport.Close()
+			transport.Disconnect()
+			db.DB.Model(acct).Update("status", "error")
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		}
+
+		logger.Info(component, "Worker: Applied remote description (ANSWER), waiting for DataChannel connection and Yamux session")
+
+		// Wait for yamux to be established
+		select {
+		case <-ctx.Done():
+			clientTransport.Close()
+			transport.Disconnect()
+			return
+		case <-time.After(15 * time.Second):
+			logger.Error(component, "Worker: Timeout waiting for DataChannel/Yamux session to establish")
+			clientTransport.Close()
+			transport.Disconnect()
+			db.DB.Model(acct).Update("status", "error")
+			sleepWithContext(ctx, 10*time.Second)
+			continue
+		case <-yamuxEstablished:
+			if yamuxError != nil {
+				logger.Error(component, "Worker: Yamux establishment error", "error", yamuxError)
+				clientTransport.Close()
+				transport.Disconnect()
+				db.DB.Model(acct).Update("status", "error")
+				sleepWithContext(ctx, 10*time.Second)
+				continue
+			}
 		}
 
 		wc := &WorkerChannel{
 			AccountID:    fmt.Sprintf("%d", acct.ID),
-			Transport:    transport,
+			Transport:    clientTransport,
 			YamuxSession: yamuxSess,
 			Healthy:      true,
 		}
@@ -282,15 +643,15 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 		select {
 		case <-ctx.Done():
 			pool.Purge(wc.AccountID)
-			transport.Close()
-			tm.Stop()
+			clientTransport.Close()
+			transport.Disconnect()
 			return
 		case <-yamuxSess.CloseChan():
 			logger.Warn(component, "Worker yamux session closed, reconnecting", "phone", maskPhone(acct.PhoneNumber))
 			db.DB.Model(acct).Update("status", "error")
 			pool.Purge(wc.AccountID)
-			transport.Close()
-			tm.Stop()
+			clientTransport.Close()
+			transport.Disconnect()
 			sleepWithContext(ctx, 5*time.Second)
 		}
 	}
@@ -299,15 +660,19 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 // StopEngine gracefully stops the Soroush tunnel engine.
 func StopEngine() {
 	engineMu.Lock()
-	defer engineMu.Unlock()
+	runningVal := running
+	engineMu.Unlock()
 
-	if !running {
+	if !runningVal {
 		return
 	}
 
 	logger.Info(component, "Stopping Soroush tunnel engine")
 	engineCancel()
+
+	engineMu.Lock()
 	running = false
+	engineMu.Unlock()
 }
 
 // IsRunning returns whether the engine is currently active.
@@ -319,14 +684,12 @@ func IsRunning() bool {
 
 // TunnelStatus contains the current state of the Soroush tunnel engine.
 type TunnelStatus struct {
-	Running       bool      `json:"running"`
-	Mode          string    `json:"mode"`
-	ActiveWorkers int       `json:"active_workers"`
-	TotalStreams   int64     `json:"total_streams"`
-	BytesRelayed  int64     `json:"bytes_relayed"`
-	Uptime        string    `json:"uptime"`
-	TokenExpiry   time.Time `json:"token_expiry"`
-	PoolStats     PoolStats `json:"pool_stats"`
+	Running      bool      `json:"running"`
+	Mode         string    `json:"mode"`
+	TotalStreams int64     `json:"total_streams"`
+	BytesRelayed int64     `json:"bytes_relayed"`
+	Uptime       string    `json:"uptime"`
+	PoolStats    PoolStats `json:"pool_stats"`
 }
 
 // GetStatus returns the current tunnel status snapshot.
@@ -337,7 +700,7 @@ func GetStatus() *TunnelStatus {
 
 	status := &TunnelStatus{
 		Running:      isRunning,
-		TotalStreams:  totalStreams.Load(),
+		TotalStreams: totalStreams.Load(),
 		BytesRelayed: bytesRelayed.Load(),
 	}
 
@@ -362,126 +725,4 @@ func maskPhone(phone string) string {
 		return "****"
 	}
 	return phone[:3] + "****" + phone[len(phone)-2:]
-}
-
-// RunFallbackMode connects to MTProto, imports and resolves the Server's phone number,
-// sends an encrypted WAKEUP message, and waits for the encrypted configuration payload.
-// It automatically boots the client engine once the sync is completed.
-func RunFallbackMode(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccount) {
-	if success := runFallbackSyncInternal(ctx, cfg, accounts); success {
-		// Launch the regular Client engine
-		go runClient(ctx, cfg, accounts)
-	}
-}
-
-// RunFallbackSync connects to Soroush MTProto, fetches the updated configuration,
-// and persists it to the database so that existing client workers can automatically reconnect.
-func RunFallbackSync(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccount) {
-	runFallbackSyncInternal(ctx, cfg, accounts)
-}
-
-// runFallbackSyncInternal is the core helper implementing the Encrypted Ping-Pong fallback exchange.
-func runFallbackSyncInternal(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccount) bool {
-	if cfg.ServerHostPhone == "" || cfg.PairingPIN == "" {
-		logger.Error(component, "Fallback Client: Aborting, server_host_phone or pairing_pin not configured")
-		return false
-	}
-
-	acct := accounts[0]
-	logger.Info(component, "Fallback Client: Starting fallback loop using worker", "phone", maskPhone(acct.PhoneNumber))
-
-	session, transport := soroushlib.RestoreSession(acct.AuthKey, acct.AuthKeyID, acct.ServerSalt)
-	if err := transport.Connect(ctx); err != nil {
-		logger.Error(component, "Fallback Client: Failed to connect to Soroush", "error", err)
-		return false
-	}
-	defer transport.Disconnect()
-
-	if err := session.WarmUpSession(ctx); err != nil {
-		logger.Error(component, "Fallback Client: Failed to warm up Soroush session", "error", err)
-		return false
-	}
-
-	logger.Info(component, "Fallback Client: Resolving server phone number...", "phone", cfg.ServerHostPhone)
-	serverUserID, serverAccessHash, err := session.ResolvePhone(ctx, cfg.ServerHostPhone)
-	if err != nil {
-		logger.Error(component, "Fallback Client: Failed to resolve server phone", "error", err)
-		return false
-	}
-
-	logger.Info(component, "Fallback Client: Server resolved successfully", "user_id", serverUserID, "access_hash", serverAccessHash)
-
-	// Prepare encrypted trigger message
-	ciphertext, err := EncryptPayload("WAKEUP", cfg.PairingPIN)
-	if err != nil {
-		logger.Error(component, "Fallback Client: Encryption failed", "error", err)
-		return false
-	}
-
-	// Start update router
-	router := soroushlib.NewMessageRouter(session)
-	go func() {
-		if err := router.Run(ctx); err != nil && ctx.Err() == nil {
-			logger.Error(component, "Fallback Client MessageRouter error", "error", err)
-		}
-	}()
-
-	msgCh := router.SubscribeText()
-	defer router.UnsubscribeText(msgCh)
-
-	// Send trigger ping
-	if err := soroushlib.SendTextMessage(ctx, session, serverUserID, serverAccessHash, ciphertext); err != nil {
-		logger.Error(component, "Fallback Client: Failed to send wakeup trigger", "error", err)
-		return false
-	}
-
-	logger.Info(component, "Fallback Client: Wakeup trigger sent. Awaiting configuration payload...")
-
-	for {
-		select {
-		case msg, ok := <-msgCh:
-			if !ok {
-				logger.Error(component, "Fallback Client: Message channel closed")
-				return false
-			}
-			if msg.FromUserID != serverUserID {
-				continue
-			}
-
-			// Decrypt response
-			decrypted, err := DecryptPayload(msg.Text, cfg.PairingPIN)
-			if err != nil {
-				// Not a ciphertext or invalid key, skip
-				continue
-			}
-
-			// Parse JSON
-			var payload FallbackConfigPayload
-			if err := json.Unmarshal([]byte(decrypted), &payload); err != nil {
-				logger.Error(component, "Fallback Client: Failed to unmarshal payload JSON", "error", err)
-				continue
-			}
-
-			if payload.GroupChatID == 0 || payload.PSK == "" {
-				logger.Warn(component, "Fallback Client: Received empty fields in configuration payload")
-				continue
-			}
-
-			logger.Info(component, "Fallback Client: Received and decrypted configuration successfully!",
-				"group_chat_id", payload.GroupChatID,
-				"psk", payload.PSK,
-			)
-
-			// Persist retrieved config
-			cfg.GroupChatID = payload.GroupChatID
-			cfg.GroupAccessHash = payload.GroupAccessHash
-			cfg.PSK = payload.PSK
-			db.DB.Save(cfg)
-			return true
-
-		case <-ctx.Done():
-			logger.Info(component, "Fallback Client: Context cancelled, aborting")
-			return false
-		}
-	}
 }
