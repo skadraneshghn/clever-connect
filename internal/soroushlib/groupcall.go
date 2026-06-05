@@ -397,6 +397,12 @@ func ScanForInputGroupCall(data []byte) (int64, int64, bool) {
 // ResolveGroupCall fetches the full chat/channel info and scans it to extract
 // the active group call ID and access hash.
 func ResolveGroupCall(ctx context.Context, session *MTProtoSession, chatID int64, chatAccessHash int64) (int64, int64, error) {
+	if chatAccessHash == 0 {
+		if resolvedHash, err := ResolveGroupAccessHash(ctx, session, chatID); err == nil {
+			chatAccessHash = resolvedHash
+		}
+	}
+
 	body := BuildGetFullGroupRequest(chatID, chatAccessHash)
 	wrapped := WrapInitConnection(SoroushAppID, body)
 
@@ -420,6 +426,12 @@ func ResolveGroupCall(ctx context.Context, session *MTProtoSession, chatID int64
 
 // CreateGroupCall creates a new group call in the given chat/channel.
 func CreateGroupCall(ctx context.Context, session *MTProtoSession, chatID int64, chatAccessHash int64) error {
+	if chatAccessHash == 0 {
+		if resolvedHash, err := ResolveGroupAccessHash(ctx, session, chatID); err == nil {
+			chatAccessHash = resolvedHash
+		}
+	}
+
 	body := BuildCreateGroupCallRequest(chatID, chatAccessHash)
 	wrapped := WrapInitConnection(SoroushAppID, body)
 
@@ -433,4 +445,36 @@ func CreateGroupCall(ctx context.Context, session *MTProtoSession, chatID int64,
 	}
 
 	return nil
+}
+
+func absVal(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// ResolveGroupAccessHash fetches dialogs and searches for the specified chatID to find its access hash.
+func ResolveGroupAccessHash(ctx context.Context, session *MTProtoSession, chatID int64) (int64, error) {
+	body := BuildGetDialogsRequest()
+	wrapped := WrapInitConnection(SoroushAppID, body)
+	cid, reader, err := session.SendAndWait(ctx, wrapped, true)
+	if err != nil {
+		return 0, err
+	}
+	if cid == IDRPCError {
+		return 0, ParseRPCError(reader)
+	}
+
+	groups, err := ParseDialogsForGroups(cid, reader)
+	if err != nil {
+		return 0, err
+	}
+
+	for _, g := range groups {
+		if absVal(g.ID) == absVal(chatID) {
+			return g.AccessHash, nil
+		}
+	}
+	return 0, fmt.Errorf("chat/channel %d not found in dialogs", chatID)
 }
