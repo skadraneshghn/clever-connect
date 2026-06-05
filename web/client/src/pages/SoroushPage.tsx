@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FiPlay, FiSquare, FiSave, FiRefreshCw, FiPlus, FiTrash2, FiCpu, FiShield, FiUsers, FiSettings, FiSend, FiCheck, FiEye, FiEyeOff, FiActivity, FiDownloadCloud } from 'react-icons/fi';
+import { showGlobalConfirm } from '../store/dialogStore';
+
 
 interface SoroushAccount {
   ID: number;
@@ -135,7 +137,7 @@ export const SoroushPage: React.FC = () => {
   };
 
   const deleteAccount = async (id: number) => {
-    if (!confirm('Delete this account?')) return;
+    if (!(await showGlobalConfirm('Are you sure you want to delete this account?', { title: 'Delete Account', variant: 'warning' }))) return;
     try {
       const r = await fetch(`/api/soroush/accounts/${id}`, { method: 'DELETE', headers: authHeaders() });
       if (r.ok) { flash('success', 'Account deleted'); fetchAccounts(); }

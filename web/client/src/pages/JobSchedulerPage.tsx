@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuthStore } from '../store/authStore';
+import { showGlobalConfirm } from '../store/dialogStore';
 import {
   FiPlay, FiPause, FiTrash2, FiPlus, FiSettings, FiX, FiRefreshCw,
   FiClock, FiCheckCircle, FiXCircle, FiAlertTriangle, FiZap, FiList,
@@ -132,7 +133,7 @@ export const JobSchedulerPage: React.FC = () => {
   };
 
   const purge = async()=>{
-    if(!confirm('Purge all completed/failed jobs older than '+config.purge_after_days+' days?')) return;
+    if(!(await showGlobalConfirm('Purge all completed/failed jobs older than '+config.purge_after_days+' days?', { title: 'Purge Jobs', variant: 'warning' }))) return;
     await api('/purge',{method:'POST',body:JSON.stringify({older_than_days:config.purge_after_days})});
     refresh();
   };

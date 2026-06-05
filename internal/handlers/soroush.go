@@ -70,6 +70,15 @@ func (h *SoroushHandler) AddSoroushAccount(c *gin.Context) {
 		Status:       "idle",
 	}
 
+	// Defensive check: Wipe any soft-deleted records with the same phone number
+	var existingAccount models.SoroushAccount
+	if err := db.DB.Unscoped().Where("phone_number = ?", req.PhoneNumber).First(&existingAccount).Error; err == nil {
+		if err := db.DB.Unscoped().Delete(&existingAccount).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to purge existing ghost account: " + err.Error()})
+			return
+		}
+	}
+
 	if err := db.DB.Create(&account).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create account: " + err.Error()})
 		return
@@ -87,7 +96,8 @@ func (h *SoroushHandler) DeleteSoroushAccount(c *gin.Context) {
 		return
 	}
 
-	if err := db.DB.Delete(&models.SoroushAccount{}, id).Error; err != nil {
+	// Unscoped permanent deletion to free unique constraints immediately
+	if err := db.DB.Unscoped().Delete(&models.SoroushAccount{}, id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete account"})
 		return
 	}

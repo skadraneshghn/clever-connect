@@ -68,7 +68,9 @@ type EhcoClientConfig struct {
 // tunnel workers. Each account holds its MTProto auth key material for
 // autonomous JWT token generation via the Soroush LiveKit SFU.
 type SoroushAccount struct {
-	gorm.Model
+	ID            uint           `gorm:"primaryKey" json:"id"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 	PhoneNumber   string `gorm:"size:20;uniqueIndex;not null" json:"phone_number"`
 	Name          string `gorm:"size:100" json:"name"`
 	SoroushUserID int64  `json:"soroush_user_id"`

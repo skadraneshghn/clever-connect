@@ -2,6 +2,8 @@ import React, { Suspense, useEffect, lazy } from 'react';
 import { createBrowserRouter, RouterProvider, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { PanelLayout } from './components/templates/PanelLayout';
+import { GlobalDialog } from './components/molecules/GlobalDialog';
+
 
 // Lazy-loaded pages
 const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })));
@@ -128,5 +130,10 @@ const router = createBrowserRouter([
 ]);
 
 export default function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <>
+      <RouterProvider router={router} />
+      <GlobalDialog />
+    </>
+  );
 }
