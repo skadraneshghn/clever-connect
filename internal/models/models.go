@@ -89,8 +89,8 @@ type SoroushAccount struct {
 
 // SoroushTunnelConfig stores the Hive tunnel engine configuration.
 // This is a singleton row — only one config exists at a time.
-// The PSK field is required for in-band DataChannel authentication
-// to prevent rogue participants from crashing the yamux multiplexer.
+// The PSK field is used for QUIC TLS identity verification and
+// the HKDF-based handshake sync protocol.
 type SoroushTunnelConfig struct {
 	gorm.Model
 	GroupChatID     int64  `json:"group_chat_id"`

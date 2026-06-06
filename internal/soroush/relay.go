@@ -6,52 +6,30 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"clever-connect/internal/logger"
 
-	"github.com/hashicorp/yamux"
+	"github.com/quic-go/quic-go"
 )
 
-// StartRelayHandler runs the server-side outbound relay.
-// It accepts incoming yamux streams, reads the SOCKS5 CONNECT target from
-// each stream's header, dials the destination, and runs bidirectional I/O.
+// ──────────────────────────────────────────────────────────────────────────────
+// Server-side relay: HandleServerRelay
 //
-// Each accepted stream is handled in its own goroutine, so this function
-// blocks until the yamux session is closed or the context is cancelled.
-func StartRelayHandler(ctx context.Context, yamuxSess *yamux.Session) {
-	logger.Info(component, "Relay handler started, accepting streams")
+// Each QUIC stream carries a single proxy request. Protocol:
+//   1. Read 2-byte big-endian length prefix
+//   2. Read target address string (e.g., "google.com:443")
+//   3. Dial the real internet destination
+//   4. Bidirectional io.Copy between QUIC stream and destination
+// ──────────────────────────────────────────────────────────────────────────────
 
-	for {
-		stream, err := yamuxSess.Accept()
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				logger.Info(component, "Relay handler shutting down (context cancelled)")
-				return
-			default:
-				if yamuxSess.IsClosed() {
-					logger.Info(component, "Relay handler shutting down (yamux session closed)")
-					return
-				}
-				logger.Warn(component, "Relay handler accept error", "error", err)
-				return
-			}
-		}
-
-		go handleRelayStream(ctx, stream)
-	}
-}
-
-// handleRelayStream handles a single incoming yamux stream.
-// Protocol:
-//  1. Read 2-byte big-endian length prefix
-//  2. Read target address string (e.g., "google.com:443")
-//  3. Dial the target
-//  4. Bidirectional io.Copy between yamux stream and destination
-func handleRelayStream(ctx context.Context, stream net.Conn) {
+// HandleServerRelay handles a single incoming QUIC stream on the server side.
+// It reads the target address, dials the real destination, and proxies bytes
+// bidirectionally until either side closes.
+func HandleServerRelay(stream *quic.Stream) {
 	defer stream.Close()
 
-	// Read target address header: [2-byte length][target string]
+	// 1. Read target address header: [2-byte length][target string]
 	lenBuf := make([]byte, 2)
 	if _, err := io.ReadFull(stream, lenBuf); err != nil {
 		logger.Debug(component, "Relay: failed to read target header", "error", err)
@@ -63,27 +41,27 @@ func handleRelayStream(ctx context.Context, stream net.Conn) {
 		return
 	}
 
+	// 2. Read the target address (e.g., "youtube.com:443")
 	targetBuf := make([]byte, targetLen)
 	if _, err := io.ReadFull(stream, targetBuf); err != nil {
 		logger.Debug(component, "Relay: failed to read target address", "error", err)
 		return
 	}
-	target := string(targetBuf)
+	targetAddr := string(targetBuf)
 
-	// Dial the destination
-	dialer := &net.Dialer{}
-	destConn, err := dialer.DialContext(ctx, "tcp", target)
+	// 3. Dial the real internet destination
+	destConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
 	if err != nil {
 		logger.Warn(component, "Relay: failed to dial target",
-			"target", target, "error", err,
+			"target", targetAddr, "error", err,
 		)
 		return
 	}
 	defer destConn.Close()
 
-	logger.Debug(component, "Relay: connected to target", "target", target)
+	logger.Debug(component, "Relay: connected to target", "target", targetAddr)
 
-	// Bidirectional copy
+	// 4. Bidirectional copy
 	done := make(chan struct{}, 2)
 
 	go func() {
@@ -98,14 +76,61 @@ func handleRelayStream(ctx context.Context, stream net.Conn) {
 		done <- struct{}{}
 	}()
 
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	<-done
 
 	totalStreams.Add(1)
 	logger.Debug(component, "Relay: stream completed",
-		"target", target,
+		"target", targetAddr,
 		"total", fmt.Sprintf("%d", totalStreams.Load()),
 	)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Client-side relay: dialQuicStream
+//
+// When a local SOCKS5 app connects, the client opens a new QUIC stream,
+// writes the target address header, and bridges the connections.
+// ──────────────────────────────────────────────────────────────────────────────
+
+// dialQuicStream opens a new QUIC stream for a specific proxy request
+// and bridges it to the local client connection.
+func dialQuicStream(ctx context.Context, quicConn *quic.Conn, targetAddr string, clientConn net.Conn) {
+	// 1. Open a new stream for this specific proxy request
+	stream, err := quicConn.OpenStreamSync(ctx)
+	if err != nil {
+		logger.Warn(component, "QUIC: failed to open stream", "error", err, "target", targetAddr)
+		clientConn.Close()
+		return
+	}
+	defer stream.Close()
+
+	// 2. Write target address as a header: [2-byte length][target string]
+	targetBytes := []byte(targetAddr)
+	header := make([]byte, 2+len(targetBytes))
+	binary.BigEndian.PutUint16(header[:2], uint16(len(targetBytes)))
+	copy(header[2:], targetBytes)
+
+	if _, err := stream.Write(header); err != nil {
+		logger.Warn(component, "QUIC: failed to write target header", "error", err, "target", targetAddr)
+		return
+	}
+
+	// 3. Bridge the connections
+	done := make(chan struct{}, 2)
+
+	go func() {
+		n, _ := io.Copy(stream, clientConn)
+		bytesRelayed.Add(n)
+		done <- struct{}{}
+	}()
+
+	go func() {
+		n, _ := io.Copy(clientConn, stream)
+		bytesRelayed.Add(n)
+		done <- struct{}{}
+	}()
+
+	<-done
+
+	totalStreams.Add(1)
 }

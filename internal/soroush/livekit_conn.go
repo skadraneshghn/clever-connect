@@ -1,196 +1,109 @@
+// Package soroush implements the Soroush SFU RTP-based QUIC tunnel engine.
 package soroush
 
 import (
-	"fmt"
-	"io"
 	"net"
-	"sync"
 	"time"
 
-	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/pion/webrtc/v4"
+	"github.com/pion/webrtc/v4/pkg/media"
 )
 
+// fakeAddr is the synthetic UDP address used to satisfy QUIC's net.PacketConn interface.
+// QUIC expects a UDP-like socket, but we're actually routing through LiveKit RTP tracks.
+var fakeAddr = &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 1}
+
 // ──────────────────────────────────────────────────────────────────────────────
-// LiveKitConn: Bridges LiveKit SFU DataChannels to a standard net.Conn interface
+// RtpPacketConn: Bridges QUIC UDP datagrams to WebRTC Audio Samples
 //
-// Each LiveKitConn maps to a specific remote participant identity in the SFU room.
-// Write() publishes data targeted at that participant via the SFU.
-// Read() pulls from an io.Pipe fed by the listener's data callback.
-// ──────────────────────────────────────────────────────────────────────────────
-
-type LiveKitConn struct {
-	room           *lksdk.Room
-	targetIdentity string // The specific participant we are writing to
-	pr             *io.PipeReader
-	pw             *io.PipeWriter
-	closed         bool
-	closeOnce      sync.Once
-}
-
-func NewLiveKitConn(room *lksdk.Room, target string) *LiveKitConn {
-	pr, pw := io.Pipe()
-	return &LiveKitConn{
-		room:           room,
-		targetIdentity: target,
-		pr:             pr,
-		pw:             pw,
-	}
-}
-
-func (c *LiveKitConn) Read(b []byte) (n int, err error) {
-	return c.pr.Read(b)
-}
-
-func (c *LiveKitConn) Write(b []byte) (n int, err error) {
-	if c.closed {
-		return 0, fmt.Errorf("cannot write to closed livekit connection")
-	}
-
-	payload := make([]byte, len(b))
-	copy(payload, b)
-
-	// Explicitly target the peer to prevent broadcasting SOCKS traffic to the whole room.
-	// Uses the v2 SDK functional option API for destination targeting.
-	err = c.room.LocalParticipant.PublishData(
-		payload,
-		lksdk.WithDataPublishDestination([]string{c.targetIdentity}),
-		lksdk.WithDataPublishReliable(true),
-	)
-	if err != nil {
-		return 0, err
-	}
-
-	return len(b), nil
-}
-
-func (c *LiveKitConn) Close() error {
-	c.closeOnce.Do(func() {
-		c.closed = true
-		c.pr.Close()
-		c.pw.Close()
-	})
-	return nil
-}
-
-// WriteIncoming injects data from the LiveKit data callback into the Read pipe.
-// Called by the LiveKitListener when it routes incoming data to this connection.
-func (c *LiveKitConn) WriteIncoming(b []byte) error {
-	_, err := c.pw.Write(b)
-	return err
-}
-
-func (c *LiveKitConn) LocalAddr() net.Addr                { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0} }
-func (c *LiveKitConn) RemoteAddr() net.Addr               { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0} }
-func (c *LiveKitConn) SetDeadline(t time.Time) error      { return nil }
-func (c *LiveKitConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *LiveKitConn) SetWriteDeadline(t time.Time) error { return nil }
-
-// Compile-time check that LiveKitConn implements net.Conn
-var _ net.Conn = (*LiveKitConn)(nil)
-
-// ──────────────────────────────────────────────────────────────────────────────
-// LiveKitListener: Simulates a net.Listener over LiveKit SFU Participants
+// This struct implements net.PacketConn, tricking QUIC into thinking it's
+// talking to a UDP socket when it's actually writing Opus audio frames
+// through a LiveKit SFU Audio Track.
 //
-// Implements the "Listener Pattern" (Option A) for multi-tenant SFU usage.
-// When a new participant sends its first data packet, the listener spawns
-// a LiveKitConn, maps it by ParticipantIdentity, and pushes it into the
-// Accept() channel. Subsequent data from the same participant is routed
-// directly to the existing connection's pipe.
+// Architecture:
+//   WriteTo() → QUIC datagram → prepend 0x51 tag → WriteSample() → LiveKit SFU
+//   ReadFrom() ← rxQueue ← PushRx() ← remote TrackRemote.ReadRTP() callback
+//
+// The 0x51 ('Q') prefix byte tags QUIC frames, filtering out any real audio
+// that might be present on the track (e.g., silence generators).
 // ──────────────────────────────────────────────────────────────────────────────
 
-type LiveKitListener struct {
-	room     *lksdk.Room
-	conns    map[string]*LiveKitConn
-	acceptCh chan *LiveKitConn
-	mu       sync.Mutex
-	closed   bool
+// RtpPacketConn bridges QUIC UDP payloads to WebRTC Audio Samples
+type RtpPacketConn struct {
+	localTrack *webrtc.TrackLocalStaticSample
+	rxQueue    chan []byte
+	closed     bool
 }
 
-// NewLiveKitListenerCallback creates a RoomCallback with OnDataReceived wired
-// to the listener's routing logic. This callback MUST be passed to
-// ConnectToRoomWithToken since the room's callback field is unexported.
-func NewLiveKitListenerCallback(l *LiveKitListener) *lksdk.RoomCallback {
-	cb := lksdk.NewRoomCallback()
-	cb.OnDataReceived = func(data []byte, params lksdk.DataReceiveParams) {
-		if params.Sender == nil {
-			return
-		}
-
-		id := params.SenderIdentity
-
-		l.mu.Lock()
-		conn, exists := l.conns[id]
-
-		// [CRITICAL FIX] If a connection exists but was previously closed
-		// (e.g., Yamux drop, worker restart), purge it so a fresh pipe
-		// can be spawned for the reconnecting worker. Without this, the
-		// old closed PipeWriter silently drops all data, permanently
-		// locking out the reconnecting worker.
-		if exists && conn.closed {
-			delete(l.conns, id)
-			exists = false
-		}
-
-		if !exists {
-			// First time seeing data from this participant (or after reconnect)
-			conn = NewLiveKitConn(l.room, id)
-			l.conns[id] = conn
-			l.acceptCh <- conn
-		}
-		l.mu.Unlock()
-
-		// Route data to the specific connection's pipe
-		_ = conn.WriteIncoming(data)
+// NewRtpPacketConn creates a new RTP-based packet connection backed by a
+// WebRTC audio track for transmission.
+func NewRtpPacketConn(track *webrtc.TrackLocalStaticSample) *RtpPacketConn {
+	return &RtpPacketConn{
+		localTrack: track,
+		rxQueue:    make(chan []byte, 2048), // Deep buffer for incoming RTP
 	}
-	return cb
 }
 
-// NewLiveKitListener creates a listener and returns it along with the
-// RoomCallback that must be used when connecting to the LiveKit room.
-// Usage:
-//
-//	listener, cb := NewLiveKitListener()
-//	room, err := lksdk.ConnectToRoomWithToken(url, token, cb)
-//	listener.BindRoom(room)
-func NewLiveKitListener() (*LiveKitListener, *lksdk.RoomCallback) {
-	l := &LiveKitListener{
-		conns:    make(map[string]*LiveKitConn),
-		acceptCh: make(chan *LiveKitConn, 100),
+// PushRx receives raw RTP payloads from the WebRTC subscription callback.
+// It filters for QUIC-tagged frames (0x51 prefix) and drops the rest.
+func (c *RtpPacketConn) PushRx(payload []byte) {
+	if len(payload) == 0 {
+		return
 	}
-	cb := NewLiveKitListenerCallback(l)
-	return l, cb
+	// We use 'Q' (0x51) to tag QUIC frames, filtering out actual voice audio
+	if payload[0] == 0x51 {
+		select {
+		case c.rxQueue <- payload[1:]:
+		default:
+			// Buffer full — drop it. QUIC's internal ARQ will resend it automatically.
+		}
+	}
 }
 
-// BindRoom sets the room reference after connection.
-// Must be called after ConnectToRoomWithToken succeeds.
-func (l *LiveKitListener) BindRoom(room *lksdk.Room) {
-	l.room = room
-}
-
-func (l *LiveKitListener) Accept() (net.Conn, error) {
-	conn, ok := <-l.acceptCh
+// ReadFrom feeds QUIC the datagrams we received from WebRTC.
+// Blocks until a packet arrives or the connection is closed.
+func (c *RtpPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	data, ok := <-c.rxQueue
 	if !ok {
-		return nil, fmt.Errorf("listener closed")
+		return 0, nil, net.ErrClosed
 	}
-	return conn, nil
+	n = copy(p, data)
+	return n, fakeAddr, nil
 }
 
-func (l *LiveKitListener) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if !l.closed {
-		l.closed = true
-		close(l.acceptCh)
-		for _, conn := range l.conns {
-			conn.Close()
-		}
+// WriteTo takes QUIC datagrams and writes them to the LiveKit Audio Track.
+// The 0x51 prefix byte is prepended so the receiver can distinguish QUIC
+// frames from real audio content.
+func (c *RtpPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	if c.closed {
+		return 0, net.ErrClosed
 	}
+
+	// Prepend the 'Q' tag (1 byte)
+	payload := make([]byte, 1+len(p))
+	payload[0] = 0x51
+	copy(payload[1:], p)
+
+	// Write as an audio sample. Duration prevents LiveKit from throttling.
+	err = c.localTrack.WriteSample(media.Sample{
+		Data:     payload,
+		Duration: time.Millisecond * 20,
+	})
+
+	return len(p), err
+}
+
+// Close shuts down the packet connection and closes the receive queue.
+func (c *RtpPacketConn) Close() error {
+	c.closed = true
+	close(c.rxQueue)
 	return nil
 }
 
-func (l *LiveKitListener) Addr() net.Addr {
-	return &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 0}
-}
+func (c *RtpPacketConn) LocalAddr() net.Addr                { return fakeAddr }
+func (c *RtpPacketConn) SetDeadline(t time.Time) error      { return nil }
+func (c *RtpPacketConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *RtpPacketConn) SetWriteDeadline(t time.Time) error { return nil }
 
-// Compile-time check that LiveKitListener implements net.Listener
-var _ net.Listener = (*LiveKitListener)(nil)
+// Compile-time check that RtpPacketConn implements net.PacketConn
+var _ net.PacketConn = (*RtpPacketConn)(nil)

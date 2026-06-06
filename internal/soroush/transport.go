@@ -1,48 +1,9 @@
+// Package soroush — this file previously contained AES-GCM encryption functions
+// for SDP payloads and the WebRTCTransport yamux wrapper.
+//
+// With the migration to QUIC over RTP Audio Tracks:
+//   - Yamux has been replaced by QUIC's native stream multiplexing
+//   - DataChannel transport has been replaced by RtpPacketConn
+//   - The HKDF-based handshake and PSK verification functions live in handshake.go
+//   - TLS authentication is handled by QUIC's built-in TLS 1.3
 package soroush
-
-import (
-	"net"
-	"sync"
-
-	"github.com/hashicorp/yamux"
-)
-
-// WebRTCTransport manages the LiveKit SFU DataChannel connection.
-// Retained as a thin wrapper for backwards compatibility with the
-// pool and worker injection interface.
-type WebRTCTransport struct {
-	rawConn  net.Conn
-	yamuxSes *yamux.Session
-	mu       sync.Mutex
-	closed   bool
-}
-
-// NewWebRTCTransport creates a new WebRTCTransport.
-func NewWebRTCTransport() *WebRTCTransport {
-	return &WebRTCTransport{}
-}
-
-// YamuxSession returns the active yamux session.
-func (t *WebRTCTransport) YamuxSession() *yamux.Session {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.yamuxSes
-}
-
-// Close closes the transport and cleans up resources.
-func (t *WebRTCTransport) Close() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closed {
-		return
-	}
-	t.closed = true
-
-	if t.yamuxSes != nil {
-		t.yamuxSes.Close()
-	}
-	if t.rawConn != nil {
-		t.rawConn.Close()
-	}
-}

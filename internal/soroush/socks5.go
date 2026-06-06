@@ -8,6 +8,8 @@ import (
 	"net"
 
 	"clever-connect/internal/logger"
+
+	"github.com/quic-go/quic-go"
 )
 
 // SOCKS5 protocol constants
@@ -21,9 +23,9 @@ const (
 )
 
 // StartSOCKS5Listener starts a local SOCKS5 proxy server on the given port.
-// Each incoming connection is authenticated, then a yamux stream is opened
-// from the pool, and traffic is bidirectionally proxied.
-func StartSOCKS5Listener(ctx context.Context, port int, pool *MultiplexerPool) error {
+// Each incoming connection is authenticated, then a QUIC stream is opened
+// from the session, and traffic is bidirectionally proxied.
+func StartSOCKS5Listener(ctx context.Context, port int, quicConn *quic.Conn) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	lc := &net.ListenConfig{}
@@ -54,48 +56,26 @@ func StartSOCKS5Listener(ctx context.Context, port int, pool *MultiplexerPool) e
 			}
 		}
 
-		go handleSOCKS5(ctx, conn, pool)
+		go handleSOCKS5(ctx, conn, quicConn)
 	}
 }
 
 // handleSOCKS5 handles a single SOCKS5 client connection.
-func handleSOCKS5(ctx context.Context, conn net.Conn, pool *MultiplexerPool) {
+func handleSOCKS5(ctx context.Context, conn net.Conn, quicConn *quic.Conn) {
 	defer conn.Close()
 
-	// 1. Auth negotiation
+	// 1. Auth negotiation + CONNECT request parsing
 	target, err := socks5Handshake(conn)
 	if err != nil {
 		logger.Debug(component, "SOCKS5 handshake failed", "error", err)
 		return
 	}
 
-	// 2. Get a yamux stream from the pool
-	stream, err := pool.NextStream()
-	if err != nil {
-		logger.Warn(component, "SOCKS5 no stream available", "error", err, "target", target)
-		socks5Reply(conn, 0x05) // connection refused
-		return
-	}
-	defer stream.Close()
-
-	// 3. Send the target address as a header on the yamux stream
-	// Format: [2-byte length][target string]
-	targetBytes := []byte(target)
-	header := make([]byte, 2+len(targetBytes))
-	binary.BigEndian.PutUint16(header[:2], uint16(len(targetBytes)))
-	copy(header[2:], targetBytes)
-
-	if _, err := stream.Write(header); err != nil {
-		logger.Warn(component, "SOCKS5 failed to send target header", "error", err)
-		socks5Reply(conn, 0x05)
-		return
-	}
-
-	// 4. Send success reply to SOCKS5 client
+	// 2. Send success reply to SOCKS5 client
 	socks5Reply(conn, 0x00) // succeeded
 
-	// 5. Bidirectional proxy
-	bidirectionalCopy(conn, stream)
+	// 3. Open a QUIC stream and relay traffic
+	dialQuicStream(ctx, quicConn, target, conn)
 }
 
 // socks5Handshake performs the SOCKS5 handshake and returns the target address.
@@ -179,24 +159,4 @@ func socks5Reply(conn net.Conn, rep byte) {
 	// VER REP RSV ATYP BND.ADDR BND.PORT
 	reply := []byte{socks5Version, rep, 0x00, socks5AtypIPv4, 0, 0, 0, 0, 0, 0}
 	conn.Write(reply)
-}
-
-// bidirectionalCopy copies data between two connections until one closes.
-func bidirectionalCopy(a, b net.Conn) {
-	done := make(chan struct{}, 2)
-
-	go func() {
-		n, _ := io.Copy(a, b)
-		bytesRelayed.Add(n)
-		done <- struct{}{}
-	}()
-
-	go func() {
-		n, _ := io.Copy(b, a)
-		bytesRelayed.Add(n)
-		done <- struct{}{}
-	}()
-
-	// Wait for either direction to finish
-	<-done
 }

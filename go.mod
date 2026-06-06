@@ -13,11 +13,13 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/gotd/td v0.119.0
-	github.com/hashicorp/yamux v0.1.2
 	github.com/joho/godotenv v1.5.1
 	github.com/kkdai/youtube/v2 v2.10.6
+	github.com/livekit/protocol v1.46.6
 	github.com/livekit/server-sdk-go/v2 v2.16.6
 	github.com/mholt/archives v0.1.5
+	github.com/pion/webrtc/v4 v4.2.11
+	github.com/quic-go/quic-go v0.59.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/sagernet/sing-box v1.13.2
 	github.com/shirou/gopsutil/v3 v3.24.5
@@ -143,6 +145,7 @@ require (
 	github.com/hashicorp/go-envparse v0.1.0 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/hodgesds/perf-utils v0.7.0 // indirect
 	github.com/huandu/xstrings v1.3.2 // indirect
 	github.com/illumos/go-kstat v0.0.0-20210513183136-173c9b0a9973 // indirect
@@ -166,7 +169,6 @@ require (
 	github.com/lithammer/shortuuid/v4 v4.2.0 // indirect
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 // indirect
 	github.com/livekit/mediatransportutil v0.0.0-20260521165806-8004f10ad0c5 // indirect
-	github.com/livekit/protocol v1.46.6 // indirect
 	github.com/livekit/psrpc v0.7.1 // indirect
 	github.com/logrusorgru/aurora v2.0.3+incompatible // indirect
 	github.com/lufia/iostat v1.2.1 // indirect
@@ -219,7 +221,6 @@ require (
 	github.com/pion/stun/v3 v3.1.1 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/pion/turn/v4 v4.1.4 // indirect
-	github.com/pion/webrtc/v4 v4.2.11 // indirect
 	github.com/pires/go-proxyproto v0.11.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
@@ -232,7 +233,6 @@ require (
 	github.com/protolambda/ctxlock v0.1.0 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/redis/go-redis/v9 v9.17.2 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

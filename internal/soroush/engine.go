@@ -1,13 +1,21 @@
-// Package soroush implements the Soroush SFU P2P Swarm tunnel engine.
+// Package soroush implements the Soroush SFU RTP-based QUIC tunnel engine.
 // It operates as an additive, parallel service to the existing Ehco infrastructure,
-// routing traffic securely through LiveKit WebRTC DataChannels signaled via tokens.
+// routing traffic securely through LiveKit WebRTC Audio Tracks disguised as voice calls.
+//
+// Architecture: QUIC → RtpPacketConn → LiveKit Audio Track (Opus) → SFU → Remote
 package soroush
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
-	"io"
-	"math/rand"
+	"math/big"
+	mrand "math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,8 +24,10 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
-	"github.com/hashicorp/yamux"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	livekit "github.com/livekit/protocol/livekit"
+	"github.com/pion/webrtc/v4"
+	"github.com/quic-go/quic-go"
 )
 
 const component = "Soroush"
@@ -44,7 +54,7 @@ func StartEngine(cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccou
 	}
 
 	if cfg.PSK == "" {
-		return fmt.Errorf("PSK is required for in-band DataChannel authentication")
+		return fmt.Errorf("PSK is required for QUIC TLS authentication")
 	}
 
 	if len(accounts) == 0 {
@@ -69,7 +79,7 @@ func StartEngine(cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccou
 		}
 	}
 
-	logger.Info(component, "Starting Soroush LiveKit engine",
+	logger.Info(component, "Starting Soroush LiveKit QUIC engine",
 		"mode", mode,
 		"accounts", len(accounts),
 		"socks_port", cfg.SocksPort,
@@ -86,10 +96,14 @@ func StartEngine(cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccou
 	return nil
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Server Engine
+// ──────────────────────────────────────────────────────────────────────────────
+
 // runServer starts the server-side (Queen) engine bound to the LiveKit Room.
-// Uses the host account's per-account LiveKitToken for connection.
+// It publishes a fake audio track and accepts QUIC sessions from workers.
 func runServer(ctx context.Context, cfg *models.SoroushTunnelConfig, hostAccount *models.SoroushAccount) {
-	logger.Info(component, "Server engine goroutine started, initializing SFU Listener")
+	logger.Info(component, "Server engine goroutine started, initializing RTP+QUIC listener")
 
 	for {
 		select {
@@ -123,117 +137,136 @@ func runServer(ctx context.Context, cfg *models.SoroushTunnelConfig, hostAccount
 			url = "wss://k.splus.ir" // Default Soroush LiveKit endpoint
 		}
 
-		// Create listener + callback BEFORE connecting (room.callback is unexported in v2 SDK)
-		listener, listenerCb := NewLiveKitListener()
+		// 1. Create the fake Audio Track
+		localTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
+			MimeType:  webrtc.MimeTypeOpus,
+			ClockRate: 48000,
+			Channels:  2,
+		}, "tunnel-quic", "tunnel")
+		if err != nil {
+			logger.Error(component, "Server: Failed to create local audio track", "error", err)
+			sleepWithContext(ctx, 5*time.Second)
+			continue
+		}
 
-		room, err := lksdk.ConnectToRoomWithToken(url, hostAccount.LiveKitToken, listenerCb)
+		packetConn := NewRtpPacketConn(localTrack)
+
+		// 2. Setup LiveKit Callbacks to intercept incoming audio tracks
+		roomCb := lksdk.NewRoomCallback()
+		roomCb.OnTrackSubscribed = func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+			if track.Kind() == webrtc.RTPCodecTypeAudio {
+				go func() {
+					for {
+						rtpPacket, _, err := track.ReadRTP()
+						if err != nil {
+							return
+						}
+						packetConn.PushRx(rtpPacket.Payload)
+					}
+				}()
+			}
+		}
+
+		// 3. Connect to the Room using the auto-generated JWT
+		room, err := lksdk.ConnectToRoomWithToken(url, hostAccount.LiveKitToken, roomCb)
 		if err != nil {
 			logger.Error(component, "Server: Failed to connect to LiveKit Room", "error", err)
-			listener.Close()
+			packetConn.Close()
 			sleepWithContext(ctx, 10*time.Second)
 			continue
 		}
 
-		// Bind the room reference so LiveKitConn.Write() can publish data
-		listener.BindRoom(room)
+		// 4. Publish the fake Microphone
+		_, err = room.LocalParticipant.PublishTrack(localTrack, &lksdk.TrackPublicationOptions{
+			Source: livekit.TrackSource_MICROPHONE,
+		})
+		if err != nil {
+			logger.Error(component, "Server: Failed to publish audio track", "error", err)
+			room.Disconnect()
+			packetConn.Close()
+			sleepWithContext(ctx, 5*time.Second)
+			continue
+		}
 
-		logger.Info(component, "Server: Connected to SFU. Virtual Listener active, awaiting worker traffic...",
+		logger.Info(component, "Server: Connected to SFU. Audio track published, starting QUIC listener...",
 			"local_identity", room.LocalParticipant.Identity(),
 		)
 
-		// Spin off context cancellation and disconnect watcher
-		stopChan := make(chan struct{})
-		go func() {
-			select {
-			case <-ctx.Done():
-			case <-stopChan:
-			}
-			room.Disconnect()
-			listener.Close()
-		}()
+		// 5. Start QUIC over the Audio Track (server mode)
+		quicErr := runQuicServer(ctx, packetConn)
 
-		acceptErr := func() error {
-			defer close(stopChan)
-			defer room.Disconnect()
-			defer listener.Close()
+		// Cleanup
+		room.Disconnect()
+		packetConn.Close()
 
-			for {
-				conn, err := listener.Accept()
-				if err != nil {
-					return err
-				}
-				go handleIncomingWorker(ctx, conn.(*LiveKitConn), cfg)
-			}
-		}()
-
-		if acceptErr != nil {
-			logger.Warn(component, "Server: SFU Listener disconnected, reconnecting in 5s...", "error", acceptErr)
+		if quicErr != nil {
+			logger.Warn(component, "Server: QUIC session ended, reconnecting in 5s...", "error", quicErr)
 			sleepWithContext(ctx, 5*time.Second)
 		}
 	}
 }
 
-func handleIncomingWorker(ctx context.Context, conn *LiveKitConn, cfg *models.SoroushTunnelConfig) {
-	logger.Info(component, "Server: Worker connection detected, executing Handshake", "target", conn.targetIdentity)
-
-	// 5-second zero-trust handshake (generous for Iranian SFU latency)
-	challenge := make([]byte, 64)
-	errChan := make(chan error, 1)
-	go func() {
-		_, err := io.ReadFull(conn, challenge)
-		errChan <- err
-	}()
-
-	select {
-	case <-time.After(5 * time.Second):
-		logger.Warn(component, "Server: Handshake timeout, rejecting SFU pipe", "target", conn.targetIdentity)
-		conn.Close()
-		return
-	case err := <-errChan:
-		if err != nil {
-			logger.Warn(component, "Server: Handshake read error", "error", err)
-			conn.Close()
-			return
-		}
-	}
-
-	if err := VerifyHandshakeChallenge(cfg.PSK, challenge); err != nil {
-		logger.Warn(component, "Server: Unauthorized handshake, dropping pipe", "error", err)
-		conn.Close()
-		return
-	}
-
-	logger.Info(component, "Server: Handshake verified, mounting Yamux", "target", conn.targetIdentity)
-
-	yamuxCfg := yamux.DefaultConfig()
-	yamuxCfg.LogOutput = nil
-	yamuxCfg.MaxStreamWindowSize = 1024 * 1024
-	yamuxCfg.ConnectionWriteTimeout = 5 * time.Second
-	yamuxCfg.AcceptBacklog = 1024
-
-	yamuxSess, err := yamux.Server(conn, yamuxCfg)
+// runQuicServer starts a QUIC listener on the given PacketConn and
+// accepts streams from the connected client.
+func runQuicServer(ctx context.Context, conn *RtpPacketConn) error {
+	tlsCert, err := generateSelfSignedCert()
 	if err != nil {
-		logger.Error(component, "Server: Failed to map Yamux over SFU pipe", "error", err)
-		conn.Close()
-		return
+		return fmt.Errorf("generate TLS cert: %w", err)
 	}
 
-	StartRelayHandler(ctx, yamuxSess)
+	tlsConf := &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		NextProtos:   []string{"clever-connect"},
+	}
+
+	// CRITICAL: Disable MTU Discovery so QUIC pads packets to exactly 1200 bytes.
+	// This fits perfectly inside the 1275-byte Opus limit on LiveKit without fragmentation.
+	quicConf := &quic.Config{
+		DisablePathMTUDiscovery: true,
+		KeepAlivePeriod:         time.Second * 15,
+	}
+
+	listener, err := quic.Listen(conn, tlsConf, quicConf)
+	if err != nil {
+		return fmt.Errorf("quic listen: %w", err)
+	}
+	defer listener.Close()
+
+	logger.Info(component, "Server: QUIC listener active, awaiting client sessions")
+
+	for {
+		session, err := listener.Accept(ctx)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				return fmt.Errorf("quic accept: %w", err)
+			}
+		}
+
+		logger.Info(component, "Server: QUIC session established from worker")
+
+		go func(sess *quic.Conn) {
+			for {
+				stream, err := sess.AcceptStream(ctx)
+				if err != nil {
+					logger.Debug(component, "Server: QUIC stream accept ended", "error", err)
+					return
+				}
+				go HandleServerRelay(stream)
+			}
+		}(session)
+	}
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Client Engine
+// ──────────────────────────────────────────────────────────────────────────────
 
 // runClient starts the client-side (Swarm) engine.
 func runClient(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []models.SoroushAccount) {
 	logger.Info(component, "Client engine goroutine started")
-
-	pool := NewMultiplexerPool(cfg.LoadBalanceAlgo)
-
-	go func() {
-		if err := StartSOCKS5Listener(ctx, cfg.SocksPort, pool); err != nil {
-			logger.Error(component, "SOCKS5 listener error", "error", err)
-		}
-	}()
-
-	go pool.HealthCheck(ctx)
 
 	maxWorkers := cfg.MaxWorkers
 	if maxWorkers > len(accounts) {
@@ -245,7 +278,7 @@ func runClient(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []
 		wg.Add(1)
 		go func(acct models.SoroushAccount) {
 			defer wg.Done()
-			runWorker(ctx, cfg, &acct, pool)
+			runWorker(ctx, cfg, &acct)
 		}(accounts[i])
 	}
 
@@ -255,7 +288,7 @@ func runClient(ctx context.Context, cfg *models.SoroushTunnelConfig, accounts []
 
 // runWorker manages a single worker connection to the SFU Room.
 // Each worker uses its own per-account LiveKitToken to avoid identity collisions.
-func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *models.SoroushAccount, pool *MultiplexerPool) {
+func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *models.SoroushAccount) {
 	defer func() {
 		db.DB.Model(acct).Update("status", "idle")
 	}()
@@ -270,7 +303,7 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 		logger.Info(component, "Worker starting SFU connection phase", "phone", maskPhone(acct.PhoneNumber))
 		db.DB.Model(acct).Update("status", "connecting")
 
-		jitter := time.Duration(1000+rand.Intn(2000)) * time.Millisecond
+		jitter := time.Duration(1000+mrand.Intn(2000)) * time.Millisecond
 		sleepWithContext(ctx, jitter)
 
 		// Reload configuration dynamically
@@ -299,99 +332,109 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 			url = "wss://k.splus.ir" // Default Soroush LiveKit endpoint
 		}
 
-		serverTargetIdentity := cfg.ServerIdentity
-
-		// [FIX #3] Initialize the io.Pipe and LiveKitConn BEFORE connecting to
-		// prevent nil-pointer race: if the server sends data the microsecond we
-		// connect, the callback must already have a live pipe to write into.
-		pr, pw := io.Pipe()
-		conn := &LiveKitConn{
-			targetIdentity: serverTargetIdentity,
-			pr:             pr,
-			pw:             pw,
+		// 1. Create the fake Audio Track
+		localTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
+			MimeType:  webrtc.MimeTypeOpus,
+			ClockRate: 48000,
+			Channels:  2,
+		}, "tunnel-quic", "tunnel")
+		if err != nil {
+			logger.Error(component, "Worker: Failed to create local audio track", "error", err)
+			db.DB.Model(acct).Update("status", "error")
+			sleepWithContext(ctx, 5*time.Second)
+			continue
 		}
 
+		packetConn := NewRtpPacketConn(localTrack)
+
+		// 2. Setup LiveKit Callbacks to intercept incoming audio tracks
 		roomCb := lksdk.NewRoomCallback()
-		roomCb.OnDataReceived = func(data []byte, params lksdk.DataReceiveParams) {
-			// Only accept data originating from the Queen Server identity
-			if params.SenderIdentity == serverTargetIdentity {
-				_ = conn.WriteIncoming(data)
+		roomCb.OnTrackSubscribed = func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+			if track.Kind() == webrtc.RTPCodecTypeAudio {
+				go func() {
+					for {
+						rtpPacket, _, err := track.ReadRTP()
+						if err != nil {
+							return
+						}
+						packetConn.PushRx(rtpPacket.Payload)
+					}
+				}()
 			}
 		}
 
-		// Each worker connects with its OWN per-account token (unique identity)
+		// 3. Connect to the Room using the per-account JWT (unique identity)
 		room, err := lksdk.ConnectToRoomWithToken(url, acct.LiveKitToken, roomCb)
 		if err != nil {
 			logger.Error(component, "Worker: Failed to connect to SFU Room", "error", err)
 			db.DB.Model(acct).Update("status", "error")
-			conn.Close() // cleanup pipe
+			packetConn.Close()
 			sleepWithContext(ctx, 10*time.Second)
 			continue
 		}
 
-		// Attach room reference after successful connection so Write() can publish
-		conn.room = room
-
-		// Send 64-byte HKDF challenge
-		challenge, err := BuildHandshakeChallenge(cfg.PSK)
+		// 4. Publish the fake Microphone
+		_, err = room.LocalParticipant.PublishTrack(localTrack, &lksdk.TrackPublicationOptions{
+			Source: livekit.TrackSource_MICROPHONE,
+		})
 		if err != nil {
-			logger.Error(component, "Worker: Failed to build handshake challenge", "error", err)
-			conn.Close()
+			logger.Error(component, "Worker: Failed to publish audio track", "error", err)
 			room.Disconnect()
-			continue
-		}
-
-		if _, err := conn.Write(challenge); err != nil {
-			logger.Error(component, "Worker: Failed to write handshake challenge", "error", err)
-			conn.Close()
-			room.Disconnect()
-			continue
-		}
-
-		logger.Info(component, "Worker: SFU connection established, initiating Yamux", "phone", maskPhone(acct.PhoneNumber))
-
-		yamuxCfg := yamux.DefaultConfig()
-		yamuxCfg.LogOutput = nil
-		yamuxCfg.MaxStreamWindowSize = 1024 * 1024
-		yamuxCfg.ConnectionWriteTimeout = 5 * time.Second
-		yamuxCfg.AcceptBacklog = 1024
-
-		yamuxSess, yamuxError := yamux.Client(conn, yamuxCfg)
-		if yamuxError != nil {
-			logger.Error(component, "Worker: Failed to map Yamux client over SFU pipe", "error", yamuxError)
-			conn.Close()
-			room.Disconnect()
-			continue
-		}
-
-		// Inject into load balancer pool
-		wc := &WorkerChannel{
-			AccountID:    fmt.Sprintf("%d", acct.ID),
-			Transport:    &WebRTCTransport{}, // Stub for pool logic
-			YamuxSession: yamuxSess,
-			Healthy:      true,
-		}
-		pool.Inject(wc)
-
-		logger.Info(component, "Worker connection active and routed", "phone", maskPhone(acct.PhoneNumber))
-		db.DB.Model(acct).Update("status", "tunnel_active")
-
-		select {
-		case <-ctx.Done():
-			pool.Purge(wc.AccountID)
-			conn.Close()
-			room.Disconnect()
-			return
-		case <-yamuxSess.CloseChan():
-			logger.Warn(component, "Worker yamux session closed by peer, resetting", "phone", maskPhone(acct.PhoneNumber))
+			packetConn.Close()
 			db.DB.Model(acct).Update("status", "error")
-			pool.Purge(wc.AccountID)
-			conn.Close()
-			room.Disconnect()
+			sleepWithContext(ctx, 5*time.Second)
+			continue
+		}
+
+		logger.Info(component, "Worker: SFU connection established, starting QUIC client", "phone", maskPhone(acct.PhoneNumber))
+
+		// 5. Start QUIC client over the Audio Track
+		quicErr := runQuicClient(ctx, packetConn, cfg)
+
+		// Cleanup
+		room.Disconnect()
+		packetConn.Close()
+
+		if quicErr != nil {
+			logger.Warn(component, "Worker: QUIC session ended, reconnecting in 3s...",
+				"phone", maskPhone(acct.PhoneNumber), "error", quicErr,
+			)
+			db.DB.Model(acct).Update("status", "error")
 			sleepWithContext(ctx, 3*time.Second)
 		}
 	}
 }
+
+// runQuicClient dials a QUIC connection over the RTP PacketConn and
+// starts the local SOCKS5 listener that proxies through it.
+func runQuicClient(ctx context.Context, conn *RtpPacketConn, cfg *models.SoroushTunnelConfig) error {
+	tlsConf := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"clever-connect"},
+	}
+
+	// CRITICAL: Disable MTU Discovery so QUIC pads packets to exactly 1200 bytes.
+	quicConf := &quic.Config{
+		DisablePathMTUDiscovery: true,
+		KeepAlivePeriod:         time.Second * 15,
+	}
+
+	session, err := quic.Dial(ctx, conn, fakeAddr, tlsConf, quicConf)
+	if err != nil {
+		return fmt.Errorf("quic dial: %w", err)
+	}
+
+	logger.Info(component, "Client: QUIC session established with server")
+	db.DB.Model(&models.SoroushAccount{}).Where("status = ?", "connecting").Update("status", "tunnel_active")
+
+	// Start SOCKS5 proxy that uses this QUIC session
+	socksErr := StartSOCKS5Listener(ctx, cfg.SocksPort, session)
+	return socksErr
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Engine Control
+// ──────────────────────────────────────────────────────────────────────────────
 
 // StopEngine gracefully stops the tunnel engine.
 func StopEngine() {
@@ -403,7 +446,7 @@ func StopEngine() {
 		return
 	}
 
-	logger.Info(component, "Stopping LiveKit Soroush tunnel engine")
+	logger.Info(component, "Stopping LiveKit Soroush QUIC tunnel engine")
 	engineCancel()
 
 	engineMu.Lock()
@@ -420,12 +463,11 @@ func IsRunning() bool {
 
 // TunnelStatus contains the current state of the Soroush tunnel engine.
 type TunnelStatus struct {
-	Running      bool      `json:"running"`
-	Mode         string    `json:"mode"`
-	TotalStreams  int64     `json:"total_streams"`
-	BytesRelayed int64     `json:"bytes_relayed"`
-	Uptime       string    `json:"uptime"`
-	PoolStats    PoolStats `json:"pool_stats"`
+	Running      bool   `json:"running"`
+	Mode         string `json:"mode"`
+	TotalStreams  int64  `json:"total_streams"`
+	BytesRelayed int64  `json:"bytes_relayed"`
+	Uptime       string `json:"uptime"`
 }
 
 // GetStatus returns the current tunnel status snapshot.
@@ -447,6 +489,10 @@ func GetStatus() *TunnelStatus {
 	return status
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
 func sleepWithContext(ctx context.Context, d time.Duration) {
 	select {
 	case <-time.After(d):
@@ -459,4 +505,35 @@ func maskPhone(phone string) string {
 		return "****"
 	}
 	return phone[:3] + "****" + phone[len(phone)-2:]
+}
+
+// generateSelfSignedCert creates a self-signed TLS certificate for the QUIC server.
+// Since both sides are authenticated via the Soroush PSK handshake, the client
+// uses InsecureSkipVerify and this cert serves only as the TLS transport key.
+func generateSelfSignedCert() (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	return tls.X509KeyPair(certPEM, keyPEM)
 }
