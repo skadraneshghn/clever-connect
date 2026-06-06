@@ -14,44 +14,46 @@ import (
 	"clever-connect/internal/soroushlib"
 )
 
-// GetOrRefreshLiveKitToken checks if the account's LiveKitToken is valid and unexpired.
-// If it is invalid or expiring within 2 minutes, it connects to Soroush via MTProto,
-// requests a new token, saves it to the database, and returns it.
+const componentJit = "SoroushJit"
+
+// GetOrRefreshLiveKitToken coordinates automatic token extraction with static infrastructure overrides.
 func GetOrRefreshLiveKitToken(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *models.SoroushAccount, isServer bool) (string, error) {
+	// 1. Memory Cache Layer Validation
 	if acct.LiveKitToken != "" && !IsTokenExpired(acct.LiveKitToken) {
+		logger.Debug(componentJit, "JIT: Reusing active unexpired token from cache database.")
 		return acct.LiveKitToken, nil
 	}
 
-	logger.Info(component, "JIT: LiveKitToken is missing or expired. Fetching fresh token...", "phone", soroushlib.MaskPhone(acct.PhoneNumber))
-
-	if cfg.GroupChatID == 0 {
-		return "", fmt.Errorf("GroupChatID is not configured in Soroush Tunnel Config")
+	// 2. STRATEGIC OVERRIDE: Check if static Call Routing is configured
+	if cfg.CallID != 0 && cfg.CallAccessHash != 0 {
+		logger.Info(componentJit, "JIT: Static Call Routing detected. Skipping auto-resolution loops...", "call_id", cfg.CallID)
+		return fetchTokenWithIdentifiers(ctx, cfg.CallID, cfg.CallAccessHash, acct)
 	}
 
-	// Restore session from saved auth credentials
+	logger.Info(componentJit, "JIT: Synchronizing signaling session with wss://im-server.splus.ir/apiws...")
+
+	// 3. Establish custom obfuscated signaling session
 	session, transport := soroushlib.RestoreSession(
 		acct.AuthKey,
 		acct.AuthKeyID,
 		acct.ServerSalt,
 	)
 
-	// Connect the transport (WebSocket + obfuscation handshake)
 	if err := transport.Connect(ctx); err != nil {
-		return "", fmt.Errorf("failed to connect to Soroush: %w", err)
+		return "", fmt.Errorf("failed to establish WebSocket transport: %w", err)
 	}
 	defer transport.Disconnect()
 
-	// Warm up session to prime the server salt
 	if err := session.WarmUpSession(ctx); err != nil {
-		return "", fmt.Errorf("failed to warm up Soroush session: %w", err)
+		return "", fmt.Errorf("session warmup verification rejected: %w", err)
 	}
 
-	// Step 1: Resolve the active group call ID and access hash
+	// 4. Resolve Active Call Meta Structures
 	callID, callAccessHash, err := soroushlib.ResolveGroupCall(ctx, session, cfg.GroupChatID, cfg.GroupAccessHash)
 	if err != nil {
 		// If we are the server and no call is active, we attempt to create it
 		if isServer {
-			logger.Info(component, "JIT: No active group call found, creating one...", "chat_id", cfg.GroupChatID)
+			logger.Info(componentJit, "JIT: No active group call found, creating one...", "chat_id", cfg.GroupChatID)
 			if createErr := soroushlib.CreateGroupCall(ctx, session, cfg.GroupChatID, cfg.GroupAccessHash); createErr != nil {
 				return "", fmt.Errorf("failed to create group call: %w", createErr)
 			}
@@ -61,49 +63,52 @@ func GetOrRefreshLiveKitToken(ctx context.Context, cfg *models.SoroushTunnelConf
 				return "", fmt.Errorf("failed to resolve group call after creation: %w", err)
 			}
 		} else {
-			return "", fmt.Errorf("failed to resolve active group call: %w", err)
+			logger.Error(componentJit, "JIT: Auto-resolution failed to locate a running call instance. Optimization required.", "error", err)
+			return "", fmt.Errorf("resolution failed. Prerequisite: Ensure your account has joined group %d or use Static Call Overrides. Error: %w", cfg.GroupChatID, err)
 		}
 	}
 
-	logger.Info(component, "JIT: Active group call resolved",
-		"call_id", callID,
-		"call_access_hash", callAccessHash,
-	)
+	logger.Info(componentJit, "JIT: Dynamic call instance resolved successfully", "call_id", callID)
+	return fetchTokenWithIdentifiers(ctx, callID, callAccessHash, acct)
+}
 
-	// Step 2: phone.joinGroupCall — get the LiveKit JWT
+// fetchTokenWithIdentifiers executes the direct target handshake over the MTProto signaling gateway.
+func fetchTokenWithIdentifiers(ctx context.Context, callID int64, callAccessHash int64, acct *models.SoroushAccount) (string, error) {
+	session, transport := soroushlib.RestoreSession(acct.AuthKey, acct.AuthKeyID, acct.ServerSalt)
+	if err := transport.Connect(ctx); err != nil {
+		return "", err
+	}
+	defer transport.Disconnect()
+	_ = session.WarmUpSession(ctx)
+
+	// Build direct join frame matching official web application parameters
 	joinBody := soroushlib.BuildJoinGroupCallRequest(
 		callID,
 		callAccessHash,
 		acct.SoroushUserID,
 		acct.AccessHash,
-		true, // muted = true (data-only, no audio)
+		true, // Mute media tracks (Tunnel data framing mode)
 	)
 
 	cid, reader, err := session.SendAndWait(ctx, joinBody, true)
 	if err != nil {
-		return "", fmt.Errorf("phone.joinGroupCall failed: %w", err)
+		return "", fmt.Errorf("phone.joinGroupCall signaling rejected by platform: %w", err)
 	}
 
 	gcToken, err := soroushlib.ParseJoinGroupCallResponse(cid, reader)
 	if err != nil {
-		return "", fmt.Errorf("parse joinGroupCall response: %w", err)
+		return "", fmt.Errorf("failed to extract token from payload structure: %w", err)
 	}
 
 	if gcToken.JWT == "" {
-		return "", fmt.Errorf("joinGroupCall returned empty JWT token")
+		return "", fmt.Errorf("server responded successfully but token block string was empty")
 	}
 
-	logger.Info(component, "JIT: LiveKit JWT acquired successfully",
-		"room", gcToken.RoomID,
-		"jwt_len", len(gcToken.JWT),
-	)
-
-	// Update the database so it persists across runs and can be viewed
+	// Persist synchronized token to caching layers
 	acct.LiveKitToken = gcToken.JWT
-	if err := db.DB.Save(acct).Error; err != nil {
-		logger.Warn(component, "JIT: Failed to save refreshed token to DB", "error", err)
-	}
+	db.DB.Save(acct)
 
+	logger.Info(componentJit, "JIT: LiveKit Access Token extracted successfully from custom transport loop.")
 	return gcToken.JWT, nil
 }
 
