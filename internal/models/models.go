@@ -99,12 +99,13 @@ type SoroushTunnelConfig struct {
 	CallAccessHash  int64  `json:"call_access_hash"`    // Static bypass parameter
 	ServerIdentity  string `json:"server_identity"`     // The exact Soroush UserID of the Queen (e.g., "64698297")
 	PSK             string `json:"psk"`                 // Pre-Shared Key for worker auth
-	LiveKitURL      string `json:"livekit_url"`         // LiveKit SFU WebSocket endpoint (e.g., wss://k.splus.ir)
-	SocksPort       int    `json:"socks_port" gorm:"default:4046"`
-	IsActive        bool   `json:"is_active" gorm:"default:false"`
-	EngineMode      string `json:"engine_mode" gorm:"size:30;default:'swarm'"` // 'swarm' (LiveKit SFU Swarm)
-	MaxWorkers      int    `json:"max_workers" gorm:"default:5"`
-	LoadBalanceAlgo string `json:"load_balance_algo" gorm:"size:30;default:'least-latency'"` // 'round-robin', 'least-latency'
+	LiveKitURL            string `json:"livekit_url"`         // LiveKit SFU WebSocket endpoint (e.g., wss://k.splus.ir)
+	FallbackLiveKitToken  string `json:"fallback_livekit_token" gorm:"type:text"` // Manual fallback LiveKit token
+	SocksPort             int    `json:"socks_port" gorm:"default:4046"`
+	IsActive              bool   `json:"is_active" gorm:"default:false"`
+	EngineMode            string `json:"engine_mode" gorm:"size:30;default:'swarm'"` // 'swarm' (LiveKit SFU Swarm)
+	MaxWorkers            int    `json:"max_workers" gorm:"default:5"`
+	LoadBalanceAlgo       string `json:"load_balance_algo" gorm:"size:30;default:'least-latency'"` // 'round-robin', 'least-latency'
 }
 
 // LeechConfig stores the advanced settings for the download manager

@@ -310,14 +310,17 @@ func (h *SoroushHandler) GetSoroushConfig(c *gin.Context) {
 // UpdateSoroushConfig handles PUT /api/soroush/config
 func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 	var req struct {
-		GroupChatID     int64  `json:"group_chat_id"`
-		GroupAccessHash int64  `json:"group_access_hash"`
-		ServerIdentity  string `json:"server_identity"`
-		PSK             string `json:"psk"`
-		LiveKitURL      string `json:"livekit_url"`
-		SocksPort       int    `json:"socks_port"`
-		MaxWorkers      int    `json:"max_workers"`
-		LoadBalanceAlgo string `json:"load_balance_algo"`
+		GroupChatID          int64  `json:"group_chat_id"`
+		GroupAccessHash      int64  `json:"group_access_hash"`
+		CallID               int64  `json:"call_id"`
+		CallAccessHash       int64  `json:"call_access_hash"`
+		ServerIdentity       string `json:"server_identity"`
+		PSK                  string `json:"psk"`
+		LiveKitURL           string `json:"livekit_url"`
+		FallbackLiveKitToken string `json:"fallback_livekit_token"`
+		SocksPort            int    `json:"socks_port"`
+		MaxWorkers           int    `json:"max_workers"`
+		LoadBalanceAlgo      string `json:"load_balance_algo"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -331,13 +334,13 @@ func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 		return
 	}
 
-	// Update only non-zero fields
-	if req.GroupChatID != 0 {
-		cfg.GroupChatID = req.GroupChatID
-	}
-	if req.GroupAccessHash != 0 {
-		cfg.GroupAccessHash = req.GroupAccessHash
-	}
+	// Update fields (allow 0 or empty to clear them)
+	cfg.GroupChatID = req.GroupChatID
+	cfg.GroupAccessHash = req.GroupAccessHash
+	cfg.CallID = req.CallID
+	cfg.CallAccessHash = req.CallAccessHash
+	cfg.FallbackLiveKitToken = req.FallbackLiveKitToken
+
 	if req.ServerIdentity != "" {
 		cfg.ServerIdentity = req.ServerIdentity
 	}
@@ -499,15 +502,16 @@ func (h *SoroushHandler) SyncConfig(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"sync_payload": gin.H{
-			"group_chat_id":      cfg.GroupChatID,
-			"group_access_hash":  cfg.GroupAccessHash,
-			"server_identity":    cfg.ServerIdentity,
-			"psk":                cfg.PSK,
-			"livekit_url":        cfg.LiveKitURL,
-			"socks_port":         cfg.SocksPort,
-			"max_workers":        cfg.MaxWorkers,
-			"load_balance_algo":  cfg.LoadBalanceAlgo,
-			"verification_token": verifyToken,
+			"group_chat_id":          cfg.GroupChatID,
+			"group_access_hash":      cfg.GroupAccessHash,
+			"server_identity":        cfg.ServerIdentity,
+			"psk":                    cfg.PSK,
+			"livekit_url":            cfg.LiveKitURL,
+			"fallback_livekit_token": cfg.FallbackLiveKitToken,
+			"socks_port":             cfg.SocksPort,
+			"max_workers":            cfg.MaxWorkers,
+			"load_balance_algo":      cfg.LoadBalanceAlgo,
+			"verification_token":     verifyToken,
 		},
 	})
 }
@@ -550,15 +554,16 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 
 	var syncResp struct {
 		SyncPayload struct {
-			GroupChatID     int64  `json:"group_chat_id"`
-			GroupAccessHash int64  `json:"group_access_hash"`
-			ServerIdentity  string `json:"server_identity"`
-			PSK             string `json:"psk"`
-			LiveKitURL      string `json:"livekit_url"`
-			SocksPort       int    `json:"socks_port"`
-			MaxWorkers      int    `json:"max_workers"`
-			LoadBalanceAlgo string `json:"load_balance_algo"`
-			VerifyToken     string `json:"verification_token"`
+			GroupChatID          int64  `json:"group_chat_id"`
+			GroupAccessHash      int64  `json:"group_access_hash"`
+			ServerIdentity       string `json:"server_identity"`
+			PSK                  string `json:"psk"`
+			LiveKitURL           string `json:"livekit_url"`
+			FallbackLiveKitToken string `json:"fallback_livekit_token"`
+			SocksPort            int    `json:"socks_port"`
+			MaxWorkers           int    `json:"max_workers"`
+			LoadBalanceAlgo      string `json:"load_balance_algo"`
+			VerifyToken          string `json:"verification_token"`
 		} `json:"sync_payload"`
 	}
 
@@ -593,6 +598,9 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 	cfg.PSK = p.PSK
 	if p.LiveKitURL != "" {
 		cfg.LiveKitURL = p.LiveKitURL
+	}
+	if p.FallbackLiveKitToken != "" {
+		cfg.FallbackLiveKitToken = p.FallbackLiveKitToken
 	}
 	if p.SocksPort > 0 {
 		cfg.SocksPort = p.SocksPort

@@ -16,9 +16,12 @@ interface SoroushAccount {
 interface TunnelConfig {
   group_chat_id: number;
   group_access_hash: number;
+  call_id: number;
+  call_access_hash: number;
   server_identity: string;
   psk: string;
   livekit_url: string;
+  fallback_livekit_token: string;
   socks_port: number;
   is_active: boolean;
   engine_mode: string;
@@ -58,9 +61,12 @@ export const SoroushPage: React.FC = () => {
   // Config form state
   const [cfgGroupChatId, setCfgGroupChatId] = useState(0);
   const [cfgGroupAccessHash, setCfgGroupAccessHash] = useState(0);
+  const [cfgCallId, setCfgCallId] = useState(0);
+  const [cfgCallAccessHash, setCfgCallAccessHash] = useState(0);
   const [cfgServerIdentity, setCfgServerIdentity] = useState('');
   const [cfgPSK, setCfgPSK] = useState('');
   const [cfgLiveKitURL, setCfgLiveKitURL] = useState('');
+  const [cfgFallbackLiveKitToken, setCfgFallbackLiveKitToken] = useState('');
   const [cfgSocksPort, setCfgSocksPort] = useState(4046);
   const [cfgMaxWorkers, setCfgMaxWorkers] = useState(5);
   const [cfgLoadBalanceAlgo, setCfgLoadBalanceAlgo] = useState('least-latency');
@@ -103,9 +109,12 @@ export const SoroushPage: React.FC = () => {
         if (c) {
           setCfgGroupChatId(c.group_chat_id || 0);
           setCfgGroupAccessHash(c.group_access_hash || 0);
+          setCfgCallId(c.call_id || 0);
+          setCfgCallAccessHash(c.call_access_hash || 0);
           setCfgServerIdentity(c.server_identity || '');
           setCfgPSK(c.psk || '');
           setCfgLiveKitURL(c.livekit_url || '');
+          setCfgFallbackLiveKitToken(c.fallback_livekit_token || '');
           setCfgSocksPort(c.socks_port || 4046);
           setCfgMaxWorkers(c.max_workers || 5);
           setCfgLoadBalanceAlgo(c.load_balance_algo || 'least-latency');
@@ -196,9 +205,12 @@ export const SoroushPage: React.FC = () => {
         body: JSON.stringify({
           group_chat_id: cfgGroupChatId,
           group_access_hash: cfgGroupAccessHash,
+          call_id: cfgCallId,
+          call_access_hash: cfgCallAccessHash,
           server_identity: cfgServerIdentity,
           psk: cfgPSK,
           livekit_url: cfgLiveKitURL,
+          fallback_livekit_token: cfgFallbackLiveKitToken,
           socks_port: cfgSocksPort,
           max_workers: cfgMaxWorkers,
           load_balance_algo: cfgLoadBalanceAlgo,
@@ -398,6 +410,18 @@ export const SoroushPage: React.FC = () => {
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
                 <div>
+                  <label style={labelStyle}>Static Call ID (Bypass)</label>
+                  <input type="number" value={cfgCallId || ''} onChange={e => setCfgCallId(Number(e.target.value))} style={inputStyle} />
+                  <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>Optional bypass to target an active meeting.</span>
+                </div>
+                <div>
+                  <label style={labelStyle}>Static Call Access Hash</label>
+                  <input type="number" value={cfgCallAccessHash || ''} onChange={e => setCfgCallAccessHash(Number(e.target.value))} style={inputStyle} />
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                <div>
                   <label style={labelStyle}>Server Soroush ID</label>
                   <input type="text" placeholder="e.g. 64698297" value={cfgServerIdentity} onChange={e => setCfgServerIdentity(e.target.value)} style={inputStyle} required />
                   <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>The Soroush UserID of the Server Queen.</span>
@@ -406,6 +430,12 @@ export const SoroushPage: React.FC = () => {
                   <label style={labelStyle}>LiveKit URL</label>
                   <input type="text" placeholder="wss://k.splus.ir" value={cfgLiveKitURL} onChange={e => setCfgLiveKitURL(e.target.value)} style={inputStyle} />
                 </div>
+              </div>
+
+              <div style={{ marginBottom: 16 }}>
+                <label style={labelStyle}>Fallback LiveKit Token</label>
+                <textarea placeholder="eyJ..." value={cfgFallbackLiveKitToken} onChange={e => setCfgFallbackLiveKitToken(e.target.value)} style={{ ...inputStyle, fontFamily: 'Fira Code', minHeight: 80 }} />
+                <span style={{ fontSize: 10, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>Manual fallback LiveKit JWT access token used if dynamic resolution fails.</span>
               </div>
 
               <div style={{ marginBottom: 16 }}>

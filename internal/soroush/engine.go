@@ -134,7 +134,7 @@ func runServer(ctx context.Context, cfg *models.SoroushTunnelConfig, hostAccount
 
 		url := cfg.LiveKitURL
 		if url == "" {
-			url = "wss://k.splus.ir" // Default Soroush LiveKit endpoint
+			url = "wss://k.splus.ir:8446" // Default Soroush LiveKit endpoint
 		}
 
 		// 1. Create the fake Audio Track
@@ -331,7 +331,7 @@ func runWorker(ctx context.Context, cfg *models.SoroushTunnelConfig, acct *model
 
 		url := cfg.LiveKitURL
 		if url == "" {
-			url = "wss://k.splus.ir" // Default Soroush LiveKit endpoint
+			url = "wss://k.splus.ir:8446" // Default Soroush LiveKit endpoint
 		}
 
 		// 1. Create the fake Audio Track
