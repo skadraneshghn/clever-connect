@@ -107,15 +107,27 @@ func getOrRefreshDynamicToken(ctx context.Context, cfg *models.SoroushTunnelConf
 	} else {
 		var err error
 		callID, callAccessHash, err = soroushlib.ResolveGroupCall(ctx, session, cfg.GroupChatID, cfg.GroupAccessHash)
-		if err != nil {
-			// No active call found — this account cannot create one (NOT_SUPPORTED).
-			// Return a sentinel error so the engine loop retries after a delay.
-			// The call must be started externally by an admin via the Soroush app.
-			logger.Warn(componentJit, "JIT: No active group call found in the target group. Waiting for an admin to start one...",
-				"chat_id", cfg.GroupChatID, "error", err)
-			return "", fmt.Errorf("no active group call in group %d — start a voice/video call in Soroush first: %w", cfg.GroupChatID, err)
+		if err != nil || callID == 0 {
+			logger.Warn(componentJit, "JIT: No active call found. Mimicking Web App to Create Group Video Call...")
+			
+			// 2. Automate Call Creation using the fixed Web App pattern
+			createErr := soroushlib.CreateGroupCall(ctx, session, cfg.GroupChatID, cfg.GroupAccessHash)
+			
+			if createErr != nil {
+				return "", fmt.Errorf("failed to create call automatically: %w", createErr)
+			}
+			
+			logger.Info(componentJit, "JIT: Call created successfully! Resolving new Call Identifiers...")
+			time.Sleep(2 * time.Second) // Give Soroush servers a moment to sync the new room
+			
+			// Re-resolve to get the newly created CallID
+			callID, callAccessHash, err = soroushlib.ResolveGroupCall(ctx, session, cfg.GroupChatID, cfg.GroupAccessHash)
+			if err != nil {
+				return "", fmt.Errorf("call created, but failed to resolve new ID: %w", err)
+			}
 		}
-		logger.Info(componentJit, "JIT: Dynamic call instance resolved successfully", "call_id", callID)
+
+		logger.Info(componentJit, "JIT: Active Room Identifiers Locked", "call_id", callID)
 	}
 
 	// 3. Handshake to fetch the LiveKit Token using the active session

@@ -129,29 +129,25 @@ func BuildLeaveGroupCallRequest(groupCallID, accessHash int64, source int32) []b
 	return w.GetBytes()
 }
 
-// BuildCreateGroupCallRequest builds phone.createGroupCall TL request
-// Used to create a new group call in a chat (admin only)
-func BuildCreateGroupCallRequest(chatID int64, accessHash int64) []byte {
-	w := NewTLWriter()
-	w.WriteUint32(IDPhoneCreateGroupCall)
+// BuildCreateGroupCallRequest mimics the Soroush Web App's payload to start a new video call.
+func BuildCreateGroupCallRequest(channelID int64, accessHash int64) []byte {
+	buf := NewTLWriter()
+	
+	// Constructor: phone.createGroupCall#48cdc6d8
+	buf.WriteUint32(0x48cdc6d8)
+	
+	// flags: 0 (No custom title, no schedule date)
+	buf.WriteInt32(0)
+	
+	// peer: InputPeerChannel#20adaef8
+	buf.WriteUint32(0x20adaef8)
+	buf.WriteInt64(channelID)
+	buf.WriteInt64(accessHash)
+	
+	// random_id: int32
+	buf.WriteInt32(rand.Int31())
 
-	// flags = 0 (no rtmp_stream, no title, no schedule)
-	w.WriteInt32(0)
-
-	// peer: InputPeer (the chat/group)
-	if accessHash != 0 {
-		w.WriteUint32(IDInputPeerChannel)
-		w.WriteInt64(chatID)
-		w.WriteInt64(accessHash)
-	} else {
-		w.WriteUint32(IDInputPeerChat)
-		w.WriteInt64(chatID)
-	}
-
-	// random_id
-	w.WriteInt32(int32(rand.Int31()))
-
-	return w.GetBytes()
+	return buf.GetBytes()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
