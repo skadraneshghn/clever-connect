@@ -90,7 +90,36 @@ func InitDB(cfg *config.Config) *gorm.DB {
 	if DB.Dialector.Name() == "mysql" {
 		migrateDB = DB.Set("gorm:table_options", "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
 	}
-	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.SoroushAccount{}, &models.SoroushTunnelConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}, &models.SchedulerJob{}, &models.SchedulerJobLog{}, &models.SchedulerConfig{}, &models.TelegramSubscriber{}, &models.YouTubeJob{}, &models.YouTubeConfig{}, &models.FileRegistry{}, &models.SpotifyConfig{}, &models.SpotifyJob{}); err != nil {
+	if err := migrateDB.AutoMigrate(
+		&models.User{},
+		&models.ClientSession{},
+		&models.EhcoServerConfig{},
+		&models.EhcoClientConfig{},
+		&models.SoroushAccount{},
+		&models.SoroushTunnelConfig{},
+		&models.LeechConfig{},
+		&models.LeechJob{},
+		&models.TelegramConfig{},
+		&models.SchedulerJob{},
+		&models.SchedulerJobLog{},
+		&models.SchedulerConfig{},
+		&models.TelegramSubscriber{},
+		&models.YouTubeJob{},
+		&models.YouTubeConfig{},
+		&models.FileRegistry{},
+		&models.SpotifyConfig{},
+		&models.SpotifyJob{},
+		&models.V2RayNode{},
+		&models.V2RayInbound{},
+		&models.V2RayUser{},
+		&models.V2RayTrafficLog{},
+		&models.V2RayRoutingRule{},
+		&models.V2RaySecurityEvent{},
+		&models.V2RayClientConfig{},
+		&models.V2RayClientFrontingMap{},
+		&models.V2RayClientSetting{},
+		&models.V2RayClientSubscription{},
+	); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
 	

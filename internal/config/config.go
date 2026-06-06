@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -79,7 +80,7 @@ func LoadConfig() *Config {
 		WSHeartbeatInterval: wsInterval,
 		ServerURL:           serverURL,
 		ServerAuthToken:     serverAuthToken,
-		SQLitePath:          getEnv("SQLITE_DB_PATH", "data/client.db"),
+		SQLitePath:          getEnv("SQLITE_DB_PATH", resolveDefaultClientDBPath()),
 		MySQLUser:           getEnv("MYSQL_USER", "root"),
 		MySQLPassword:       os.Getenv("MYSQL_PASSWORD"),
 		MySQLHost:           getEnv("MYSQL_HOST", "127.0.0.1"),
@@ -137,4 +138,12 @@ func getEnv(key, defaultVal string) string {
 		return defaultVal
 	}
 	return val
+}
+
+func resolveDefaultClientDBPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "data/client.db"
+	}
+	return filepath.Join(home, ".config", "cleverconnect", "v2ray.db")
 }

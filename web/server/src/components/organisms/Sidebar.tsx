@@ -15,6 +15,7 @@ const navItems = [
     children: [
       { id: 'ehco-tunnel', label: 'Ehco' },
       { id: 'soroush-tunnel', label: 'Soroush' },
+      { id: 'v2ray-tunnel', label: 'V2Ray Manager' },
     ]
   },
   {

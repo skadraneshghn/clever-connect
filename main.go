@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"io/fs"
 	"net/http"
@@ -18,6 +19,8 @@ import (
 	"clever-connect/internal/spotify"
 	"clever-connect/internal/telegram"
 	"clever-connect/internal/torrent"
+	"clever-connect/internal/v2ray/sub"
+	"clever-connect/internal/v2ray/traffic"
 	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
@@ -82,6 +85,8 @@ func main() {
 				logger.Error("Ehco", "Failed to auto-start client tunnel", "error", err)
 			}
 		}
+		// Start client V2Ray subscription auto-update background worker
+		go sub.StartSubscriptionUpdater(context.Background())
 	}
 
 	// Auto-start Telegram bot engine if configured and active
@@ -114,6 +119,19 @@ func main() {
 		}
 	}
 
+	// Auto-start active V2Ray/Xray proxy core
+	if cfg.AppMode == "server" {
+		var inboundCount int64
+		if err := db.DB.Model(&models.V2RayInbound{}).Count(&inboundCount).Error; err == nil && inboundCount > 0 {
+			logger.Info("V2Ray", "Auto-starting V2Ray/Xray server proxy engine")
+			if err := traffic.ReloadCoreConfig(); err != nil {
+				logger.Error("V2Ray", "Failed to auto-start V2Ray core on boot", "error", err)
+			} else {
+				traffic.StartInterceptor()
+			}
+		}
+	}
+
 	// Setup Gin Router in release mode
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = logger.GinWriter()
@@ -138,11 +156,13 @@ func main() {
 	telegramHandler := handlers.NewTelegramHandler(cfg)
 	schedulerHandler := handlers.NewSchedulerHandler(cfg)
 	soroushHandler := handlers.NewSoroushHandler(cfg)
+	v2rayHandler := handlers.NewV2RayHandler(cfg)
 
 	// API Group
 	api := router.Group("/api")
 	{
 		api.POST("/auth/login", authHandler.Login)
+		api.GET("/sub/:token", v2rayHandler.ServeSubscription)
 
 		// Protected API routes
 		protected := api.Group("")
@@ -161,6 +181,69 @@ func main() {
 			protected.POST("/ehco/config", ehcoHandler.SaveConfig)
 			protected.POST("/ehco/start", ehcoHandler.StartEngine)
 			protected.POST("/ehco/stop", ehcoHandler.StopEngine)
+
+			// V2Ray Server-side core endpoints
+			protected.GET("/v2ray/core/status", v2rayHandler.GetCoreStatus)
+			protected.POST("/v2ray/core/start", v2rayHandler.StartCore)
+			protected.POST("/v2ray/core/stop", v2rayHandler.StopCore)
+
+			// V2Ray Inbounds endpoints
+			protected.GET("/v2ray/inbounds", v2rayHandler.ListInbounds)
+			protected.POST("/v2ray/inbounds", v2rayHandler.CreateInbound)
+			protected.PUT("/v2ray/inbounds/:id", v2rayHandler.UpdateInbound)
+			protected.DELETE("/v2ray/inbounds/:id", v2rayHandler.DeleteInbound)
+
+			// V2Ray Users endpoints
+			protected.GET("/v2ray/users", v2rayHandler.ListUsers)
+			protected.POST("/v2ray/users", v2rayHandler.CreateUser)
+			protected.PUT("/v2ray/users/:id", v2rayHandler.UpdateUser)
+			protected.DELETE("/v2ray/users/:id", v2rayHandler.DeleteUser)
+			protected.GET("/v2ray/traffic/logs", v2rayHandler.GetUserTrafficLogs)
+
+			// V2Ray Routing Rules endpoints
+			protected.GET("/v2ray/routing", v2rayHandler.ListRoutingRules)
+			protected.POST("/v2ray/routing", v2rayHandler.CreateRoutingRule)
+			protected.DELETE("/v2ray/routing/:id", v2rayHandler.DeleteRoutingRule)
+
+			// V2Ray Client-side endpoints
+			protected.GET("/v2ray/client/status", v2rayHandler.GetClientStatus)
+			protected.POST("/v2ray/client/start", v2rayHandler.StartClientCore)
+			protected.POST("/v2ray/client/stop", v2rayHandler.StopClientCore)
+			protected.GET("/v2ray/client/configs", v2rayHandler.ListClientConfigs)
+			protected.POST("/v2ray/client/configs", v2rayHandler.CreateClientConfig)
+			protected.PUT("/v2ray/client/configs/:id", v2rayHandler.UpdateClientConfig)
+			protected.DELETE("/v2ray/client/configs/:id", v2rayHandler.DeleteClientConfig)
+			protected.POST("/v2ray/client/configs/:id/active", v2rayHandler.SetActiveClientConfig)
+			protected.POST("/v2ray/client/configs/reorder", v2rayHandler.ReorderClientConfigs)
+			protected.POST("/v2ray/client/configs/import-manual", v2rayHandler.ImportManualConfig)
+			protected.POST("/v2ray/client/configs/import-qr", v2rayHandler.ImportQRConfig)
+			protected.GET("/v2ray/client/subscriptions", v2rayHandler.ListSubscriptions)
+			protected.DELETE("/v2ray/client/subscriptions/:id", v2rayHandler.DeleteSubscription)
+			protected.POST("/v2ray/client/export-pdf", v2rayHandler.ExportSelectedConfigsPDF)
+			protected.POST("/v2ray/client/import", v2rayHandler.ImportSubscription)
+			protected.GET("/v2ray/client/settings", v2rayHandler.GetClientSettings)
+			protected.POST("/v2ray/client/settings", v2rayHandler.SaveClientSettings)
+			protected.POST("/v2ray/client/test-profile/:id", v2rayHandler.TestClientProfile)
+			protected.POST("/v2ray/client/test-mass", v2rayHandler.TestMassProfiles)
+			protected.POST("/v2ray/client/speed-test", v2rayHandler.RunDetailedSpeedTest)
+			protected.GET("/v2ray/client/logs", v2rayHandler.GetClientLogs)
+			protected.POST("/v2ray/client/probe-ports", v2rayHandler.ProbePorts)
+			protected.POST("/v2ray/client/wol", v2rayHandler.WakeOnLAN)
+			protected.GET("/v2ray/client/discover", v2rayHandler.DiscoverDevices)
+			protected.POST("/v2ray/client/debug-proxy/start", v2rayHandler.StartDebugProxy)
+			protected.POST("/v2ray/client/debug-proxy/stop", v2rayHandler.StopDebugProxy)
+			protected.GET("/v2ray/client/debug-proxy/logs", v2rayHandler.GetDebugProxyLogs)
+			protected.GET("/v2ray/client/hotkeys", v2rayHandler.GetHotkeys)
+			protected.POST("/v2ray/client/hotkeys", v2rayHandler.SaveHotkeys)
+			protected.GET("/v2ray/client/system-tray", v2rayHandler.GetSystemTrayConfig)
+			protected.POST("/v2ray/client/system-tray", v2rayHandler.SaveSystemTrayConfig)
+			protected.POST("/v2ray/client/scan-cdn", v2rayHandler.ScanCDN)
+			protected.GET("/v2ray/client/scan-cdn/status", v2rayHandler.GetScanStatus)
+			protected.POST("/v2ray/client/scan-cdn/stop", v2rayHandler.StopScan)
+			protected.POST("/v2ray/nodes/:id/provision", v2rayHandler.ProvisionNode)
+			protected.POST("/v2ray/firewall/block", v2rayHandler.BlockFirewallIP)
+			protected.POST("/v2ray/mcp", v2rayHandler.HandleMCP)
+			protected.Any("/v2ray/webdav/*filepath", v2rayHandler.ServeWebDAV)
 
 			// System monitoring route
 			protected.GET("/system/stats", handlers.GetSystemStats)
