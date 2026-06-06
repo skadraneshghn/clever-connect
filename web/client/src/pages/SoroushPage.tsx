@@ -17,7 +17,7 @@ interface TunnelConfig {
   group_chat_id: number;
   group_access_hash: number;
   call_id: number;
-  call_access_hash: number;
+  call_access_hash: string;
   server_identity: string;
   psk: string;
   livekit_url: string;
@@ -61,7 +61,7 @@ export const SoroushPage: React.FC = () => {
   const [cfgGroupChatId, setCfgGroupChatId] = useState(0);
   const [cfgGroupAccessHash, setCfgGroupAccessHash] = useState(0);
   const [cfgCallId, setCfgCallId] = useState(0);
-  const [cfgCallAccessHash, setCfgCallAccessHash] = useState(0);
+  const [cfgCallAccessHash, setCfgCallAccessHash] = useState('');
   const [cfgServerIdentity, setCfgServerIdentity] = useState('');
   const [cfgPSK, setCfgPSK] = useState('');
   const [cfgLiveKitURL, setCfgLiveKitURL] = useState('');
@@ -114,7 +114,7 @@ export const SoroushPage: React.FC = () => {
           setCfgGroupChatId(c.group_chat_id || 0);
           setCfgGroupAccessHash(c.group_access_hash || 0);
           setCfgCallId(c.call_id || 0);
-          setCfgCallAccessHash(c.call_access_hash || 0);
+          setCfgCallAccessHash(c.call_access_hash || '');
           setCfgServerIdentity(c.server_identity || '');
           setCfgPSK(c.psk || '');
           setCfgLiveKitURL(c.livekit_url || '');
@@ -428,7 +428,7 @@ export const SoroushPage: React.FC = () => {
                 </div>
                 <div>
                   <label style={labelStyle}>Static Call Access Hash</label>
-                  <input type="number" value={cfgCallAccessHash || ''} onChange={e => setCfgCallAccessHash(Number(e.target.value))} style={inputStyle} />
+                  <input type="text" value={cfgCallAccessHash} onChange={e => setCfgCallAccessHash(e.target.value)} style={inputStyle} />
                 </div>
               </div>
 

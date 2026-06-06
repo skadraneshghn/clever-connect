@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,10 +81,14 @@ func getOrRefreshDynamicToken(ctx context.Context, cfg *models.SoroushTunnelConf
 
 	// 2. Resolve active CallID and CallAccessHash (either via static override or dynamic resolution)
 	var callID, callAccessHash int64
-	if cfg.CallID != 0 && cfg.CallAccessHash != 0 {
+	if cfg.CallID != 0 && cfg.CallAccessHash != "" {
 		logger.Info(componentJit, "JIT: Static Call Routing detected. Skipping auto-resolution loops...", "call_id", cfg.CallID)
 		callID = cfg.CallID
-		callAccessHash = cfg.CallAccessHash
+		var err error
+		callAccessHash, err = strconv.ParseInt(cfg.CallAccessHash, 10, 64)
+		if err != nil {
+			logger.Error(componentJit, "JIT: Failed to parse static CallAccessHash as int64. Will default to 0.", "error", err, "val", cfg.CallAccessHash)
+		}
 	} else {
 		var err error
 		callID, callAccessHash, err = soroushlib.ResolveGroupCall(ctx, session, cfg.GroupChatID, cfg.GroupAccessHash)

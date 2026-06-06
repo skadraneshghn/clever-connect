@@ -96,7 +96,7 @@ type SoroushTunnelConfig struct {
 	GroupChatID     int64  `json:"group_chat_id"`
 	GroupAccessHash int64  `json:"group_access_hash"`
 	CallID          int64  `json:"call_id"`             // Static bypass parameter
-	CallAccessHash  int64  `json:"call_access_hash"`    // Static bypass parameter
+	CallAccessHash  string `json:"call_access_hash"`    // Static bypass parameter
 	ServerIdentity  string `json:"server_identity"`     // The exact Soroush UserID of the Queen (e.g., "64698297")
 	PSK             string `json:"psk"`                 // Pre-Shared Key for worker auth
 	LiveKitURL            string `json:"livekit_url"`         // LiveKit SFU WebSocket endpoint (e.g., wss://k.splus.ir)

@@ -313,7 +313,7 @@ func (h *SoroushHandler) UpdateSoroushConfig(c *gin.Context) {
 		GroupChatID          int64  `json:"group_chat_id"`
 		GroupAccessHash      int64  `json:"group_access_hash"`
 		CallID               int64  `json:"call_id"`
-		CallAccessHash       int64  `json:"call_access_hash"`
+		CallAccessHash       string `json:"call_access_hash"`
 		ServerIdentity       string `json:"server_identity"`
 		PSK                  string `json:"psk"`
 		LiveKitURL           string `json:"livekit_url"`
@@ -504,6 +504,8 @@ func (h *SoroushHandler) SyncConfig(c *gin.Context) {
 		"sync_payload": gin.H{
 			"group_chat_id":          cfg.GroupChatID,
 			"group_access_hash":      cfg.GroupAccessHash,
+			"call_id":                cfg.CallID,
+			"call_access_hash":      cfg.CallAccessHash,
 			"server_identity":        cfg.ServerIdentity,
 			"psk":                    cfg.PSK,
 			"livekit_url":            cfg.LiveKitURL,
@@ -556,6 +558,8 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 		SyncPayload struct {
 			GroupChatID          int64  `json:"group_chat_id"`
 			GroupAccessHash      int64  `json:"group_access_hash"`
+			CallID               int64  `json:"call_id"`
+			CallAccessHash       string `json:"call_access_hash"`
 			ServerIdentity       string `json:"server_identity"`
 			PSK                  string `json:"psk"`
 			LiveKitURL           string `json:"livekit_url"`
@@ -601,6 +605,12 @@ func (h *SoroushHandler) IngestSync(c *gin.Context) {
 	}
 	if p.FallbackLiveKitToken != "" {
 		cfg.FallbackLiveKitToken = p.FallbackLiveKitToken
+	}
+	if p.CallID != 0 {
+		cfg.CallID = p.CallID
+	}
+	if p.CallAccessHash != "" {
+		cfg.CallAccessHash = p.CallAccessHash
 	}
 	if p.SocksPort > 0 {
 		cfg.SocksPort = p.SocksPort
