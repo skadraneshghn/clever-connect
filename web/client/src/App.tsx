@@ -21,6 +21,8 @@ const JobSchedulerPage = lazy(() => import('./pages/JobSchedulerPage').then(m =>
 const TelegramSettingsPage = lazy(() => import('./pages/TelegramSettingsPage').then(m => ({ default: m.TelegramSettingsPage })));
 const SoroushPage = lazy(() => import('./pages/SoroushPage').then(m => ({ default: m.SoroushPage })));
 const V2RayClientPage = lazy(() => import('./pages/V2RayClientPage').then(m => ({ default: m.V2RayClientPage })));
+const V2RayCorePage = lazy(() => import('./pages/V2RayCorePage').then(m => ({ default: m.V2RayCorePage })));
+const V2RayRoutingPage = lazy(() => import('./pages/V2RayRoutingPage').then(m => ({ default: m.V2RayRoutingPage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -57,7 +59,9 @@ const ProtectedLayout: React.FC = () => {
     scheduler: ['System', 'Job Scheduler'],
     'telegram-settings': ['Settings', 'Telegram Bot'],
     'soroush-tunnel': ['Protocol', 'Soroush WebRTC Tunnel'],
-    'v2ray-tunnel': ['Protocol', 'V2Ray Proxy Manager'],
+    'v2ray-dashboard': ['V2Ray', 'Dashboard & Nodes'],
+    'v2ray-core': ['V2Ray', 'Core Configuration'],
+    'v2ray-routing': ['V2Ray', 'Routing Rules'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -126,7 +130,9 @@ const router = createBrowserRouter([
       { path: 'scheduler', element: <JobSchedulerPage /> },
       { path: 'telegram-settings', element: <TelegramSettingsPage /> },
       { path: 'soroush-tunnel', element: <SoroushPage /> },
-      { path: 'v2ray-tunnel', element: <V2RayClientPage /> },
+      { path: 'v2ray-dashboard', element: <V2RayClientPage /> },
+      { path: 'v2ray-core', element: <V2RayCorePage /> },
+      { path: 'v2ray-routing', element: <V2RayRoutingPage /> },
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },

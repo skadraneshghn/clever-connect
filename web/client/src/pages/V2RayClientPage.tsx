@@ -67,7 +67,29 @@ export const V2RayClientPage: React.FC = () => {
   const [hotkeys, setHotkeys] = useState('Ctrl+Shift+X');
   const [systemTrayEnabled, setSystemTrayEnabled] = useState(true);
 
+  const qrFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedProfileIds, setSelectedProfileIds] = useState<number[]>([]);
+  const [cdnRanges, setCdnRanges] = useState('104.16.0.0/16');
+  const [cdnScannerActive, setCdnScannerActive] = useState(false);
+  const [cdnScanStatus, setCdnScanStatus] = useState<any>(null);
+  const [speedTestActive, setSpeedTestActive] = useState(false);
+  const [speedTestBreakdown, setSpeedTestBreakdown] = useState<any>(null);
+
   const logsEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Clipboard Mass Import States
+  const [isClipboardModalOpen, setIsClipboardModalOpen] = useState(false);
+  const [clipboardCount, setClipboardCount] = useState(0);
+  const [clipboardPage, setClipboardPage] = useState(0);
+  const [clipboardSearch, setClipboardSearch] = useState('');
+  const [clipboardUpdateTrigger, setClipboardUpdateTrigger] = useState(0);
+  const [isImportingBulk, setIsImportingBulk] = useState(false);
+  const [isParsing, setIsParsing] = useState(false);
+  const [parseProgress, setParseProgress] = useState(0);
+
+  // Refs for zero-render high performance
+  const parsedConfigsRef = useRef<any[]>([]);
+  const deselectedSetRef = useRef<Set<number>>(new Set());
 
   // Load configs
   const loadSettings = async () => {
@@ -94,7 +116,7 @@ export const V2RayClientPage: React.FC = () => {
       }
 
       // Fetch profiles
-      const pResp = await fetch('/api/v2ray/client/profiles', {
+      const pResp = await fetch('/api/v2ray/client/configs', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (pResp.ok) {
@@ -142,9 +164,10 @@ export const V2RayClientPage: React.FC = () => {
     const ticker = setInterval(() => {
       fetchLogs();
       if (isDebugProxyActive) fetchProxyLogs();
+      if (cdnScannerActive) fetchCDNScanStatus();
     }, 4000);
     return () => clearInterval(ticker);
-  }, [logsQuery, isDebugProxyActive]);
+  }, [logsQuery, isDebugProxyActive, cdnScannerActive]);
 
   useEffect(() => {
     if (logsEndRef.current) {
@@ -274,7 +297,7 @@ export const V2RayClientPage: React.FC = () => {
     setMessage(null);
     try {
       const token = localStorage.getItem('cc_client_token') || '';
-      const res = await fetch('/api/v2ray/client/profiles/import', {
+      const res = await fetch('/api/v2ray/client/configs/import-manual', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -297,11 +320,348 @@ export const V2RayClientPage: React.FC = () => {
     }
   };
 
+  const processPastedTextChunked = (text: string) => {
+    setIsParsing(true);
+    setParseProgress(0);
+    parsedConfigsRef.current = [];
+    deselectedSetRef.current = new Set();
+    
+    if (!text || !text.trim()) {
+      setClipboardCount(0);
+      setClipboardPage(0);
+      setIsParsing(false);
+      return;
+    }
+
+    const lines = text.split(/\r?\n/);
+    const totalLines = lines.length;
+    let index = 0;
+    const chunkSize = 15000;
+    const parsed: any[] = [];
+
+    const parseNextChunk = () => {
+      const limit = Math.min(index + chunkSize, totalLines);
+      for (let i = index; i < limit; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        const match = line.match(/^([a-zA-Z0-9]+):\/\/(.*)$/);
+        if (match) {
+          const proto = match[1].toLowerCase();
+          if (['vmess', 'vless', 'trojan', 'ss', 'shadowsocks'].includes(proto)) {
+            const rest = match[2];
+            let name = 'Node ' + (parsed.length + 1);
+            let mainPart = rest;
+            const hashIdx = rest.indexOf('#');
+            if (hashIdx !== -1) {
+              mainPart = rest.substring(0, hashIdx);
+              try {
+                name = decodeURIComponent(rest.substring(hashIdx + 1));
+              } catch (_) {
+                name = rest.substring(hashIdx + 1);
+              }
+            }
+            
+            let host = '';
+            let port = '443';
+            const atIdx = mainPart.indexOf('@');
+            if (atIdx !== -1) {
+              const serverPart = mainPart.substring(atIdx + 1).split('?')[0];
+              const parts = serverPart.split(':');
+              host = parts[0];
+              port = parts[1] || '443';
+            } else if (proto === 'vmess') {
+              try {
+                const decoded = atob(mainPart);
+                const obj = JSON.parse(decoded);
+                host = obj.add || '';
+                port = obj.port || '443';
+                if (obj.ps) name = obj.ps;
+              } catch (_) {}
+            }
+            
+            parsed.push({
+              raw: line,
+              protocol: proto,
+              name,
+              host: host || 'Dynamic Host',
+              port
+            });
+          }
+        }
+      }
+
+      index = limit;
+      setParseProgress(Math.round((index / totalLines) * 100));
+
+      if (index < totalLines) {
+        setTimeout(parseNextChunk, 0);
+      } else {
+        parsedConfigsRef.current = parsed;
+        setClipboardCount(parsed.length);
+        setClipboardPage(0);
+        setIsParsing(false);
+      }
+    };
+
+    parseNextChunk();
+  };
+
+  const handleImportBulk = async () => {
+    const selectedUris: string[] = [];
+    parsedConfigsRef.current.forEach((c, idx) => {
+      if (!deselectedSetRef.current.has(idx)) {
+        selectedUris.push(c.raw);
+      }
+    });
+
+    if (selectedUris.length === 0) {
+      alert('Please select at least one configuration to import.');
+      return;
+    }
+
+    setIsImportingBulk(true);
+    let importedCount = 0;
+    const batchSize = 2500;
+    const token = localStorage.getItem('cc_client_token') || '';
+    
+    try {
+      for (let i = 0; i < selectedUris.length; i += batchSize) {
+        const batch = selectedUris.slice(i, i + batchSize);
+        const res = await fetch('/api/v2ray/client/configs/import-bulk', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ uris: batch })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          importedCount += data.count || 0;
+        }
+      }
+      setMessage({ type: 'success', text: `Successfully imported ${importedCount} profiles from clipboard!` });
+      setIsClipboardModalOpen(false);
+      loadSettings();
+    } catch (err: any) {
+      setMessage({ type: 'error', text: 'Bulk import failed: ' + err.message });
+    } finally {
+      setIsImportingBulk(false);
+    }
+  };
+
+  const BuildProxyLink = (p: any) => {
+    if (p.protocol === 'vless' || p.protocol === 'vmess' || p.protocol === 'trojan' || p.protocol === 'shadowsocks' || p.protocol === 'ss') {
+      const proto = p.protocol === 'shadowsocks' ? 'ss' : p.protocol;
+      let url = `${proto}://${p.uuid || ''}@${p.address}:${p.port}`;
+      const params: string[] = [];
+      if (p.network) params.push(`type=${p.network}`);
+      if (p.tls_mode) params.push(`security=${p.tls_mode}`);
+      if (p.sni) params.push(`sni=${p.sni}`);
+      if (p.path) params.push(`path=${p.path}`);
+      if (params.length > 0) {
+        url += `?${params.join('&')}`;
+      }
+      if (p.name) {
+        url += `#${encodeURIComponent(p.name)}`;
+      }
+      return url;
+    }
+    return '';
+  };
+
+  const handleQRImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsLoading(true);
+    setMessage(null);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/v2ray/client/configs/import-qr', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      });
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'QR code imported successfully!' });
+        loadSettings();
+      } else {
+        const data = await res.json();
+        setMessage({ type: 'error', text: data.error || 'Failed to decode QR code.' });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setIsLoading(false);
+      if (qrFileInputRef.current) qrFileInputRef.current.value = '';
+    }
+  };
+
+  const handleExportPDF = async () => {
+    if (selectedProfileIds.length === 0) {
+      setMessage({ type: 'error', text: 'Please select at least one profile to export.' });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/export-pdf', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ ids: selectedProfileIds })
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'clever_configs_export.pdf';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setMessage({ type: 'success', text: 'PDF export downloaded successfully!' });
+      } else {
+        const err = await res.json();
+        setMessage({ type: 'error', text: err.error || 'Failed to export PDF.' });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleStartCDNScan = async () => {
+    if (profiles.length === 0) {
+      setMessage({ type: 'error', text: 'Please import a template profile first.' });
+      return;
+    }
+    const targetProfile = profiles.find(p => p.ID === activeProfileId) || profiles[0];
+    const link = BuildProxyLink(targetProfile);
+    if (!link) {
+      setMessage({ type: 'error', text: 'Could not construct valid config link from active profile.' });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/scan-cdn', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          uri: link,
+          ranges: cdnRanges.split('\n').map(r => r.trim()).filter(Boolean),
+          per_range_limit: 10,
+          max_scan_cap: 100,
+          ports: [443],
+          top_for_speed: 5,
+          final_count: 3,
+          download_bytes: 1000000,
+          upload_bytes: 500000,
+          ping_timeout_sec: 2,
+          speed_timeout_sec: 10,
+          ping_concurrency: 20,
+          speed_conc: 2,
+          base_port: 20000
+        })
+      });
+      if (res.ok) {
+        setCdnScannerActive(true);
+        setMessage({ type: 'success', text: 'CDN IP Scan initialized!' });
+      } else {
+        const err = await res.json();
+        setMessage({ type: 'error', text: err.error || 'Scanner failed to start.' });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleStopCDNScan = async () => {
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/scan-cdn/stop', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setCdnScannerActive(false);
+        setMessage({ type: 'success', text: 'CDN IP scanner stopped by user request.' });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fetchCDNScanStatus = async () => {
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/scan-cdn/status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const status = await res.json();
+        setCdnScanStatus(status);
+        if (status && !status.is_running) {
+          setCdnScannerActive(false);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleRunSpeedTest = async () => {
+    if (!isRunning) {
+      setMessage({ type: 'error', text: 'V2Ray client proxy is not running. Please connect first.' });
+      return;
+    }
+    setSpeedTestActive(true);
+    setSpeedTestBreakdown(null);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/speed-test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ size_bytes: 10000000 })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSpeedTestBreakdown(data);
+      } else {
+        const err = await res.json();
+        setMessage({ type: 'error', text: err.error || 'Speed test failed.' });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setSpeedTestActive(false);
+    }
+  };
+
   const handleSelectProfile = async (id: number) => {
     setIsLoading(true);
     try {
       const token = localStorage.getItem('cc_client_token') || '';
-      const res = await fetch(`/api/v2ray/client/profiles/${id}/activate`, {
+      const res = await fetch(`/api/v2ray/client/configs/${id}/active`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -322,7 +682,7 @@ export const V2RayClientPage: React.FC = () => {
     setIsLoading(true);
     try {
       const token = localStorage.getItem('cc_client_token') || '';
-      const res = await fetch(`/api/v2ray/client/profiles/${id}`, {
+      const res = await fetch(`/api/v2ray/client/configs/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -526,42 +886,72 @@ export const V2RayClientPage: React.FC = () => {
         {/* Left Side: Outbounds, Configurations & Evasion */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
           
-          {/* Active Engine controls */}
-          <div className="g-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span className="live-dot" style={{ background: isRunning ? '#10b981' : '#ef4444' }} />
-                <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
-                  Core Supervisor: {isRunning ? 'RUNNING' : 'STOPPED'}
+           {/* Active Engine controls */}
+          <div className="g-card" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="live-dot" style={{ background: isRunning ? '#10b981' : '#ef4444' }} />
+                  <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
+                    Core Supervisor: {isRunning ? 'RUNNING' : 'STOPPED'}
+                  </span>
+                  <FiHelpCircle 
+                    style={{ cursor: 'pointer', color: 'var(--color-brand-muted)' }} 
+                    onClick={() => showHelp('V2Ray Core Supervisor', 'Manages the local Xray daemon lifecycle in the background. On start, compiles database rules into an optimized JSON config, ensures SOCKS5 and HTTP inbound listeners bind safely without port conflicts, and launches Xray.')}
+                  />
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--color-brand-text)', display: 'block', marginTop: 4 }}>
+                  Local inbound captures: SOCKS5 on port {socksPort} & HTTP on port {httpPort}.
                 </span>
-                <FiHelpCircle 
-                  style={{ cursor: 'pointer', color: 'var(--color-brand-muted)' }} 
-                  onClick={() => showHelp('V2Ray Core Supervisor', 'Manages the local Xray daemon lifecycle in the background. On start, compiles database rules into an optimized JSON config, ensures SOCKS5 and HTTP inbound listeners bind safely without port conflicts, and launches Xray.')}
-                />
               </div>
-              <span style={{ fontSize: 11, color: 'var(--color-brand-text)', display: 'block', marginTop: 4 }}>
-                Local inbound captures: SOCKS5 on port {socksPort} & HTTP on port {httpPort}.
-              </span>
+
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                {isRunning && (
+                  <button 
+                    onClick={handleRunSpeedTest}
+                    className="btn btn--sm btn--secondary"
+                    style={{ borderColor: 'var(--color-brand)', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', gap: 4 }}
+                    disabled={speedTestActive}
+                  >
+                    <FiActivity size={13} className={speedTestActive ? 'spin-animation' : ''} /> {speedTestActive ? 'Testing speed...' : 'Run Speed Test'}
+                  </button>
+                )}
+                <button 
+                  onClick={handleStartCore} 
+                  className="btn btn--primary" 
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, background: isRunning ? '#a3a3a3' : undefined }}
+                  disabled={isRunning || isLoading}
+                >
+                  <FiPlay /> Start
+                </button>
+                <button 
+                  onClick={handleStopCore} 
+                  className="btn btn--secondary" 
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, borderColor: '#ef4444', color: '#ef4444' }}
+                  disabled={!isRunning || isLoading}
+                >
+                  <FiSquare /> Stop
+                </button>
+              </div>
             </div>
 
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button 
-                onClick={handleStartCore} 
-                className="btn btn--primary" 
-                style={{ display: 'flex', alignItems: 'center', gap: 6, background: isRunning ? '#a3a3a3' : undefined }}
-                disabled={isRunning || isLoading}
-              >
-                <FiPlay /> Start
-              </button>
-              <button 
-                onClick={handleStopCore} 
-                className="btn btn--secondary" 
-                style={{ display: 'flex', alignItems: 'center', gap: 6, borderColor: '#ef4444', color: '#ef4444' }}
-                disabled={!isRunning || isLoading}
-              >
-                <FiSquare /> Stop
-              </button>
-            </div>
+            {speedTestBreakdown && (
+              <div style={{
+                background: 'var(--color-brand-light)',
+                border: '1px solid var(--color-brand-border)',
+                borderRadius: 8,
+                padding: '10px 14px',
+                fontSize: 12,
+                display: 'flex',
+                justifyContent: 'space-between',
+                color: 'var(--color-brand-heading)'
+              }}>
+                <div><strong>Throughput Speed:</strong> <span style={{ color: 'var(--color-brand)', fontWeight: 700 }}>{(speedTestBreakdown.throughput_mbps).toFixed(2)} Mbps</span></div>
+                <div><strong>TLS Handshake:</strong> <span style={{ fontFamily: 'monospace' }}>{speedTestBreakdown.tls_handshake_ms}ms</span></div>
+                <div><strong>TTFB (First Byte):</strong> <span style={{ fontFamily: 'monospace' }}>{speedTestBreakdown.ttfb_ms}ms</span></div>
+                <div><strong>TCP Conn:</strong> <span style={{ fontFamily: 'monospace' }}>{speedTestBreakdown.tcp_conn_ms}ms</span></div>
+              </div>
+            )}
           </div>
 
           {/* Subscriptions & Profiles */}
@@ -572,12 +962,17 @@ export const V2RayClientPage: React.FC = () => {
                 <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Subscriptions & Profiles</span>
                 <FiHelpCircle 
                   style={{ cursor: 'pointer', color: 'var(--color-brand-muted)' }} 
-                  onClick={() => showHelp('Subscriptions & Profiles', 'Sync and import remote proxy configuration files. Add URL links to sync periodically, or paste raw URI configurations (vmess://, vless://, ss://, trojan://) directly. Use Test Latencies to sweep TCP round-trip delays across all available servers.')}
+                  onClick={() => showHelp('Subscriptions & Profiles', 'Sync and import remote proxy configuration files. Add URL links to sync periodically, or paste raw URI configurations directly. Use QR image uploads or batch export profiles as PDF files.')}
                 />
               </div>
-              <button className="btn btn--sm btn--secondary" onClick={handleTestLatency} disabled={isLoading}>
-                <FiActivity style={{ marginRight: 6 }} /> Test Latencies
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn--sm btn--secondary" onClick={handleTestLatency} disabled={isLoading}>
+                  <FiActivity style={{ marginRight: 6 }} /> Test Latencies
+                </button>
+                <button className="btn btn--sm btn--primary" onClick={handleExportPDF} disabled={isLoading || selectedProfileIds.length === 0}>
+                  Export Selected PDF ({selectedProfileIds.length})
+                </button>
+              </div>
             </div>
 
             {/* Input URL */}
@@ -600,24 +995,52 @@ export const V2RayClientPage: React.FC = () => {
               <button className="btn btn--primary" onClick={handleImportSub} disabled={isLoading}>Import</button>
             </div>
 
-            {/* Manual import */}
-            <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-              <input
-                type="text"
-                placeholder="Manual Config URI (vmess://, vless://, trojan://, ss://)"
-                value={manualUri}
-                onChange={(e) => setManualUri(e.target.value)}
-                style={{
-                  flex: 1,
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  border: '1px solid var(--color-brand-border)',
-                  background: 'var(--color-brand-card)',
-                  fontSize: 13,
-                  color: 'var(--color-brand-heading)'
-                }}
-              />
-              <button className="btn btn--secondary" onClick={handleManualImport} disabled={isLoading}>Import URI</button>
+            {/* Manual import & QR Upload */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <input
+                  type="text"
+                  placeholder="Manual Config URI (vmess://, vless://, trojan://, ss://)"
+                  value={manualUri}
+                  onChange={(e) => setManualUri(e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-card)',
+                    fontSize: 13,
+                    color: 'var(--color-brand-heading)'
+                  }}
+                />
+                <button className="btn btn--secondary" onClick={handleManualImport} disabled={isLoading}>Import URI</button>
+                <button 
+                  className="btn" 
+                  type="button" 
+                  onClick={() => {
+                    parsedConfigsRef.current = [];
+                    deselectedSetRef.current = new Set();
+                    setClipboardCount(0);
+                    setClipboardPage(0);
+                    setClipboardSearch('');
+                    setIsClipboardModalOpen(true);
+                  }}
+                  style={{ background: 'var(--color-brand)', color: '#fff', border: 'none', display: 'flex', alignItems: 'center' }}
+                >
+                  Clipboard Import
+                </button>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--color-brand-bg)', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)' }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Import Config via QR Code Image:</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  ref={qrFileInputRef}
+                  onChange={handleQRImport}
+                  style={{ fontSize: 12, color: 'var(--color-brand-text)' }}
+                  disabled={isLoading}
+                />
+              </div>
             </div>
 
             {/* Table of Profiles */}
@@ -625,7 +1048,8 @@ export const V2RayClientPage: React.FC = () => {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, textAlign: 'left' }}>
                 <thead>
                   <tr style={{ background: 'var(--color-brand-bg)', borderBottom: '1px solid var(--color-brand-border)' }}>
-                    <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Active</th>
+                    <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 50 }}>Active</th>
+                    <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 50 }}>Select</th>
                     <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Name</th>
                     <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Protocol</th>
                     <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Address</th>
@@ -636,7 +1060,7 @@ export const V2RayClientPage: React.FC = () => {
                 <tbody>
                   {profiles.length === 0 ? (
                     <tr>
-                      <td colSpan={6} style={{ padding: 20, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+                      <td colSpan={7} style={{ padding: 20, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
                         No profiles imported. Add subscription URL or paste configs.
                       </td>
                     </tr>
@@ -649,6 +1073,20 @@ export const V2RayClientPage: React.FC = () => {
                             name="active_profile"
                             checked={p.ID === activeProfileId}
                             onChange={() => handleSelectProfile(p.ID)}
+                            style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+                          />
+                        </td>
+                        <td style={{ padding: '10px 12px' }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedProfileIds.includes(p.ID)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedProfileIds([...selectedProfileIds, p.ID]);
+                              } else {
+                                setSelectedProfileIds(selectedProfileIds.filter(id => id !== p.ID));
+                              }
+                            }}
                             style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
                           />
                         </td>
@@ -684,6 +1122,100 @@ export const V2RayClientPage: React.FC = () => {
                 </tbody>
               </table>
             </div>
+          </div>
+
+          {/* CDN IP Scanner & Optimizer */}
+          <div className="g-card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <FiWifi style={{ color: 'var(--color-brand)', fontSize: 18 }} />
+                <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>CDN IP Auto-Scanner & Optimizer</span>
+                <FiHelpCircle 
+                  style={{ cursor: 'pointer', color: 'var(--color-brand-muted)' }} 
+                  onClick={() => showHelp('CDN IP Scanner', 'Performs massively parallel port scans and throughput speed tests on CDN edge ranges (e.g. Cloudflare) to auto-discover clean, high-performance IP addresses and inject them as working configurations.')}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button 
+                  className="btn btn--sm btn--primary" 
+                  onClick={handleStartCDNScan}
+                  disabled={isLoading || cdnScannerActive}
+                >
+                  Start Scan
+                </button>
+                <button 
+                  className="btn btn--sm btn--secondary" 
+                  onClick={handleStopCDNScan}
+                  style={{ borderColor: '#ef4444', color: '#ef4444' }}
+                  disabled={!cdnScannerActive}
+                >
+                  Stop Scan
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Target IP CIDR Ranges (One per line)</label>
+              <textarea
+                value={cdnRanges}
+                onChange={(e) => setCdnRanges(e.target.value)}
+                placeholder="104.16.0.0/16&#10;172.64.0.0/13"
+                rows={3}
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  border: '1px solid var(--color-brand-border)',
+                  background: 'var(--color-brand-card)',
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                  color: 'var(--color-brand-heading)'
+                }}
+              />
+            </div>
+
+            {cdnScanStatus && (
+              <div style={{
+                background: 'var(--color-brand-bg)',
+                border: '1px solid var(--color-brand-border)',
+                borderRadius: 8,
+                padding: 12,
+                fontSize: 12
+              }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                  <div><strong>State:</strong> <span style={{ color: 'var(--color-brand)', fontWeight: 700 }}>{cdnScanStatus.is_running ? 'SCANNING' : 'IDLE / FINISHED'}</span></div>
+                  <div><strong>Scanned Count:</strong> {cdnScanStatus.scanned_count || 0}</div>
+                  <div><strong>Live IPs Found:</strong> {cdnScanStatus.live_count || 0}</div>
+                  <div><strong>Active Workers:</strong> {cdnScanStatus.workers_active || 0}</div>
+                </div>
+
+                {cdnScanStatus.top_results && cdnScanStatus.top_results.length > 0 && (
+                  <div>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-heading)', display: 'block', marginBottom: 6 }}>Top Discovered CDN IPs</span>
+                    <div style={{ maxHeight: 120, overflowY: 'auto', border: '1px solid var(--color-brand-border)', borderRadius: 6 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                        <thead>
+                          <tr style={{ background: 'var(--color-brand-bg)', borderBottom: '1px solid var(--color-brand-border)' }}>
+                            <th style={{ padding: '6px 8px', textAlign: 'left' }}>IP Address</th>
+                            <th style={{ padding: '6px 8px', textAlign: 'left' }}>Ping (RTT)</th>
+                            <th style={{ padding: '6px 8px', textAlign: 'left' }}>Speed</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {cdnScanStatus.top_results.map((res: any, idx: number) => (
+                            <tr key={idx} style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
+                              <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{res.ip}</td>
+                              <td style={{ padding: '6px 8px', color: 'var(--color-brand-green)', fontWeight: 700 }}>{res.ping_ms}ms</td>
+                              <td style={{ padding: '6px 8px' }}>{(res.speed_mbps).toFixed(2)} Mbps</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Configuration Form */}
@@ -1294,16 +1826,297 @@ export const V2RayClientPage: React.FC = () => {
             maxWidth: '90%',
             boxShadow: '0 10px 25px rgba(0,0,0,0.1)'
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, borderBottom: '1px solid var(--color-brand-border)', paddingBottom: 10 }}>
-              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)' }}>{helpTitle}</h3>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--color-brand-text)', lineHeight: 1.5 }}>{helpText}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Clipboard Mass Import Modal */}
+      {isClipboardModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, width: '100%', height: '100%',
+          background: 'rgba(0,0,0,0.6)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+        }}>
+          <div style={{
+            background: 'var(--color-brand-card)',
+            padding: 24, borderRadius: 16, width: 900, maxWidth: '95%', maxHeight: '90vh',
+            boxShadow: '0 20px 40px rgba(0,0,0,0.25)',
+            display: 'flex', flexDirection: 'column', gap: 16, overflow: 'hidden'
+          }}>
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--color-brand-border)', paddingBottom: 12 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)' }}>Clipboard Mass Config Importer</h3>
+                <span style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>Highly optimized node parser designed for extreme config list scale.</span>
+              </div>
               <button 
-                onClick={() => { setHelpTitle(null); setHelpText(null); }}
+                onClick={() => setIsClipboardModalOpen(false)}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-muted)', display: 'flex', alignItems: 'center' }}
+                disabled={isImportingBulk}
               >
-                <FiX size={18} />
+                <FiX size={20} />
               </button>
             </div>
-            <p style={{ margin: 0, fontSize: 13, color: 'var(--color-brand-text)', lineHeight: 1.5 }}>{helpText}</p>
+
+            {/* Paste Drop Zone / Progress Bar / List view */}
+            {isParsing ? (
+              <div style={{ padding: '60px 20px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                <FiRefreshCw className="spin-animation" size={36} style={{ color: 'var(--color-brand)' }} />
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Parsing Payload... {parseProgress}%</div>
+                <div style={{ width: '80%', maxWidth: 400, background: 'var(--color-brand-border)', height: 8, borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{ width: `${parseProgress}%`, background: 'var(--color-brand)', height: '100%', transition: 'width 0.1s linear' }} />
+                </div>
+              </div>
+            ) : clipboardCount === 0 ? (
+              <div 
+                style={{
+                  border: '2px dashed var(--color-brand-border)',
+                  borderRadius: 12,
+                  padding: 60,
+                  textAlign: 'center',
+                  background: 'var(--color-brand-bg)',
+                  position: 'relative'
+                }}
+              >
+                <FiPlus size={40} style={{ color: 'var(--color-brand)', marginBottom: 12 }} />
+                <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                  Click inside this box and press Ctrl + V to paste configs
+                </p>
+                <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--color-brand-text)' }}>
+                  Accepts base64 subscription blobs, multi-line URIs, or JSON configuration lists.
+                </p>
+                <textarea
+                  autoFocus
+                  value=""
+                  onChange={() => {}}
+                  onPaste={(e) => {
+                    const text = e.clipboardData.getData('text');
+                    processPastedTextChunked(text);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    top: 0, left: 0, width: '100%', height: '100%',
+                    opacity: 0, cursor: 'pointer'
+                  }}
+                />
+              </div>
+            ) : (
+              // Parsed view
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, overflow: 'hidden', flex: 1 }}>
+                
+                {/* Search & Bulk selection tools */}
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    placeholder="Search parsed configs..."
+                    value={clipboardSearch}
+                    onChange={(e) => {
+                      setClipboardSearch(e.target.value);
+                      setClipboardPage(0);
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '8px 12px',
+                      borderRadius: 8,
+                      border: '1px solid var(--color-brand-border)',
+                      background: 'var(--color-brand-card)',
+                      fontSize: 12,
+                      color: 'var(--color-brand-heading)'
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button 
+                      type="button" 
+                      className="btn btn--xs btn--secondary"
+                      onClick={() => {
+                        const filtered = parsedConfigsRef.current.filter(c => {
+                          const query = clipboardSearch.toLowerCase();
+                          return c.name.toLowerCase().includes(query) || c.host.toLowerCase().includes(query) || c.protocol.includes(query);
+                        });
+                        filtered.forEach(c => {
+                          const idx = parsedConfigsRef.current.indexOf(c);
+                          if (idx !== -1) deselectedSetRef.current.delete(idx);
+                        });
+                        setClipboardUpdateTrigger(prev => prev + 1);
+                      }}
+                    >
+                      Select Search Results
+                    </button>
+                    <button 
+                      type="button" 
+                      className="btn btn--xs btn--secondary"
+                      onClick={() => {
+                        const filtered = parsedConfigsRef.current.filter(c => {
+                          const query = clipboardSearch.toLowerCase();
+                          return c.name.toLowerCase().includes(query) || c.host.toLowerCase().includes(query) || c.protocol.includes(query);
+                        });
+                        filtered.forEach(c => {
+                          const idx = parsedConfigsRef.current.indexOf(c);
+                          if (idx !== -1) deselectedSetRef.current.add(idx);
+                        });
+                        setClipboardUpdateTrigger(prev => prev + 1);
+                      }}
+                    >
+                      Deselect Search Results
+                    </button>
+                    <button 
+                      type="button" 
+                      className="btn btn--xs btn--secondary"
+                      onClick={() => {
+                        deselectedSetRef.current.clear();
+                        setClipboardUpdateTrigger(prev => prev + 1);
+                      }}
+                    >
+                      Select All
+                    </button>
+                    <button 
+                      type="button" 
+                      className="btn btn--xs btn--secondary"
+                      onClick={() => {
+                        parsedConfigsRef.current.forEach((_, idx) => deselectedSetRef.current.add(idx));
+                        setClipboardUpdateTrigger(prev => prev + 1);
+                      }}
+                    >
+                      Deselect All
+                    </button>
+                  </div>
+                </div>
+
+                {/* Status bar */}
+                <div style={{ fontSize: 11, color: 'var(--color-brand-text)', display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Total Parsed: <strong>{clipboardCount}</strong> configs</span>
+                  <span>
+                    Selected: <strong>{clipboardCount - deselectedSetRef.current.size}</strong> / {clipboardCount}
+                  </span>
+                </div>
+
+                {/* Config Table with Virtual Viewport slicing */}
+                <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--color-brand-border)', borderRadius: 8 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, textAlign: 'left' }}>
+                    <thead>
+                      <tr style={{ background: 'var(--color-brand-bg)', borderBottom: '1px solid var(--color-brand-border)', position: 'sticky', top: 0, zIndex: 10 }}>
+                        <th style={{ padding: '8px 12px', color: 'var(--color-brand-heading)', width: 40 }}>Sel</th>
+                        <th style={{ padding: '8px 12px', color: 'var(--color-brand-heading)', width: 180 }}>Name</th>
+                        <th style={{ padding: '8px 12px', color: 'var(--color-brand-heading)', width: 70 }}>Protocol</th>
+                        <th style={{ padding: '8px 12px', color: 'var(--color-brand-heading)' }}>Address</th>
+                        <th style={{ padding: '8px 12px', color: 'var(--color-brand-heading)', width: 60 }}>Port</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(() => {
+                        const filtered = parsedConfigsRef.current.filter(c => {
+                          if (!clipboardSearch) return true;
+                          const query = clipboardSearch.toLowerCase();
+                          return c.name.toLowerCase().includes(query) || c.host.toLowerCase().includes(query) || c.protocol.includes(query);
+                        });
+                        const PAGE_SIZE = 100;
+                        const slice = filtered.slice(clipboardPage * PAGE_SIZE, (clipboardPage + 1) * PAGE_SIZE);
+                        
+                        if (slice.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={5} style={{ padding: 20, textAlign: 'center', color: 'var(--color-brand-muted)' }}>No configurations match search filters.</td>
+                            </tr>
+                          );
+                        }
+
+                        return slice.map((c, rowIdx) => {
+                          const origIdx = parsedConfigsRef.current.indexOf(c);
+                          const isSelected = !deselectedSetRef.current.has(origIdx);
+                          
+                          return (
+                            <tr key={origIdx} style={{ borderBottom: '1px solid var(--color-brand-border)', background: isSelected ? 'var(--color-brand-light)' : 'none' }}>
+                              <td style={{ padding: '8px 12px' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => {
+                                    if (deselectedSetRef.current.has(origIdx)) {
+                                      deselectedSetRef.current.delete(origIdx);
+                                    } else {
+                                      deselectedSetRef.current.add(origIdx);
+                                    }
+                                    setClipboardUpdateTrigger(prev => prev + 1);
+                                  }}
+                                  style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+                                />
+                              </td>
+                              <td style={{ padding: '8px 12px', fontWeight: 600, color: 'var(--color-brand-heading)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{c.name}</td>
+                              <td style={{ padding: '8px 12px', textTransform: 'uppercase', color: 'var(--color-brand)' }}>{c.protocol}</td>
+                              <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>{c.host}</td>
+                              <td style={{ padding: '8px 12px' }}>{c.port}</td>
+                            </tr>
+                          );
+                        });
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Footer Controls */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--color-brand-border)', paddingTop: 12 }}>
+                  {/* Pagination */}
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      className="btn btn--xs btn--secondary"
+                      disabled={clipboardPage === 0}
+                      onClick={() => setClipboardPage(prev => prev - 1)}
+                    >
+                      Prev
+                    </button>
+                    <span style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>
+                      Page <strong>{clipboardPage + 1}</strong> of <strong>{Math.ceil(parsedConfigsRef.current.filter(c => {
+                        if (!clipboardSearch) return true;
+                        const query = clipboardSearch.toLowerCase();
+                        return c.name.toLowerCase().includes(query) || c.host.toLowerCase().includes(query) || c.protocol.includes(query);
+                      }).length / 100) || 1}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn--xs btn--secondary"
+                      disabled={(clipboardPage + 1) * 100 >= parsedConfigsRef.current.filter(c => {
+                        if (!clipboardSearch) return true;
+                        const query = clipboardSearch.toLowerCase();
+                        return c.name.toLowerCase().includes(query) || c.host.toLowerCase().includes(query) || c.protocol.includes(query);
+                      }).length}
+                      onClick={() => setClipboardPage(prev => prev + 1)}
+                    >
+                      Next
+                    </button>
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <button
+                      type="button"
+                      className="btn btn--sm btn--secondary"
+                      onClick={() => {
+                        parsedConfigsRef.current = [];
+                        deselectedSetRef.current = new Set();
+                        setClipboardCount(0);
+                        setClipboardPage(0);
+                      }}
+                      disabled={isImportingBulk}
+                    >
+                      Reset / Clear
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--sm btn--primary"
+                      onClick={handleImportBulk}
+                      disabled={isImportingBulk || (clipboardCount - deselectedSetRef.current.size === 0)}
+                      style={{ background: 'var(--color-brand-green)', borderColor: 'var(--color-brand-green)' }}
+                    >
+                      {isImportingBulk ? 'Importing...' : `Import Selected (${clipboardCount - deselectedSetRef.current.size})`}
+                    </button>
+                  </div>
+                </div>
+
+              </div>
+            )}
           </div>
         </div>
       )}

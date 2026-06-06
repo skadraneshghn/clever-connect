@@ -754,6 +754,43 @@ func (h *V2RayHandler) ImportQRConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "imported", "config": cfg})
 }
 
+// ImportBulkConfigs handles POST /api/v2ray/client/configs/import-bulk
+func (h *V2RayHandler) ImportBulkConfigs(c *gin.Context) {
+	var req struct {
+		Uris []string `json:"uris"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var configsToInsert []models.V2RayClientConfig
+	for _, uri := range req.Uris {
+		uri = strings.TrimSpace(uri)
+		if uri == "" {
+			continue
+		}
+		cfg, err := sub.ParseProxyLink(uri)
+		if err == nil {
+			configsToInsert = append(configsToInsert, cfg)
+		}
+	}
+
+	importedCount := 0
+	if len(configsToInsert) > 0 {
+		tx := db.DB.Begin()
+		if err := tx.CreateInBatches(&configsToInsert, 500).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		tx.Commit()
+		importedCount = len(configsToInsert)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "imported", "count": importedCount})
+}
+
 // ListSubscriptions handles GET /api/v2ray/client/subscriptions
 func (h *V2RayHandler) ListSubscriptions(c *gin.Context) {
 	var subs []models.V2RayClientSubscription

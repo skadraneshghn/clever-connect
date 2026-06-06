@@ -216,7 +216,17 @@ func main() {
 			protected.POST("/v2ray/client/configs/:id/active", v2rayHandler.SetActiveClientConfig)
 			protected.POST("/v2ray/client/configs/reorder", v2rayHandler.ReorderClientConfigs)
 			protected.POST("/v2ray/client/configs/import-manual", v2rayHandler.ImportManualConfig)
+			protected.POST("/v2ray/client/configs/import-bulk", v2rayHandler.ImportBulkConfigs)
 			protected.POST("/v2ray/client/configs/import-qr", v2rayHandler.ImportQRConfig)
+
+			// Profiles compatibility aliases for client panel
+			protected.GET("/v2ray/client/profiles", v2rayHandler.ListClientConfigs)
+			protected.POST("/v2ray/client/profiles", v2rayHandler.CreateClientConfig)
+			protected.PUT("/v2ray/client/profiles/:id", v2rayHandler.UpdateClientConfig)
+			protected.DELETE("/v2ray/client/profiles/:id", v2rayHandler.DeleteClientConfig)
+			protected.POST("/v2ray/client/profiles/:id/activate", v2rayHandler.SetActiveClientConfig)
+			protected.POST("/v2ray/client/profiles/import", v2rayHandler.ImportManualConfig)
+			protected.POST("/v2ray/client/profiles/import-bulk", v2rayHandler.ImportBulkConfigs)
 			protected.GET("/v2ray/client/subscriptions", v2rayHandler.ListSubscriptions)
 			protected.DELETE("/v2ray/client/subscriptions/:id", v2rayHandler.DeleteSubscription)
 			protected.POST("/v2ray/client/export-pdf", v2rayHandler.ExportSelectedConfigsPDF)
