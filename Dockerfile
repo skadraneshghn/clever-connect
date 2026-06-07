@@ -58,6 +58,7 @@ WORKDIR /app
 # Copy compiled binaries from Go Builder Stage
 COPY --from=go-builder /app/bin/clever-connect ./bin/clever-connect
 COPY --from=go-builder /app/bin/ehco ./bin/ehco
+COPY --from=go-builder /app/core ./core
 
 # Download and install Gost (SOCKS5 proxy relayer)
 RUN curl -L https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz | gzip -d > /usr/local/bin/gost && \
