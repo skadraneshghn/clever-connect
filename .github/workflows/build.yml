@@ -1,0 +1,77 @@
+name: Build CleverConnect
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Build Web Client
+        run: |
+          cd web/client
+          bun install
+          bun run build
+
+      - name: Build Web Server
+        run: |
+          cd web/server
+          bun install
+          bun run build
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Download V2Ray, Xray, and Sing-Box cores
+        run: |
+          mkdir -p core/xray core/v2ray core/sing-box
+          
+          # Download Xray-core
+          echo "Downloading Xray..."
+          curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip xray.zip xray -d core/xray
+          chmod +x core/xray/xray
+          rm xray.zip
+          
+          # Download v2ray-core
+          echo "Downloading V2Ray..."
+          curl -L -o v2ray.zip https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip
+          unzip v2ray.zip v2ray -d core/v2ray
+          chmod +x core/v2ray/v2ray
+          rm v2ray.zip
+          
+          # Download sing-box
+          echo "Downloading Sing-Box..."
+          TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name | sed 's/^v//')
+          curl -L -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${TAG}/sing-box-${TAG}-linux-amd64.tar.gz"
+          tar -xzf sing-box.tar.gz --strip-components=1 -C core/sing-box "sing-box-${TAG}-linux-amd64/sing-box"
+          chmod +x core/sing-box/sing-box
+          rm sing-box.tar.gz
+
+      - name: Build Go Project
+        run: |
+          mkdir -p bin
+          go build -v -o bin/clever-connect main.go
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clever-connect-linux-amd64
+          path: |
+            bin/
+            core/
