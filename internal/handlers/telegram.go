@@ -108,6 +108,11 @@ func (h *TelegramHandler) proxyToServer(c *gin.Context) bool {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Remote server rejected proxy token (401). Please update the remote server or verify your Auth Token."})
+		return true
+	}
+
 	// Copy response headers
 	for k, vv := range resp.Header {
 		for _, v := range vv {

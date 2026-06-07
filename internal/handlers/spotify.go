@@ -76,6 +76,12 @@ func (h *SpotifyHandler) proxyToServer(c *gin.Context, method string, apiPath st
 		return true
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Remote server rejected proxy token (401). Please update the remote server or verify your Auth Token."})
+		return true
+	}
+
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			c.Writer.Header().Add(k, v)

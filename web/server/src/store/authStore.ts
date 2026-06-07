@@ -18,7 +18,7 @@ const getInitialAuth = () => {
   return {
     token,
     username,
-    isAuthenticated: !!(token && username)
+    isAuthenticated: !!token
   };
 };
 
@@ -34,7 +34,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   initialize: () => {
     const token = localStorage.getItem('cc_server_token');
     const username = localStorage.getItem('cc_server_username');
-    if (token && username) {
+    if (token) {
       set({ token, username, isAuthenticated: true });
     }
   },
