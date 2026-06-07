@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
@@ -63,11 +65,43 @@ jobs:
           chmod +x core/sing-box/sing-box
           rm sing-box.tar.gz
 
+      - name: Install UPX
+        run: |
+          sudo apt-get update && sudo apt-get install -y upx-ucl
+
       - name: Build Go Project
         run: |
           mkdir -p bin
-          go build --ldflags '-extldflags "-Wl,--allow-multiple-definition"' -o bin/clever-connect main.go
-          go build --ldflags '-extldflags "-Wl,--allow-multiple-definition"' -o bin/ehco github.com/Ehco1996/ehco/cmd/ehco
+          go build --ldflags '-extldflags "-Wl,--allow-multiple-definition" -s -w' -o bin/clever-connect main.go
+          go build --ldflags '-extldflags "-Wl,--allow-multiple-definition" -s -w' -o bin/ehco github.com/Ehco1996/ehco/cmd/ehco
+          
+          echo "Compressing binaries with UPX..."
+          upx --best bin/clever-connect
+          upx --best bin/ehco
+          upx --best core/xray/xray
+          upx --best core/v2ray/v2ray
+          upx --best core/sing-box/sing-box
+
+      - name: Commit and Push to GitHub
+        if: (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && github.event_name != 'pull_request'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Force add built compressed binaries and downloaded cores
+          git add -f bin/clever-connect
+          git add -f bin/ehco
+          git add -f core/xray/xray
+          git add -f core/v2ray/v2ray
+          git add -f core/sing-box/sing-box
+          
+          # Check if there are changes before committing
+          if git diff --cached --quiet; then
+            echo "No changes in compiled binaries or cores. Skipping commit."
+          else
+            git commit -m "chore(build): update compiled binaries and cores [skip ci]"
+            git push origin HEAD:main
+          fi
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
@@ -92,20 +126,6 @@ jobs:
           echo "$CLEVER_SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -t rsa push-n3-par-clevercloud-customers.services.clever-cloud.com >> ~/.ssh/known_hosts
-          
-          # Configure Git user
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Force add built binaries and downloaded cores
-          git add -f bin/clever-connect
-          git add -f bin/ehco
-          git add -f core/xray/xray
-          git add -f core/v2ray/v2ray
-          git add -f core/sing-box/sing-box
-          
-          # Commit the build assets locally on the runner
-          git commit -m "chore(build): compile binaries and download cores for deployment [skip ci]"
           
           # Add Clever Cloud git remote and push
           git remote add clever git@push-n3-par-clevercloud-customers.services.clever-cloud.com:app_a8fead43-36bd-4876-b9cb-103c74487ea5.git
