@@ -107,6 +107,7 @@ export const DashboardPage: React.FC = () => {
                   <button className="btn btn--sm">+ Add Node</button>
                   <button className="btn btn--sm">Switch</button>
                   <button className="btn btn--primary btn--sm">Connect</button>
+                  <button className="btn btn--sm" style={{ background: '#dc3545', color: '#fff', border: 'none' }} onClick={() => useDashboardStore.getState().deleteAllNodes()}>Delete All</button>
                 </div>
               </div>
             </div>
