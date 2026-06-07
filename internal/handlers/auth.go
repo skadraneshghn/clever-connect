@@ -120,6 +120,20 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 			return
 		}
 
+		// Check if the token matches Ehco server or client auth token from DB
+		if db.DB != nil {
+			var serverCfg models.EhcoServerConfig
+			if db.DB.First(&serverCfg).Error == nil && serverCfg.AuthToken != "" && tokenString == serverCfg.AuthToken {
+				c.Next()
+				return
+			}
+			var clientCfg models.EhcoClientConfig
+			if db.DB.First(&clientCfg).Error == nil && clientCfg.AuthToken != "" && tokenString == clientCfg.AuthToken {
+				c.Next()
+				return
+			}
+		}
+
 		token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 			return jwtSecret, nil
 		})
