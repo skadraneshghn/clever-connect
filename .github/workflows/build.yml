@@ -2,9 +2,7 @@ name: Build CleverConnect
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -89,7 +87,7 @@ jobs:
             echo "No changes in compiled binaries or cores. Skipping commit."
           else
             git commit -m "chore(build): update compiled binaries and cores [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
+            git push origin HEAD:main
           fi
 
       - name: Upload Build Artifacts
@@ -101,7 +99,7 @@ jobs:
             core/
 
       - name: Deploy to Clever Cloud
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         env:
           CLEVER_SSH_KEY: ${{ secrets.CLEVER_SSH_KEY }}
         run: |
