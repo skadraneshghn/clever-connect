@@ -463,7 +463,9 @@ type V2RaySecurityEvent struct {
 
 // V2RayClientConfig stores saved server profiles on the client side
 type V2RayClientConfig struct {
-	gorm.Model
+	ID             uint      `json:"ID" gorm:"primarykey"`
+	CreatedAt      time.Time `json:"CreatedAt"`
+	UpdatedAt      time.Time `json:"UpdatedAt"`
 	Name           string `json:"name"`
 	Protocol       string `json:"protocol"`
 	Address        string `json:"address"`

@@ -31,6 +31,7 @@ interface DashboardState {
   logs: string[];
   connectNode: (node: VPNNode) => Promise<void>;
   disconnectNode: () => Promise<void>;
+  deleteAllNodes: () => Promise<void>;
   initWebSocket: (token: string) => () => void;
 }
 
@@ -114,6 +115,27 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
         logs: [...state.logs.slice(-49), `[System] Connection closed to ${nodeName}.`],
         bandwidthHistory: state.bandwidthHistory.map((h) => ({ ...h, upload: 0, download: 0 }))
       }));
+    },
+
+    deleteAllNodes: async () => {
+      if (!window.confirm('Are you sure you want to delete all gateway nodes? This will also remove them from the backend configs!')) return;
+      
+      try {
+        const token = localStorage.getItem('cc_client_token') || '';
+        await fetch('/api/v2ray/client/configs/all', {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        set({ nodes: [], selectedNode: null, connectionState: 'disconnected', latency: 0 });
+        set((state) => ({ logs: [...state.logs.slice(-49), '[System] All gateway nodes have been purged.'] }));
+        if (mockInterval) {
+          clearInterval(mockInterval);
+          mockInterval = null;
+        }
+      } catch (err) {
+        console.error('Failed to delete nodes:', err);
+      }
     },
 
     initWebSocket: (token) => {

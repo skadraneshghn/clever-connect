@@ -9,6 +9,7 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/downloader"
 	"clever-connect/internal/ehcocore"
 	"clever-connect/internal/handlers"
@@ -48,6 +49,17 @@ func main() {
 	// Initialize Database
 	database := db.InitDB(cfg)
 	_ = database // keep reference
+
+	// Initialize PebbleDB for V2Ray Client Configs
+	if err := pebble.InitPebble("data/pebble_nodes"); err != nil {
+		logger.Error("Pebble", "Failed to initialize PebbleDB", "error", err)
+	} else {
+		defer pebble.Close()
+		// Migrate SQLite table if it exists
+		if err := pebble.MigrateFromSQLite(database); err != nil {
+			logger.Error("Pebble", "Migration error", "error", err)
+		}
+	}
 
 	// Initialize Downloader Engine on server only
 	if cfg.AppMode == "server" {
@@ -212,6 +224,7 @@ func main() {
 			protected.GET("/v2ray/client/configs", v2rayHandler.ListClientConfigs)
 			protected.POST("/v2ray/client/configs", v2rayHandler.CreateClientConfig)
 			protected.PUT("/v2ray/client/configs/:id", v2rayHandler.UpdateClientConfig)
+			protected.DELETE("/v2ray/client/configs/all", v2rayHandler.DeleteAllClientConfigs)
 			protected.DELETE("/v2ray/client/configs/:id", v2rayHandler.DeleteClientConfig)
 			protected.POST("/v2ray/client/configs/:id/active", v2rayHandler.SetActiveClientConfig)
 			protected.POST("/v2ray/client/configs/reorder", v2rayHandler.ReorderClientConfigs)

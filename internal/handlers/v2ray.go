@@ -18,6 +18,7 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/v2ray/compiler"
@@ -325,8 +326,20 @@ func (h *V2RayHandler) GetClientStatus(c *gin.Context) {
 
 // StartClientCore handles POST /api/v2ray/client/start
 func (h *V2RayHandler) StartClientCore(c *gin.Context) {
-	var activeConfig models.V2RayClientConfig
-	if err := db.DB.Order("updated_at desc").First(&activeConfig).Error; err != nil {
+	configs, _ := pebble.ListClientConfigs("", nil, 0, 0)
+	var activeConfig *models.V2RayClientConfig
+	for _, cfg := range configs {
+		if cfg.IsActive {
+			// Need a local copy to get the pointer
+			activeCopy := cfg
+			activeConfig = &activeCopy
+			break
+		}
+	}
+	if activeConfig == nil && len(configs) > 0 {
+		activeConfig = &configs[0]
+	}
+	if activeConfig == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "No imported client profiles found"})
 		return
 	}
@@ -356,7 +369,7 @@ func (h *V2RayHandler) StartClientCore(c *gin.Context) {
 	httpPortPublic := core.FindAvailablePort(httpPort)
 	httpPortInternal := core.FindAvailablePort(httpPortPublic + 1000)
 
-	configBytes, err := compiler.CompileClientConfig(activeConfig, socksPortInternal, httpPortInternal, evasion, "")
+	configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortInternal, httpPortInternal, evasion, "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to compile config: " + err.Error()})
 		return
@@ -483,23 +496,25 @@ func BuildProxyLink(cfg models.V2RayClientConfig) string {
 
 // ListClientConfigs handles GET /api/v2ray/client/configs
 func (h *V2RayHandler) ListClientConfigs(c *gin.Context) {
-	var configs []models.V2RayClientConfig
-	query := db.DB.Order("priority asc, name asc")
-
+	search := c.Query("search")
+	var subID *uint
 	if subIDStr := c.Query("subscription_id"); subIDStr != "" {
-		if subID, err := strconv.Atoi(subIDStr); err == nil {
-			query = query.Where("subscription_id = ?", subID)
+		if id, err := strconv.Atoi(subIDStr); err == nil {
+			val := uint(id)
+			subID = &val
 		}
 	}
-	if search := c.Query("search"); search != "" {
-		query = query.Where("name LIKE ? OR address LIKE ?", "%"+search+"%", "%"+search+"%")
-	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100")) // Virtual windowing default
 
-	if err := query.Find(&configs).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, configs)
+	configs, total := pebble.ListClientConfigs(search, subID, offset, limit)
+	
+	// Temporarily support old frontend which expects []models.V2RayClientConfig
+	// BUT since we are adding windowing in this PR, we should return {data, total}
+	c.JSON(http.StatusOK, gin.H{
+		"data":  configs,
+		"total": total,
+	})
 }
 
 // CreateClientConfig handles POST /api/v2ray/client/configs
@@ -510,7 +525,7 @@ func (h *V2RayHandler) CreateClientConfig(c *gin.Context) {
 		return
 	}
 
-	if err := db.DB.Create(&cfg).Error; err != nil {
+	if err := pebble.SaveClientConfig(&cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -520,8 +535,9 @@ func (h *V2RayHandler) CreateClientConfig(c *gin.Context) {
 // UpdateClientConfig handles PUT /api/v2ray/client/configs/:id
 func (h *V2RayHandler) UpdateClientConfig(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	var existing models.V2RayClientConfig
-	if err := db.DB.First(&existing, id).Error; err != nil {
+	
+	existing, err := pebble.GetClientConfig(uint(id))
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 		return
 	}
@@ -542,7 +558,7 @@ func (h *V2RayHandler) UpdateClientConfig(c *gin.Context) {
 	existing.MuxEnabled = req.MuxEnabled
 	existing.Priority = req.Priority
 
-	if err := db.DB.Save(&existing).Error; err != nil {
+	if err := pebble.SaveClientConfig(existing); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -552,29 +568,49 @@ func (h *V2RayHandler) UpdateClientConfig(c *gin.Context) {
 // DeleteClientConfig handles DELETE /api/v2ray/client/configs/:id
 func (h *V2RayHandler) DeleteClientConfig(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	if err := db.DB.Delete(&models.V2RayClientConfig{}, id).Error; err != nil {
+	if err := pebble.DeleteClientConfig(uint(id)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
+// DeleteAllClientConfigs handles DELETE /api/v2ray/client/configs/all
+func (h *V2RayHandler) DeleteAllClientConfigs(c *gin.Context) {
+	if err := pebble.DeleteAllClientConfigs(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted_all"})
+}
+
 // SetActiveClientConfig handles POST /api/v2ray/client/configs/:id/active
 func (h *V2RayHandler) SetActiveClientConfig(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	var target models.V2RayClientConfig
-	if err := db.DB.First(&target, id).Error; err != nil {
+	
+	target, err := pebble.GetClientConfig(uint(id))
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 		return
 	}
 
-	tx := db.DB.Begin()
-	// Deactivate all
-	tx.Model(&models.V2RayClientConfig{}).Where("1 = 1").Update("is_active", false)
-	// Activate target
+	// Fetch all to deactivate
+	configs, _ := pebble.ListClientConfigs("", nil, 0, 0)
+	var toUpdate []models.V2RayClientConfig
+	for _, cfg := range configs {
+		if cfg.IsActive {
+			cfg.IsActive = false
+			toUpdate = append(toUpdate, cfg)
+		}
+	}
+	
 	target.IsActive = true
-	tx.Save(&target)
-	tx.Commit()
+	toUpdate = append(toUpdate, *target)
+
+	if err := pebble.SaveClientConfigsBulk(toUpdate); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "activated", "id": id})
 }
@@ -589,11 +625,18 @@ func (h *V2RayHandler) ReorderClientConfigs(c *gin.Context) {
 		return
 	}
 
-	tx := db.DB.Begin()
+	var toUpdate []models.V2RayClientConfig
 	for idx, id := range req.IDs {
-		tx.Model(&models.V2RayClientConfig{}).Where("id = ?", id).Update("priority", idx)
+		if cfg, err := pebble.GetClientConfig(id); err == nil {
+			cfg.Priority = idx
+			toUpdate = append(toUpdate, *cfg)
+		}
 	}
-	tx.Commit()
+	
+	if err := pebble.SaveClientConfigsBulk(toUpdate); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "reordered"})
 }
@@ -637,21 +680,33 @@ func (h *V2RayHandler) ImportSubscription(c *gin.Context) {
 		db.DB.Save(&subRecord)
 	}
 
-	// Save all configs associated with this subscription ID
-	tx := db.DB.Begin()
+	var toInsert []models.V2RayClientConfig
+	
+	allConfigs, _ := pebble.ListClientConfigs("", nil, 0, 0)
+	existingMap := make(map[string]models.V2RayClientConfig)
+	for _, c := range allConfigs {
+		key := fmt.Sprintf("%s-%s-%d", c.UUID, c.Address, c.Port)
+		existingMap[key] = c
+	}
+
 	for _, cfg := range configs {
 		cfg.SubscriptionID = subRecord.ID
-		var existing models.V2RayClientConfig
-		if err := tx.Where("uuid = ? AND address = ? AND port = ?", cfg.UUID, cfg.Address, cfg.Port).First(&existing).Error; err != nil {
-			tx.Create(&cfg)
-		} else {
+		key := fmt.Sprintf("%s-%s-%d", cfg.UUID, cfg.Address, cfg.Port)
+		
+		if existing, ok := existingMap[key]; ok {
 			existing.Name = cfg.Name
 			existing.TLSSettings = cfg.TLSSettings
 			existing.SubscriptionID = subRecord.ID
-			tx.Save(&existing)
+			toInsert = append(toInsert, existing)
+		} else {
+			toInsert = append(toInsert, cfg)
 		}
 	}
-	tx.Commit()
+
+	if err := pebble.SaveClientConfigsBulk(toInsert); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "imported", "count": len(configs), "subscription_id": subRecord.ID})
 }
@@ -679,7 +734,7 @@ func (h *V2RayHandler) ImportManualConfig(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON outbound block: " + err.Error()})
 			return
 		}
-		db.DB.Create(&cfg)
+		pebble.SaveClientConfig(&cfg)
 		c.JSON(http.StatusOK, gin.H{"status": "imported", "config": cfg})
 		return
 	}
@@ -697,7 +752,7 @@ func (h *V2RayHandler) ImportManualConfig(c *gin.Context) {
 			}
 			cfg, err := sub.ParseProxyLink(line)
 			if err == nil {
-				db.DB.Create(&cfg)
+				pebble.SaveClientConfig(&cfg)
 				lastImported = cfg
 				importedCount++
 			}
@@ -717,7 +772,7 @@ func (h *V2RayHandler) ImportManualConfig(c *gin.Context) {
 		return
 	}
 
-	db.DB.Create(&cfg)
+	pebble.SaveClientConfig(&cfg)
 	c.JSON(http.StatusOK, gin.H{"status": "imported", "config": cfg})
 }
 
@@ -750,7 +805,7 @@ func (h *V2RayHandler) ImportQRConfig(c *gin.Context) {
 		return
 	}
 
-	db.DB.Create(&cfg)
+	pebble.SaveClientConfig(&cfg)
 	c.JSON(http.StatusOK, gin.H{"status": "imported", "config": cfg})
 }
 
@@ -778,13 +833,10 @@ func (h *V2RayHandler) ImportBulkConfigs(c *gin.Context) {
 
 	importedCount := 0
 	if len(configsToInsert) > 0 {
-		tx := db.DB.Begin()
-		if err := tx.CreateInBatches(&configsToInsert, 500).Error; err != nil {
-			tx.Rollback()
+		if err := pebble.SaveClientConfigsBulk(configsToInsert); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		tx.Commit()
 		importedCount = len(configsToInsert)
 	}
 
@@ -804,10 +856,14 @@ func (h *V2RayHandler) ListSubscriptions(c *gin.Context) {
 // DeleteSubscription handles DELETE /api/v2ray/client/subscriptions/:id
 func (h *V2RayHandler) DeleteSubscription(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	
+	subID := uint(id)
+	configs, _ := pebble.ListClientConfigs("", &subID, 0, 0)
+	for _, cfg := range configs {
+		pebble.DeleteClientConfig(cfg.ID)
+	}
+
 	tx := db.DB.Begin()
-	// Delete associated configs first
-	tx.Where("subscription_id = ?", id).Delete(&models.V2RayClientConfig{})
-	// Delete subscription record
 	tx.Delete(&models.V2RayClientSubscription{}, id)
 	tx.Commit()
 
@@ -825,9 +881,10 @@ func (h *V2RayHandler) ExportSelectedConfigsPDF(c *gin.Context) {
 	}
 
 	var configs []models.V2RayClientConfig
-	if err := db.DB.Where("id IN ?", req.IDs).Find(&configs).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	for _, id := range req.IDs {
+		if cfg, err := pebble.GetClientConfig(id); err == nil {
+			configs = append(configs, *cfg)
+		}
 	}
 
 	if len(configs) == 0 {
@@ -1139,8 +1196,8 @@ func (h *V2RayHandler) ServeSubscription(c *gin.Context) {
 // TestClientProfile handles POST /api/v2ray/client/test-profile/:id
 func (h *V2RayHandler) TestClientProfile(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	var cfg models.V2RayClientConfig
-	if err := db.DB.First(&cfg, id).Error; err != nil {
+	cfg, err := pebble.GetClientConfig(uint(id))
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 		return
 	}
@@ -1154,7 +1211,7 @@ func (h *V2RayHandler) TestClientProfile(c *gin.Context) {
 		req.TimeoutSec = 8
 	}
 
-	res := speed.TestProfile(cfg, 22000, 22001, req.MeasureSpeed, req.TimeoutSec)
+	res := speed.TestProfile(*cfg, 22000, 22001, req.MeasureSpeed, req.TimeoutSec)
 	
 	// Store latency to local DB
 	if res.OK {
@@ -1162,7 +1219,7 @@ func (h *V2RayHandler) TestClientProfile(c *gin.Context) {
 	} else {
 		cfg.LatencyMs = -1
 	}
-	db.DB.Save(&cfg)
+	pebble.SaveClientConfig(cfg)
 
 	c.JSON(http.StatusOK, res)
 }
@@ -1178,30 +1235,36 @@ func (h *V2RayHandler) TestMassProfiles(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 
 	var configs []models.V2RayClientConfig
-	var err error
 	if len(req.IDs) > 0 {
-		err = db.DB.Where("id IN ?", req.IDs).Find(&configs).Error
+		for _, id := range req.IDs {
+			if cfg, err := pebble.GetClientConfig(id); err == nil {
+				configs = append(configs, *cfg)
+			}
+		}
 	} else {
-		err = db.DB.Find(&configs).Error
+		configs, _ = pebble.ListClientConfigs("", nil, 0, 0)
 	}
 
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if len(configs) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "No configs found"})
 		return
 	}
 
 	results := speed.MassTestProfiles(configs, req.Concurrency, req.MeasureSpeed, req.TimeoutSec)
 	
 	// Store latency results to local DB
-	tx := db.DB.Begin()
+	var toUpdate []models.V2RayClientConfig
 	for _, res := range results {
 		latency := -1
 		if res.OK {
 			latency = res.RelayMs
 		}
-		tx.Model(&models.V2RayClientConfig{}).Where("id = ?", res.ConfigID).Update("latency_ms", latency)
+		if cfg, err := pebble.GetClientConfig(res.ConfigID); err == nil {
+			cfg.LatencyMs = latency
+			toUpdate = append(toUpdate, *cfg)
+		}
 	}
-	tx.Commit()
+	pebble.SaveClientConfigsBulk(toUpdate)
 
 	c.JSON(http.StatusOK, results)
 }

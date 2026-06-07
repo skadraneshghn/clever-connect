@@ -4,7 +4,7 @@ import {
   FiEye, FiEyeOff, FiHelpCircle, FiTerminal, FiDownloadCloud, FiPlus, 
   FiTrash2, FiActivity, FiSearch, FiZap, FiWifi, FiMonitor, FiSettings, 
   FiAlertCircle, FiLock, FiLogOut, FiCheck, FiX
-} from 'react-icons/fi';
+} from 'react-icons/fi';import { useVirtualizer } from '@tanstack/react-virtual';
 
 export const V2RayClientPage: React.FC = () => {
   // Help modal state
@@ -43,9 +43,12 @@ export const V2RayClientPage: React.FC = () => {
   const [evasionEchConfig, setEvasionEchConfig] = useState('');
   const [evasionTcpBrutal, setEvasionTcpBrutal] = useState(false);
 
-  // Subscriptions & Profiles
+  // Subscriptions & Profiles (Infinite Scroll / Windowing)
   const [subUrl, setSubUrl] = useState('');
   const [profiles, setProfiles] = useState<any[]>([]);
+  const [totalProfiles, setTotalProfiles] = useState(0);
+  const [pageOffset, setPageOffset] = useState(0);
+  const PAGE_LIMIT = 50;
   const [activeProfileId, setActiveProfileId] = useState<number | null>(null);
   const [manualUri, setManualUri] = useState('');
 
@@ -125,17 +128,6 @@ export const V2RayClientPage: React.FC = () => {
         setEvasionTcpBrutal(data.evasion_tcp_brutal);
       }
 
-      // Fetch profiles
-      const pResp = await fetch('/api/v2ray/client/configs', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (pResp.ok) {
-        const pList = await pResp.json();
-        setProfiles(pList);
-        const active = pList.find((p: any) => p.is_active);
-        if (active) setActiveProfileId(active.ID);
-      }
-
       // Fetch core status
       const stResp = await fetch('/api/v2ray/client/status', {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -145,12 +137,42 @@ export const V2RayClientPage: React.FC = () => {
         setIsRunning(statusData.is_running);
       }
 
+      // Fetch first page of profiles
+      fetchProfiles(0, true);
+
       // Fetch logs
       fetchLogs();
     } catch (err) {
       console.error(err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchProfiles = async (offset: number, reset: boolean = false) => {
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const pResp = await fetch(`/api/v2ray/client/configs?offset=${offset}&limit=${PAGE_LIMIT}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (pResp.ok) {
+        const pList = await pResp.json();
+        const data = pList.data || [];
+        setTotalProfiles(pList.total || 0);
+        
+        if (reset) {
+          setProfiles(data);
+          setPageOffset(offset);
+        } else {
+          setProfiles(prev => [...prev, ...data]);
+          setPageOffset(offset);
+        }
+
+        const active = data.find((p: any) => p.is_active);
+        if (active) setActiveProfileId(active.ID);
+      }
+    } catch (err) {
+      console.error('Failed to fetch profiles', err);
     }
   };
 
@@ -712,6 +734,30 @@ export const V2RayClientPage: React.FC = () => {
     }
   };
 
+  const handleDeleteAllNodes = async () => {
+    if (!window.confirm('Are you sure you want to delete ALL outbound configurations? This action cannot be undone!')) return;
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/configs/all', {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'All outbound profiles have been deleted.' });
+        loadSettings();
+      } else {
+        const data = await res.json();
+        setMessage({ type: 'error', text: data.error || 'Failed to delete nodes.' });
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: 'An unexpected error occurred while deleting nodes.' });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleTestLatency = async () => {
     setIsLoading(true);
     setMessage({ type: 'success', text: 'Running parallel RTT latency test sweep...' });
@@ -864,6 +910,36 @@ export const V2RayClientPage: React.FC = () => {
     if (ms < 300) return '#f59e0b';
     return 'var(--color-brand-red)';
   };
+
+  // Virtualized Infinite Scroll Setup
+  const parentRef = useRef<HTMLDivElement>(null);
+  
+  const rowVirtualizer = useVirtualizer({
+    count: profiles.length < totalProfiles ? profiles.length + 1 : profiles.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 48,
+    overscan: 5,
+  });
+
+  useEffect(() => {
+    const virtualItems = rowVirtualizer.getVirtualItems();
+    if (!virtualItems.length) return;
+    const lastItem = virtualItems[virtualItems.length - 1];
+    
+    if (
+      lastItem.index >= profiles.length - 1 &&
+      profiles.length < totalProfiles &&
+      !isLoading
+    ) {
+      fetchProfiles(pageOffset + PAGE_LIMIT);
+    }
+  }, [
+    rowVirtualizer.getVirtualItems(),
+    profiles.length,
+    totalProfiles,
+    isLoading,
+    pageOffset,
+  ]);
 
   return (
     <div>
@@ -1044,6 +1120,15 @@ export const V2RayClientPage: React.FC = () => {
                 >
                   Clipboard Import
                 </button>
+                <button 
+                  className="btn" 
+                  type="button" 
+                  onClick={handleDeleteAllNodes}
+                  disabled={isLoading || profiles.length === 0}
+                  style={{ background: '#dc3545', color: '#fff', border: 'none', display: 'flex', alignItems: 'center' }}
+                >
+                  Delete All Nodes
+                </button>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--color-brand-bg)', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)' }}>
                 <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Import Config via QR Code Image:</span>
@@ -1059,10 +1144,10 @@ export const V2RayClientPage: React.FC = () => {
             </div>
 
             {/* Table of Profiles */}
-            <div style={{ overflowX: 'auto', border: '1px solid var(--color-brand-border)', borderRadius: 8 }}>
+            <div ref={parentRef} style={{ maxHeight: 600, overflow: 'auto', border: '1px solid var(--color-brand-border)', borderRadius: 8 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, textAlign: 'left' }}>
-                <thead>
-                  <tr style={{ background: 'var(--color-brand-bg)', borderBottom: '1px solid var(--color-brand-border)' }}>
+                <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--color-brand-bg)' }}>
+                  <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
                     <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 50 }}>Active</th>
                     <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 50 }}>Select</th>
                     <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Name</th>
@@ -1080,59 +1165,74 @@ export const V2RayClientPage: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    profiles.map((p) => (
-                      <tr key={p.ID} style={{ borderBottom: '1px solid var(--color-brand-border)', background: p.ID === activeProfileId ? 'var(--color-brand-light)' : 'none' }}>
-                        <td style={{ padding: '10px 12px' }}>
-                          <input
-                            type="radio"
-                            name="active_profile"
-                            checked={p.ID === activeProfileId}
-                            onChange={() => handleSelectProfile(p.ID)}
-                            style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
-                          />
-                        </td>
-                        <td style={{ padding: '10px 12px' }}>
-                          <input
-                            type="checkbox"
-                            checked={selectedProfileIds.includes(p.ID)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedProfileIds([...selectedProfileIds, p.ID]);
-                              } else {
-                                setSelectedProfileIds(selectedProfileIds.filter(id => id !== p.ID));
-                              }
-                            }}
-                            style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
-                          />
-                        </td>
-                        <td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>{p.name}</td>
-                        <td style={{ padding: '10px 12px', textTransform: 'uppercase' }}>
-                          <span style={{
-                            padding: '2px 6px',
-                            borderRadius: 4,
-                            background: '#e0f2fe',
-                            color: '#0369a1',
-                            fontSize: 10,
-                            fontWeight: 700
-                          }}>{p.protocol}</span>
-                        </td>
-                        <td style={{ padding: '10px 12px', color: 'var(--color-brand-text)' }}>{p.address}:{p.port}</td>
-                        <td style={{ padding: '10px 12px' }}>
-                          <span style={{
-                            fontWeight: 700,
-                            color: getLatencyColor(p.latency_ms)
-                          }}>{p.latency_ms > 0 ? `${p.latency_ms}ms` : 'N/A'}</span>
-                        </td>
-                        <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                          <button 
-                            onClick={() => handleDeleteProfile(p.ID)} 
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-red)' }}
-                          >
-                            <FiTrash2 size={14} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                    <>
+                      {rowVirtualizer.getVirtualItems()[0]?.start > 0 && (
+                        <tr><td colSpan={7} style={{ height: rowVirtualizer.getVirtualItems()[0].start }} /></tr>
+                      )}
+                      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                        const p = profiles[virtualRow.index];
+                        if (!p) return null;
+                        return (
+                          <tr key={virtualRow.key} style={{ height: virtualRow.size, borderBottom: '1px solid var(--color-brand-border)', background: p.ID === activeProfileId ? 'var(--color-brand-light)' : 'none' }}>
+                            <td style={{ padding: '10px 12px' }}>
+                              <input
+                                type="radio"
+                                name="active_profile"
+                                checked={p.ID === activeProfileId}
+                                onChange={() => handleSelectProfile(p.ID)}
+                                style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+                              />
+                            </td>
+                            <td style={{ padding: '10px 12px' }}>
+                              <input
+                                type="checkbox"
+                                checked={selectedProfileIds.includes(p.ID)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedProfileIds([...selectedProfileIds, p.ID]);
+                                  } else {
+                                    setSelectedProfileIds(selectedProfileIds.filter(id => id !== p.ID));
+                                  }
+                                }}
+                                style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+                              />
+                            </td>
+                            <td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>{p.name}</td>
+                            <td style={{ padding: '10px 12px', textTransform: 'uppercase' }}>
+                              <span style={{
+                                padding: '2px 6px',
+                                borderRadius: 4,
+                                background: '#e0f2fe',
+                                color: '#0369a1',
+                                fontSize: 10,
+                                fontWeight: 700
+                              }}>{p.protocol}</span>
+                            </td>
+                            <td style={{ padding: '10px 12px', color: 'var(--color-brand-text)' }}>{p.address}:{p.port}</td>
+                            <td style={{ padding: '10px 12px' }}>
+                              <span style={{
+                                fontWeight: 700,
+                                color: getLatencyColor(p.latency_ms)
+                              }}>{p.latency_ms > 0 ? `${p.latency_ms}ms` : 'N/A'}</span>
+                            </td>
+                            <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                              <button 
+                                onClick={() => handleDeleteProfile(p.ID)} 
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-red)' }}
+                              >
+                                <FiTrash2 size={14} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {rowVirtualizer.getVirtualItems().length > 0 && (
+                        <tr><td colSpan={7} style={{ height: rowVirtualizer.getTotalSize() - rowVirtualizer.getVirtualItems()[rowVirtualizer.getVirtualItems().length - 1].end }} /></tr>
+                      )}
+                      {isLoading && profiles.length < totalProfiles && (
+                        <tr><td colSpan={7} style={{ padding: 10, textAlign: 'center', color: 'var(--color-brand-muted)' }}>Loading more...</td></tr>
+                      )}
+                    </>
                   )}
                 </tbody>
               </table>
