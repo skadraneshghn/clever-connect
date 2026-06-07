@@ -1064,6 +1064,21 @@ func (h *V2RayHandler) GetClientSettings(c *gin.Context) {
 	if _, ok := result["evasion_enabled"]; !ok {
 		result["evasion_enabled"] = "true"
 	}
+	if _, ok := result["v2ray_core"]; !ok {
+		result["v2ray_core"] = "xray"
+	}
+	if _, ok := result["fragment_mode"]; !ok {
+		result["fragment_mode"] = "default"
+	}
+	if _, ok := result["fragment_packets"]; !ok {
+		result["fragment_packets"] = "tlshello"
+	}
+	if _, ok := result["fragment_length"]; !ok {
+		result["fragment_length"] = "100-200"
+	}
+	if _, ok := result["fragment_interval"]; !ok {
+		result["fragment_interval"] = "10-20"
+	}
 
 	c.JSON(http.StatusOK, result)
 }

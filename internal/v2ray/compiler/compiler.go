@@ -7,6 +7,7 @@ import (
 
 	"clever-connect/internal/db"
 	"clever-connect/internal/models"
+	"clever-connect/internal/v2ray/core"
 )
 
 // LogConfig defines logging settings
@@ -211,8 +212,31 @@ type XrayConfig struct {
 	Observatory *ObservatoryConfig `json:"observatory,omitempty"`
 }
 
-// CompileServerConfig compiles the full Xray server configuration JSON
+// CompileServerConfig compiles the full server configuration JSON based on the selected core
 func CompileServerConfig(
+	inbounds []models.V2RayInbound,
+	users []models.V2RayUser,
+	rules []models.V2RayRoutingRule,
+) ([]byte, error) {
+	coreName := core.GetSelectedCoreName()
+	if coreName == "sing-box" {
+		return CompileSingBoxServerConfig(inbounds, users, rules)
+	}
+
+	configBytes, err := compileServerConfigXray(inbounds, users, rules)
+	if err != nil {
+		return nil, err
+	}
+
+	if coreName == "v2ray" {
+		return CleanXrayConfigForV2Ray(configBytes)
+	}
+
+	return configBytes, nil
+}
+
+// compileServerConfigXray compiles the full Xray server configuration JSON
+func compileServerConfigXray(
 	inbounds []models.V2RayInbound,
 	users []models.V2RayUser,
 	rules []models.V2RayRoutingRule,
@@ -429,8 +453,33 @@ func CompileServerConfig(
 	return json.MarshalIndent(config, "", "  ")
 }
 
-// CompileClientConfig compiles the client-side local Xray config JSON
+// CompileClientConfig compiles the client-side local config JSON based on the selected core
 func CompileClientConfig(
+	activeConfig models.V2RayClientConfig,
+	socksPort int,
+	httpPort int,
+	evasionEnabled bool,
+	tcpDecoySni string,
+) ([]byte, error) {
+	coreName := core.GetSelectedCoreName()
+	if coreName == "sing-box" {
+		return CompileSingBoxClientConfig(activeConfig, socksPort, httpPort, evasionEnabled, tcpDecoySni)
+	}
+
+	configBytes, err := compileClientConfigXray(activeConfig, socksPort, httpPort, evasionEnabled, tcpDecoySni)
+	if err != nil {
+		return nil, err
+	}
+
+	if coreName == "v2ray" {
+		return CleanXrayConfigForV2Ray(configBytes)
+	}
+
+	return configBytes, nil
+}
+
+// compileClientConfigXray compiles the client-side local Xray config JSON
+func compileClientConfigXray(
 	activeConfig models.V2RayClientConfig,
 	socksPort int,
 	httpPort int,
@@ -836,10 +885,48 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 		clientStreamSettings.Sockopt = sockopt
 
 		if evasionFragment {
-			clientStreamSettings.Fragment = &FragmentConfig{
-				Packets:  "tlshello",
-				Length:   "100-200",
-				Interval: "10-20",
+			fragMode := "default"
+			fragPackets := "tlshello"
+			fragLength := "100-200"
+			fragInterval := "10-20"
+
+			if db.DB != nil {
+				var setting models.V2RayClientSetting
+				if err := db.DB.Where("key = ?", "fragment_mode").First(&setting).Error; err == nil && setting.Value != "" {
+					fragMode = setting.Value
+				}
+				if err := db.DB.Where("key = ?", "fragment_packets").First(&setting).Error; err == nil && setting.Value != "" {
+					fragPackets = setting.Value
+				}
+				if err := db.DB.Where("key = ?", "fragment_length").First(&setting).Error; err == nil && setting.Value != "" {
+					fragLength = setting.Value
+				}
+				if err := db.DB.Where("key = ?", "fragment_interval").First(&setting).Error; err == nil && setting.Value != "" {
+					fragInterval = setting.Value
+				}
+			}
+
+			switch fragMode {
+			case "domain":
+				// Targets the domain/SNI by splitting very early (e.g. 1-5 bytes) to desync the SNI record header
+				clientStreamSettings.Fragment = &FragmentConfig{
+					Packets:  fragPackets,
+					Length:   "1-5",
+					Interval: "5-15",
+				}
+			case "random":
+				// Aggressive micro-chunks at random intervals
+				clientStreamSettings.Fragment = &FragmentConfig{
+					Packets:  fragPackets,
+					Length:   "1-3",
+					Interval: "1-5",
+				}
+			default: // "default" or custom
+				clientStreamSettings.Fragment = &FragmentConfig{
+					Packets:  fragPackets,
+					Length:   fragLength,
+					Interval: fragInterval,
+				}
 			}
 		}
 	}
@@ -922,8 +1009,23 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 	return outbound
 }
 
-// ValidateXrayConfig parses and validates XrayConfig JSON against requirements
+// ValidateXrayConfig parses and validates config JSON against requirements
 func ValidateXrayConfig(configJSON []byte) error {
+	coreName := core.GetSelectedCoreName()
+	if coreName == "sing-box" {
+		var config SingBoxConfig
+		if err := json.Unmarshal(configJSON, &config); err != nil {
+			return fmt.Errorf("JSON schema syntax error: %w", err)
+		}
+		if len(config.Inbounds) == 0 {
+			return fmt.Errorf("validation error: at least one inbound must be defined")
+		}
+		if len(config.Outbounds) == 0 {
+			return fmt.Errorf("validation error: at least one outbound must be defined")
+		}
+		return nil
+	}
+
 	var config XrayConfig
 	if err := json.Unmarshal(configJSON, &config); err != nil {
 		return fmt.Errorf("JSON schema syntax error: %w", err)
@@ -956,4 +1058,58 @@ func ValidateXrayConfig(configJSON []byte) error {
 	}
 
 	return nil
+}
+
+// CleanXrayConfigForV2Ray parses the compiled Xray config JSON and recursively strips out Xray-only unsupported features for V2Ray core
+func CleanXrayConfigForV2Ray(configJSON []byte) ([]byte, error) {
+	var m map[string]interface{}
+	if err := json.Unmarshal(configJSON, &m); err != nil {
+		return nil, err
+	}
+
+	cleanMapForV2Ray(m)
+
+	return json.MarshalIndent(m, "", "  ")
+}
+
+func cleanMapForV2Ray(m map[string]interface{}) {
+	for k, v := range m {
+		// 1. Remove VLESS XTLS flow
+		if k == "flow" && (v == "xtls-rprx-vision" || v == "xtls-rprx-direct" || v == "xtls-rprx-vision-udp443") {
+			delete(m, k)
+			continue
+		}
+		// 2. Reality security -> none / downgrade
+		if k == "security" && v == "reality" {
+			m[k] = "none"
+			delete(m, "realitySettings")
+			continue
+		}
+		// 3. Evasion blocks not supported in V2Ray
+		if k == "fragment" || k == "ech" {
+			delete(m, k)
+			continue
+		}
+		// 4. TCP Brutal congestion not supported in standard V2Ray
+		if k == "tcpCongestion" && v == "brutal" {
+			delete(m, k)
+			continue
+		}
+		// 5. Observatory load balancing block not natively supported in standard V2Ray
+		if k == "observatory" {
+			delete(m, k)
+			continue
+		}
+
+		// Recurse
+		if childMap, ok := v.(map[string]interface{}); ok {
+			cleanMapForV2Ray(childMap)
+		} else if childSlice, ok := v.([]interface{}); ok {
+			for _, item := range childSlice {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					cleanMapForV2Ray(itemMap)
+				}
+			}
+		}
+	}
 }

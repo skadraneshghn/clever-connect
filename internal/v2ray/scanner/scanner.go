@@ -273,12 +273,11 @@ func StartScan(opts CDNConfigsOptions) (*CDNScanState, error) {
 func runCDNScan(ctx context.Context, state *CDNScanState, opts CDNConfigsOptions) error {
 	bin := core.GetXrayBinPath()
 	if _, err := os.Stat(bin); err != nil {
-		if path, err := exec.LookPath("xray"); err == nil {
-			bin = path
-		} else if path, err := exec.LookPath("v2ray"); err == nil {
+		coreName := core.GetSelectedCoreName()
+		if path, err := exec.LookPath(coreName); err == nil {
 			bin = path
 		} else {
-			return fmt.Errorf("xray/v2ray binary not found")
+			return fmt.Errorf("%s binary not found", coreName)
 		}
 	}
 

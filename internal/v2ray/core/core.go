@@ -10,7 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
+	"clever-connect/internal/models"
 )
 
 var (
@@ -19,28 +21,89 @@ var (
 	cancelFunc  context.CancelFunc
 )
 
-// GetXrayBinPath returns the absolute or relative path to the xray or v2ray binary
-func GetXrayBinPath() string {
-	// 1. Check core/xray/xray
-	if _, err := os.Stat("core/xray/xray"); err == nil {
-		return "core/xray/xray"
+// GetSelectedCoreName returns the selected core name ("xray", "v2ray", or "sing-box") from settings, or fallbacks.
+func GetSelectedCoreName() string {
+	if db.DB != nil {
+		var setting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "v2ray_core").First(&setting).Error; err == nil && setting.Value != "" {
+			return setting.Value
+		}
 	}
-	// 2. Check core/v2ray/v2ray
+	// Fallback detection
+	if _, err := os.Stat("core/xray/xray"); err == nil {
+		return "xray"
+	}
 	if _, err := os.Stat("core/v2ray/v2ray"); err == nil {
-		return "core/v2ray/v2ray"
+		return "v2ray"
+	}
+	if _, err := os.Stat("core/sing-box/sing-box"); err == nil {
+		return "sing-box"
+	}
+	return "xray" // default fallback
+}
+
+// GetXrayBinPath returns the absolute or relative path to the xray, v2ray or sing-box binary
+func GetXrayBinPath() string {
+	coreName := GetSelectedCoreName()
+	var binPath string
+	switch coreName {
+	case "v2ray":
+		binPath = "core/v2ray/v2ray"
+	case "sing-box":
+		binPath = "core/sing-box/sing-box"
+	default: // "xray"
+		binPath = "core/xray/xray"
+	}
+
+	if _, err := os.Stat(binPath); err == nil {
+		return binPath
 	}
 
 	exe, err := os.Executable()
 	if err == nil {
-		localPath := filepath.Join(filepath.Dir(exe), "xray")
+		localPath := filepath.Join(filepath.Dir(exe), coreName)
 		if _, err := os.Stat(localPath); err == nil {
 			return localPath
 		}
 	}
-	return "bin/xray"
+	return filepath.Join("bin", coreName)
 }
 
-// StartCore starts the Xray/V2Ray process with the given config file
+// GetClientBinPath returns the client-side binary path for the selected core with proper fallbacks.
+func GetClientBinPath() (string, error) {
+	coreName := GetSelectedCoreName()
+
+	// 1. Check local core folder
+	localPath := filepath.Join("core", coreName, coreName)
+	if _, err := os.Stat(localPath); err == nil {
+		_ = os.Chmod(localPath, 0755)
+		return localPath, nil
+	}
+
+	// 2. Check local executable dir
+	exe, err := os.Executable()
+	if err == nil {
+		localPathExe := filepath.Join(filepath.Dir(exe), coreName)
+		if _, err := os.Stat(localPathExe); err == nil {
+			_ = os.Chmod(localPathExe, 0755)
+			return localPathExe, nil
+		}
+	}
+
+	// 3. Fallback: system LookPath
+	if path, err := exec.LookPath(coreName); err == nil {
+		return path, nil
+	}
+
+	// 4. Extract embedded xray if selected core is xray
+	if coreName == "xray" {
+		return ExtractCoreBinary()
+	}
+
+	return "", fmt.Errorf("binary for selected core %q not found in core folder or system PATH", coreName)
+}
+
+// StartCore starts the Xray/V2Ray/Sing-Box process with the given config file
 func StartCore(configPath string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -51,13 +114,12 @@ func StartCore(configPath string) error {
 
 	binPath := GetXrayBinPath()
 	if _, err := os.Stat(binPath); err != nil {
-		// Fallback: check if 'xray' is available in system PATH
-		if path, err := exec.LookPath("xray"); err == nil {
-			binPath = path
-		} else if path, err := exec.LookPath("v2ray"); err == nil {
+		coreName := GetSelectedCoreName()
+		// Fallback: check if selected core is available in system PATH
+		if path, err := exec.LookPath(coreName); err == nil {
 			binPath = path
 		} else {
-			return fmt.Errorf("xray/v2ray binary not found at %s or in system PATH. Please place the binary inside the project", binPath)
+			return fmt.Errorf("%s binary not found at %s or in system PATH. Please place the binary inside the project", coreName, binPath)
 		}
 	}
 

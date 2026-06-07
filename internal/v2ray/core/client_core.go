@@ -211,9 +211,9 @@ func RestartClientCore() error {
 }
 
 func clientSupervisor(ctx context.Context) {
-	binPath, err := ExtractCoreBinary()
+	binPath, err := GetClientBinPath()
 	if err != nil {
-		logger.Error("ClientV2Ray", "Failed to extract core binary", "error", err)
+		logger.Error("ClientV2Ray", "Failed to resolve core binary path", "error", err)
 		clientMu.Lock()
 		clientErr = err
 		clientRunning = false

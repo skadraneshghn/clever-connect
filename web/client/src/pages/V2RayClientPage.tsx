@@ -24,6 +24,7 @@ export const V2RayClientPage: React.FC = () => {
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
   // Settings
+  const [selectedCore, setSelectedCore] = useState('xray');
   const [socksPort, setSocksPort] = useState(10808);
   const [httpPort, setHttpPort] = useState(10809);
   const [muxEnabled, setMuxEnabled] = useState(true);
@@ -34,6 +35,10 @@ export const V2RayClientPage: React.FC = () => {
   // Evasion settings
   const [evasionFingerprint, setEvasionFingerprint] = useState('chrome');
   const [evasionFragment, setEvasionFragment] = useState(true);
+  const [fragmentMode, setFragmentMode] = useState('default');
+  const [fragmentPackets, setFragmentPackets] = useState('tlshello');
+  const [fragmentLength, setFragmentLength] = useState('100-200');
+  const [fragmentInterval, setFragmentInterval] = useState('10-20');
   const [evasionEch, setEvasionEch] = useState(false);
   const [evasionEchConfig, setEvasionEchConfig] = useState('');
   const [evasionTcpBrutal, setEvasionTcpBrutal] = useState(false);
@@ -102,6 +107,11 @@ export const V2RayClientPage: React.FC = () => {
       });
       if (sResp.ok) {
         const data = await sResp.json();
+        setSelectedCore(data.v2ray_core || 'xray');
+        setFragmentMode(data.fragment_mode || 'default');
+        setFragmentPackets(data.fragment_packets || 'tlshello');
+        setFragmentLength(data.fragment_length || '100-200');
+        setFragmentInterval(data.fragment_interval || '10-20');
         setSocksPort(data.socks_port || 10808);
         setHttpPort(data.http_port || 10809);
         setMuxEnabled(data.mux_enabled);
@@ -189,6 +199,11 @@ export const V2RayClientPage: React.FC = () => {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
+          v2ray_core: selectedCore,
+          fragment_mode: fragmentMode,
+          fragment_packets: fragmentPackets,
+          fragment_length: fragmentLength,
+          fragment_interval: fragmentInterval,
           socks_port: Number(socksPort),
           http_port: Number(httpPort),
           mux_enabled: muxEnabled,
@@ -1229,6 +1244,29 @@ export const V2RayClientPage: React.FC = () => {
               />
             </div>
 
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Default Core</label>
+                <select
+                  value={selectedCore}
+                  onChange={(e) => setSelectedCore(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-card)',
+                    fontSize: 13,
+                    color: 'var(--color-brand-heading)'
+                  }}
+                >
+                  <option value="xray">Xray (Highly Recommended, supports Reality & XTLS)</option>
+                  <option value="v2ray">V2Ray (Standard core, strips XTLS/Reality/Brutal)</option>
+                  <option value="sing-box">Sing-Box (Next-gen core, supports urltest & DNS routes)</option>
+                </select>
+              </div>
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <div>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>SOCKS5 Port</label>
@@ -1346,21 +1384,99 @@ export const V2RayClientPage: React.FC = () => {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', margin: 0 }}>
-                      TLS Record-Layer Fragmentation
-                    </label>
-                    <span style={{ fontSize: 9, color: 'var(--color-brand-text)', display: 'block' }}>
-                      Splits client handshake packets into segments of 100-200 bytes with 10ms intervals.
-                    </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', margin: 0 }}>
+                        TLS Record-Layer Fragmentation
+                      </label>
+                      <span style={{ fontSize: 9, color: 'var(--color-brand-text)', display: 'block' }}>
+                        Splits client handshake packets into segments to slip past SNI deep packet filters.
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={evasionFragment}
+                      onChange={(e) => setEvasionFragment(e.target.checked)}
+                      style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+                    />
                   </div>
-                  <input
-                    type="checkbox"
-                    checked={evasionFragment}
-                    onChange={(e) => setEvasionFragment(e.target.checked)}
-                    style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
-                  />
+
+                  {evasionFragment && (
+                    <div style={{
+                      padding: 12,
+                      background: 'var(--color-brand-bg)',
+                      border: '1px solid var(--color-brand-border)',
+                      borderRadius: 8,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 12,
+                      marginTop: 4,
+                      marginLeft: 8
+                    }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 4, textTransform: 'uppercase' }}>Fragment Mode</label>
+                        <select
+                          value={fragmentMode}
+                          onChange={(e) => setFragmentMode(e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '6px 10px',
+                            borderRadius: 6,
+                            border: '1px solid var(--color-brand-border)',
+                            background: 'var(--color-brand-card)',
+                            fontSize: 12,
+                            color: 'var(--color-brand-heading)'
+                          }}
+                        >
+                          <option value="default">Default Mode (embedded/custom values)</option>
+                          <option value="domain">SNI / Domain Mode (splits early to destroy SNI signatures)</option>
+                          <option value="random">Random Mode (micro-chunks at irregular random intervals)</option>
+                        </select>
+                      </div>
+
+                      {fragmentMode === 'default' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                          <div>
+                            <label style={{ display: 'block', fontSize: 10, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 4, textTransform: 'uppercase' }}>Length Range</label>
+                            <input
+                              type="text"
+                              value={fragmentLength}
+                              onChange={(e) => setFragmentLength(e.target.value)}
+                              placeholder="e.g. 100-200"
+                              style={{
+                                width: '100%',
+                                padding: '6px 10px',
+                                borderRadius: 6,
+                                border: '1px solid var(--color-brand-border)',
+                                background: 'var(--color-brand-card)',
+                                fontSize: 12,
+                                color: 'var(--color-brand-heading)'
+                              }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ display: 'block', fontSize: 10, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 4, textTransform: 'uppercase' }}>Interval (ms)</label>
+                            <input
+                              type="text"
+                              value={fragmentInterval}
+                              onChange={(e) => setFragmentInterval(e.target.value)}
+                              placeholder="e.g. 10-20"
+                              style={{
+                                width: '100%',
+                                padding: '6px 10px',
+                                borderRadius: 6,
+                                border: '1px solid var(--color-brand-border)',
+                                background: 'var(--color-brand-card)',
+                                fontSize: 12,
+                                color: 'var(--color-brand-heading)'
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

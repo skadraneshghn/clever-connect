@@ -14,6 +14,7 @@ export const V2RayCorePage: React.FC = () => {
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
   // Settings
+  const [selectedCore, setSelectedCore] = useState('xray');
   const [rawConfigJson, setRawConfigJson] = useState('{\n  "log": {\n    "loglevel": "info"\n  }\n}');
   const [geofilesUpdate, setGeofilesUpdate] = useState(true);
   const [loggingLevel, setLoggingLevel] = useState('info');
@@ -176,6 +177,7 @@ export const V2RayCorePage: React.FC = () => {
       });
       if (response.ok) {
         const data = await response.json();
+        setSelectedCore(data.v2ray_core || 'xray');
         if (data.server_raw_config_json) {
           setRawConfigJson(data.server_raw_config_json);
           syncRawToGui(data.server_raw_config_json);
@@ -219,6 +221,7 @@ export const V2RayCorePage: React.FC = () => {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
+          v2ray_core: selectedCore,
           server_raw_config_json: finalJson,
           server_geofiles_auto_update: String(geofilesUpdate),
           server_logging_level: loggingLevel,
@@ -715,6 +718,27 @@ export const V2RayCorePage: React.FC = () => {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <FiSliders style={{ color: 'var(--color-brand)', fontSize: 18 }} />
             <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Server Core Parameters</span>
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Default Core</label>
+            <select
+              value={selectedCore}
+              onChange={(e) => setSelectedCore(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                borderRadius: 8,
+                border: '1px solid var(--color-brand-border)',
+                background: 'var(--color-brand-card)',
+                fontSize: 13,
+                color: 'var(--color-brand-heading)'
+              }}
+            >
+              <option value="xray">Xray (Highly Recommended, supports Reality & XTLS)</option>
+              <option value="v2ray">V2Ray (Standard core, strips XTLS/Reality/Brutal)</option>
+              <option value="sing-box">Sing-Box (Next-gen core, supports urltest & DNS routes)</option>
+            </select>
           </div>
 
           <div>

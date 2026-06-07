@@ -256,12 +256,11 @@ func TestProfile(cfg models.V2RayClientConfig, socksPort, httpPort int, measureS
 
 	binPath := core.GetXrayBinPath()
 	if _, err := os.Stat(binPath); err != nil {
-		if path, err := exec.LookPath("xray"); err == nil {
-			binPath = path
-		} else if path, err := exec.LookPath("v2ray"); err == nil {
+		coreName := core.GetSelectedCoreName()
+		if path, err := exec.LookPath(coreName); err == nil {
 			binPath = path
 		} else {
-			res.Error = "xray/v2ray binary not found"
+			res.Error = fmt.Sprintf("%s binary not found", coreName)
 			return res
 		}
 	}
