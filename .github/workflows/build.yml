@@ -75,3 +75,24 @@ jobs:
           path: |
             bin/
             core/
+
+      - name: Deploy to Clever Cloud
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+        env:
+          CLEVER_SSH_KEY: ${{ secrets.CLEVER_SSH_KEY }}
+        run: |
+          if [ -z "$CLEVER_SSH_KEY" ]; then
+            echo "CLEVER_SSH_KEY secret is not set. Skipping deployment."
+            exit 0
+          fi
+          
+          mkdir -p ~/.ssh
+          echo "$CLEVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          
+          # Add Clever Cloud SSH host to known_hosts
+          ssh-keyscan -t rsa push-n3-par-clevercloud-customers.services.clever-cloud.com >> ~/.ssh/known_hosts
+          
+          # Add Clever Cloud git remote and push
+          git remote add clever git@push-n3-par-clevercloud-customers.services.clever-cloud.com:app_a8fead43-36bd-4876-b9cb-103c74487ea5.git
+          git push -f clever HEAD:master
