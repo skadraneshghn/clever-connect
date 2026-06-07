@@ -76,11 +76,9 @@ jobs:
           go build --ldflags '-extldflags "-Wl,--allow-multiple-definition" -s -w' -o bin/ehco github.com/Ehco1996/ehco/cmd/ehco
           
           echo "Compressing binaries with UPX..."
-          upx --best bin/clever-connect
-          upx --best bin/ehco
-          upx --best core/xray/xray
-          upx --best core/v2ray/v2ray
-          upx --best core/sing-box/sing-box
+          upx -1 bin/clever-connect
+          upx -1 bin/ehco
+          upx -1 core/sing-box/sing-box
 
       - name: Commit and Push to GitHub
         if: (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && github.event_name != 'pull_request'
