@@ -11,10 +11,23 @@ interface AuthState {
   initialize: () => void;
 }
 
+const getInitialAuth = () => {
+  if (typeof window === 'undefined') return { token: null, username: null, isAuthenticated: false };
+  const token = localStorage.getItem('cc_server_token');
+  const username = localStorage.getItem('cc_server_username');
+  return {
+    token,
+    username,
+    isAuthenticated: !!(token && username)
+  };
+};
+
+const initialAuth = getInitialAuth();
+
 export const useAuthStore = create<AuthState>((set) => ({
-  token: null,
-  username: null,
-  isAuthenticated: false,
+  token: initialAuth.token,
+  username: initialAuth.username,
+  isAuthenticated: initialAuth.isAuthenticated,
   isLoading: false,
   error: null,
 
