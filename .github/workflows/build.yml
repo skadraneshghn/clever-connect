@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout Repository
@@ -66,7 +68,29 @@ jobs:
       - name: Build Go Project
         run: |
           mkdir -p bin
-          go build -v -o bin/clever-connect main.go
+          go build --ldflags '-extldflags "-Wl,--allow-multiple-definition"' -o bin/clever-connect main.go
+          go build --ldflags '-extldflags "-Wl,--allow-multiple-definition"' -o bin/ehco github.com/Ehco1996/ehco/cmd/ehco
+
+      - name: Commit and Push Binaries and Cores
+        if: github.event_name != 'pull_request'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Force add built binaries and downloaded cores
+          git add -f bin/clever-connect
+          git add -f bin/ehco
+          git add -f core/xray/xray
+          git add -f core/v2ray/v2ray
+          git add -f core/sing-box/sing-box
+          
+          # Check if there are changes before committing
+          if git diff --cached --quiet; then
+            echo "No changes in compiled binaries or cores. Skipping commit."
+          else
+            git commit -m "chore(build): update compiled binaries and cores [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
