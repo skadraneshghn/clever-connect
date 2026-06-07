@@ -44,14 +44,14 @@ jobs:
           # Download Xray-core
           echo "Downloading Xray..."
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip xray.zip xray -d core/xray
+          unzip -o xray.zip xray -d core/xray
           chmod +x core/xray/xray
           rm xray.zip
           
           # Download v2ray-core
           echo "Downloading V2Ray..."
           curl -L -o v2ray.zip https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip
-          unzip v2ray.zip v2ray -d core/v2ray
+          unzip -o v2ray.zip v2ray -d core/v2ray
           chmod +x core/v2ray/v2ray
           rm v2ray.zip
           
