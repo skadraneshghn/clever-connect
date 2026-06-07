@@ -60,6 +60,54 @@ type EhcoClientConfig struct {
 	BridgeSNI    string `json:"bridge_sni"`
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Soroush WebRTC "The Hive" Tunnel Models (ADDITIVE — parallel to Ehco)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// SoroushAccount stores authenticated Soroush messenger accounts used as
+// tunnel workers. Each account holds its MTProto auth key material for
+// autonomous JWT token generation via the Soroush LiveKit SFU.
+type SoroushAccount struct {
+	ID            uint           `gorm:"primaryKey" json:"id"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	PhoneNumber   string `gorm:"size:20;uniqueIndex;not null" json:"phone_number"`
+	Name          string `gorm:"size:100" json:"name"`
+	SoroushUserID int64  `json:"soroush_user_id"`
+	AccessHash    int64  `json:"access_hash"`
+	DisplayName   string `gorm:"size:100" json:"display_name"`
+	AuthKey       []byte `json:"-"`                              // 256-byte MTProto auth key
+	AuthKeyID     []byte `json:"-"`                              // 8-byte auth key ID
+	ServerSalt    []byte `json:"-"`                              // 8-byte server salt
+	DcID          int    `json:"dc_id" gorm:"default:2"`
+	Role          string `json:"role" gorm:"size:20;default:'worker'"`   // 'host' or 'worker'
+	IsServerNode  bool   `json:"is_server_node" gorm:"default:false"`
+	Status        string `json:"status" gorm:"size:30;default:'idle'"`   // idle, connected, busy, tunnel_active, error
+	LastActive    string `json:"last_active"`
+	LiveKitToken  string `json:"livekit_token" gorm:"type:text"`         // Per-account LiveKit JWT token (unique identity per worker)
+}
+
+// SoroushTunnelConfig stores the Hive tunnel engine configuration.
+// This is a singleton row — only one config exists at a time.
+// The PSK field is used for QUIC TLS identity verification and
+// the HKDF-based handshake sync protocol.
+type SoroushTunnelConfig struct {
+	gorm.Model
+	GroupChatID     int64  `json:"group_chat_id"`
+	GroupAccessHash int64  `json:"group_access_hash"`
+	CallID          int64  `json:"call_id"`             // Static bypass parameter
+	CallAccessHash  string `json:"call_access_hash"`    // Static bypass parameter
+	ServerIdentity  string `json:"server_identity"`     // The exact Soroush UserID of the Queen (e.g., "64698297")
+	PSK             string `json:"psk"`                 // Pre-Shared Key for worker auth
+	LiveKitURL            string `json:"livekit_url"`         // LiveKit SFU WebSocket endpoint (e.g., wss://k.splus.ir)
+	FallbackLiveKitToken  string `json:"fallback_livekit_token" gorm:"type:text"` // Manual fallback LiveKit token
+	SocksPort             int    `json:"socks_port" gorm:"default:4046"`
+	IsActive              bool   `json:"is_active" gorm:"default:false"`
+	EngineMode            string `json:"engine_mode" gorm:"size:30;default:'swarm'"` // 'swarm' (LiveKit SFU Swarm)
+	MaxWorkers            int    `json:"max_workers" gorm:"default:5"`
+	LoadBalanceAlgo       string `json:"load_balance_algo" gorm:"size:30;default:'least-latency'"` // 'round-robin', 'least-latency'
+}
+
 // LeechConfig stores the advanced settings for the download manager
 type LeechConfig struct {
 	gorm.Model
@@ -332,3 +380,124 @@ type FileRegistry struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// V2Ray Proxy Management Models
+// ──────────────────────────────────────────────────────────────────────────────
+
+// V2RayNode represents a managed remote VPS edge node (Server side)
+type V2RayNode struct {
+	gorm.Model
+	Name           string  `json:"name"`
+	Hostname       string  `json:"hostname"`
+	IP             string  `json:"ip"`
+	SSHPort        int     `json:"ssh_port" gorm:"default:22"`
+	SSHCredentials string  `json:"ssh_credentials" gorm:"type:text"` // Encrypted private key or password
+	Status         string  `json:"status" gorm:"default:'offline'"`   // online, offline, provisioning
+	LastHeartbeat  int64   `json:"last_heartbeat"`
+	CPUPct         float64 `json:"cpu_pct"`
+	RAMPct         float64 `json:"ram_pct"`
+}
+
+// V2RayInbound represents a listening proxy endpoint (Server side)
+type V2RayInbound struct {
+	gorm.Model
+	NodeID             uint   `json:"node_id" gorm:"index"`
+	Tag                string `json:"tag" gorm:"size:191;uniqueIndex"`
+	Protocol           string `json:"protocol"` // vless, vmess, trojan, shadowsocks, hysteria2
+	Port               int    `json:"port"`
+	Network            string `json:"network"`  // tcp, ws, grpc, xhttp
+	TLSMode            string `json:"tls_mode"` // tls, reality, none
+	SNI                string `json:"sni"`      // Reality target SNI or custom SNI
+	RealityPrivateKey  string `json:"reality_private_key"`
+	RealityPublicKey   string `json:"reality_public_key"`
+	RealityShortIDs    string `json:"reality_short_ids"` // comma-separated
+	Path               string `json:"path"`              // websocket path or grpc service name
+	FallbackDest       string `json:"fallback_dest"`     // local fallback destination (e.g. 127.0.0.1:80)
+	Enabled            bool   `json:"enabled" gorm:"default:true"`
+}
+
+// V2RayUser represents a client proxy account (Server side)
+type V2RayUser struct {
+	gorm.Model
+	InboundID    uint      `json:"inbound_id" gorm:"index"`
+	UUID         string    `json:"uuid" gorm:"size:191;uniqueIndex"` // Used as proxy password/UUID
+	Name         string    `json:"name"`
+	GroupID      uint      `json:"group_id" gorm:"index"`
+	TrafficLimit int64     `json:"traffic_limit" gorm:"default:0"` // in bytes, 0 = unlimited
+	UsedUpload   int64     `json:"used_upload" gorm:"default:0"`
+	UsedDownload int64     `json:"used_download" gorm:"default:0"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	MaxIPs       int       `json:"max_ips" gorm:"default:0"` // 0 = unlimited
+	SubToken     string    `json:"sub_token" gorm:"size:191;uniqueIndex"`
+	Enabled      bool      `json:"enabled" gorm:"default:true"`
+}
+
+// V2RayTrafficLog tracks user data consumption (Server side)
+type V2RayTrafficLog struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	UserID        uint      `json:"user_id" gorm:"index"`
+	NodeID        uint      `json:"node_id" gorm:"index"`
+	Timestamp     time.Time `json:"timestamp" gorm:"index"`
+	UploadBytes   int64     `json:"upload_bytes"`
+	DownloadBytes int64     `json:"download_bytes"`
+}
+
+// V2RayRoutingRule defines custom routing paths (Server side)
+type V2RayRoutingRule struct {
+	gorm.Model
+	RuleType string `json:"rule_type"` // domain, ip, geosite, geoip
+	Value    string `json:"value"`
+	Action   string `json:"action"` // block, proxy, direct
+	GroupID  uint   `json:"group_id" gorm:"index"`
+	Priority int    `json:"priority" gorm:"default:0"`
+}
+
+// V2RaySecurityEvent stores events like Fail2Ban detections
+type V2RaySecurityEvent struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Timestamp   time.Time `json:"timestamp" gorm:"index"`
+	IPAddress   string    `json:"ip_address" gorm:"index"`
+	EventType   string    `json:"event_type"` // failed_auth, port_scan
+	ActionTaken string    `json:"action_taken"` // banned, warned
+}
+
+// V2RayClientConfig stores saved server profiles on the client side
+type V2RayClientConfig struct {
+	gorm.Model
+	Name           string `json:"name"`
+	Protocol       string `json:"protocol"`
+	Address        string `json:"address"`
+	Port           int    `json:"port"`
+	UUID           string `json:"uuid"`
+	Network        string `json:"network"`
+	TLSSettings    string `json:"tls_settings" gorm:"type:text"` // JSON representation of client TLS settings
+	MuxEnabled     bool   `json:"mux_enabled" gorm:"default:false"`
+	LatencyMs      int    `json:"latency_ms" gorm:"default:-1"`
+	SubscriptionID uint   `json:"subscription_id"`
+	Priority       int    `json:"priority" gorm:"default:0"`
+	IsActive       bool   `json:"is_active" gorm:"default:false"`
+}
+
+// V2RayClientSubscription stores imported subscription links on the client side
+type V2RayClientSubscription struct {
+	gorm.Model
+	Name           string    `json:"name"`
+	URL            string    `gorm:"type:text;not null" json:"url"`
+	UpdateInterval int       `json:"update_interval" gorm:"default:12"` // In hours
+	LastUpdatedAt  time.Time `json:"last_updated_at"`
+}
+
+// V2RayClientFrontingMap stores domain fronting maps (Client side)
+type V2RayClientFrontingMap struct {
+	gorm.Model
+	TargetDomain string `json:"target_domain" gorm:"size:191;uniqueIndex"`
+	FrontDomain  string `json:"front_domain"`
+	CDNIP        string `json:"cdn_ip"`
+}
+
+// V2RayClientSetting represents Key-Value settings (Client side)
+type V2RayClientSetting struct {
+	ID    uint   `gorm:"primaryKey" json:"id"`
+	Key   string `json:"key" gorm:"size:191;uniqueIndex"`
+	Value string `json:"value"`
+}

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { FiSliders, FiSun, FiMoon, FiMonitor, FiType, FiEye, FiEyeOff, FiCheck, FiLock, FiClipboard, FiInfo } from 'react-icons/fi';
 import { Card } from '../components/molecules/Card';
 import { useAuthStore } from '../store/authStore';
+import { showGlobalAlert } from '../store/dialogStore';
 
 const fonts = [
   { id: 'inter', name: 'Inter', description: 'Clean modern sans-serif, standard interface optimization.', cssClass: 'font-inter' },
@@ -55,6 +56,12 @@ export const SettingsPage: React.FC = () => {
           newLink.href = '/favicon.png?t=' + Date.now();
           document.head.appendChild(newLink);
         }
+
+        // Update sidebar logo images dynamically
+        const logoImgs = document.querySelectorAll(".sidebar__logo-icon img");
+        logoImgs.forEach((img: any) => {
+          img.src = '/favicon.png?t=' + Date.now();
+        });
       } else {
         setFaviconMsg(`❌ ${data.error}`);
       }
@@ -266,7 +273,7 @@ export const SettingsPage: React.FC = () => {
                       {showToken ? <FiEyeOff size={13} /> : <FiEye size={13} />} {showToken ? 'Hide' : 'Show'}
                     </button>
                     <button 
-                      onClick={() => { token && navigator.clipboard.writeText(token); alert('JWT Token copied to clipboard!'); }}
+                      onClick={() => { token && navigator.clipboard.writeText(token); showGlobalAlert('JWT Token copied to clipboard!', { title: 'Copied', variant: 'success' }); }}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
                       disabled={!token}
                     >

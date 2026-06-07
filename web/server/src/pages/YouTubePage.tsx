@@ -7,6 +7,7 @@ import {
 	FiGlobe, FiCheck, FiX, FiLink, FiDownloadCloud, FiServer,
 	FiChevronLeft, FiFolderPlus, FiInfo, FiDownload, FiYoutube, FiTv, FiLoader
 } from 'react-icons/fi';
+import { showGlobalConfirm, showGlobalAlert } from '../store/dialogStore';
 
 interface YouTubeConfig {
 	default_save_path: string;
@@ -254,7 +255,7 @@ export const YouTubePage: React.FC = () => {
 					setConvertToTV(false);
 				} else {
 					const err = await res.json();
-					alert(err.details || 'Failed to add YouTube video');
+					showGlobalAlert(err.details || 'Failed to add YouTube video', { title: 'YouTube Add Failed', variant: 'error' });
 				}
 			} else {
 				for (let i = 0; i < urls.length; i++) {
@@ -332,8 +333,8 @@ export const YouTubePage: React.FC = () => {
 		sendAction({ action: 'cancel_youtube', job_id: id });
 	};
 
-	const handleDeleteJob = (id: string, deleteFiles: boolean) => {
-		if (!confirm('Are you sure you want to remove this download job?')) return;
+	const handleDeleteJob = async (id: string, deleteFiles: boolean) => {
+		if (!(await showGlobalConfirm('Are you sure you want to remove this download job?', { title: 'Remove YouTube Job', variant: 'warning' }))) return;
 		sendAction({ action: 'delete_youtube', job_id: id, delete_files: deleteFiles });
 	};
 

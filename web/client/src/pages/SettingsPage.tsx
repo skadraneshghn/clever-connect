@@ -54,6 +54,12 @@ export const SettingsPage: React.FC = () => {
           newLink.href = '/favicon.png?t=' + Date.now();
           document.head.appendChild(newLink);
         }
+
+        // Update sidebar logo images dynamically
+        const logoImgs = document.querySelectorAll(".sidebar__logo-icon img");
+        logoImgs.forEach((img: any) => {
+          img.src = '/favicon.png?t=' + Date.now();
+        });
       } else {
         setFaviconMsg(`❌ ${data.error}`);
       }

@@ -14,6 +14,15 @@ const navItems = [
     id: 'protocol', label: 'Protocol', icon: FiCpu,
     children: [
       { id: 'ehco-tunnel', label: 'Ehco' },
+      { id: 'soroush-tunnel', label: 'Soroush' },
+    ]
+  },
+  {
+    id: 'v2ray-section', label: 'V2Ray Manager', icon: FiGlobe,
+    children: [
+      { id: 'v2ray-dashboard', label: 'Dashboard & Nodes' },
+      { id: 'v2ray-core', label: 'Core Configuration' },
+      { id: 'v2ray-routing', label: 'Routing Rules' }
     ]
   },
   {
@@ -59,7 +68,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isCol
     <aside className={`sidebar ${isCollapsed ? 'sidebar--collapsed' : ''}`}>
       {/* Header */}
       <div className="sidebar__header">
-        <div className="sidebar__logo-icon">C</div>
+        <div className="sidebar__logo-icon" style={{ background: 'none', padding: 0, overflow: 'hidden' }}>
+          <img src="/favicon.png" alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: 'inherit' }} />
+        </div>
         {!isCollapsed && <span className="sidebar__logo-text">CleverConnect<sup>®</sup></span>}
         <button className="sidebar__toggle" onClick={() => setIsCollapsed(!isCollapsed)}>
           <FiMenu size={14} />

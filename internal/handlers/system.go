@@ -267,6 +267,7 @@ func UploadFavicon(c *gin.Context) {
 
 // ServeFavicon serves the custom favicon if it exists, else serves a default icon
 func ServeFavicon(c *gin.Context) {
+	c.Header("Cache-Control", "no-cache, must-revalidate")
 	if _, err := os.Stat("data/favicon.png"); err == nil {
 		c.File("data/favicon.png")
 		return
@@ -288,7 +289,6 @@ func ServeFavicon(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "image/png")
-	c.Header("Cache-Control", "public, max-age=31536000")
 	_ = png.Encode(c.Writer, img)
 }
 

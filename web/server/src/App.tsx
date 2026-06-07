@@ -17,6 +17,10 @@ const YouTubePage = lazy(() => import('./pages/YouTubePage').then(m => ({ defaul
 const SpotifyPage = lazy(() => import('./pages/SpotifyPage').then(m => ({ default: m.SpotifyPage })));
 const TelegramSettingsPage = lazy(() => import('./pages/TelegramSettingsPage').then(m => ({ default: m.TelegramSettingsPage })));
 const JobSchedulerPage = lazy(() => import('./pages/JobSchedulerPage').then(m => ({ default: m.JobSchedulerPage })));
+const SoroushPage = lazy(() => import('./pages/SoroushPage').then(m => ({ default: m.SoroushPage })));
+const V2RayServerPage = lazy(() => import('./pages/V2RayServerPage').then(m => ({ default: m.V2RayServerPage })));
+const V2RayCorePage = lazy(() => import('./pages/V2RayCorePage').then(m => ({ default: m.V2RayCorePage })));
+const V2RayRoutingPage = lazy(() => import('./pages/V2RayRoutingPage').then(m => ({ default: m.V2RayRoutingPage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -51,6 +55,10 @@ const ProtectedLayout: React.FC = () => {
     spotify: ['Storage', 'Spotify Downloader'],
     'telegram-settings': ['Settings', 'Telegram Bot'],
     scheduler: ['System', 'Job Scheduler'],
+    'soroush-tunnel': ['Protocol', 'Soroush WebRTC Tunnel'],
+    'v2ray-dashboard': ['V2Ray', 'Dashboard & Nodes'],
+    'v2ray-core': ['V2Ray', 'Core Configuration'],
+    'v2ray-routing': ['V2Ray', 'Routing Rules'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -118,11 +126,22 @@ const router = createBrowserRouter([
       { path: 'spotify', element: <SpotifyPage /> },
       { path: 'telegram-settings', element: <TelegramSettingsPage /> },
       { path: 'scheduler', element: <JobSchedulerPage /> },
+      { path: 'soroush-tunnel', element: <SoroushPage /> },
+      { path: 'v2ray-dashboard', element: <V2RayServerPage /> },
+      { path: 'v2ray-core', element: <V2RayCorePage /> },
+      { path: 'v2ray-routing', element: <V2RayRoutingPage /> },
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },
 ]);
 
+import { GlobalDialog } from './components/molecules/GlobalDialog';
+
 export default function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <>
+      <RouterProvider router={router} />
+      <GlobalDialog />
+    </>
+  );
 }

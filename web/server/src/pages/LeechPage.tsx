@@ -6,6 +6,7 @@ import {
 	FiGlobe, FiCheck, FiX, FiLink, FiDownloadCloud, FiServer,
 	FiChevronLeft, FiFolderPlus, FiInfo, FiDownload
 } from 'react-icons/fi';
+import { showGlobalConfirm, showGlobalAlert } from '../store/dialogStore';
 
 interface LeechJob {
 	id: string;
@@ -294,7 +295,7 @@ export const LeechPage: React.FC = () => {
 				fetchDirectories(currentPath);
 			} else {
 				const err = await res.json();
-				alert(`Failed: ${err.error || 'Unknown error'}`);
+				showGlobalAlert(`Failed: ${err.error || 'Unknown error'}`, { title: 'Directory Creation Failed', variant: 'error' });
 			}
 		} catch (err) {
 			console.error(err);
@@ -357,8 +358,8 @@ export const LeechPage: React.FC = () => {
 	};
 
 	// Delete a job
-	const handleDeleteJob = (id: string, deleteFiles: boolean) => {
-		if (!confirm('Are you sure you want to delete this download job?')) return;
+	const handleDeleteJob = async (id: string, deleteFiles: boolean) => {
+		if (!(await showGlobalConfirm('Are you sure you want to delete this download job?', { title: 'Delete Download Job', variant: 'warning' }))) return;
 		sendAction({ action: 'delete_leech', job_id: id, delete_files: deleteFiles });
 	};
 

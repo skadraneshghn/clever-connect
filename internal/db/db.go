@@ -1,6 +1,8 @@
 package db
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,8 +12,8 @@ import (
 	"clever-connect/internal/models"
 
 	"golang.org/x/crypto/bcrypt"
+	sqlite "clever-connect/internal/db/sqlite"
 	"gorm.io/driver/mysql"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
@@ -88,13 +90,43 @@ func InitDB(cfg *config.Config) *gorm.DB {
 	if DB.Dialector.Name() == "mysql" {
 		migrateDB = DB.Set("gorm:table_options", "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
 	}
-	if err := migrateDB.AutoMigrate(&models.User{}, &models.ClientSession{}, &models.EhcoServerConfig{}, &models.EhcoClientConfig{}, &models.LeechConfig{}, &models.LeechJob{}, &models.TelegramConfig{}, &models.SchedulerJob{}, &models.SchedulerJobLog{}, &models.SchedulerConfig{}, &models.TelegramSubscriber{}, &models.YouTubeJob{}, &models.YouTubeConfig{}, &models.FileRegistry{}, &models.SpotifyConfig{}, &models.SpotifyJob{}); err != nil {
+	if err := migrateDB.AutoMigrate(
+		&models.User{},
+		&models.ClientSession{},
+		&models.EhcoServerConfig{},
+		&models.EhcoClientConfig{},
+		&models.SoroushAccount{},
+		&models.SoroushTunnelConfig{},
+		&models.LeechConfig{},
+		&models.LeechJob{},
+		&models.TelegramConfig{},
+		&models.SchedulerJob{},
+		&models.SchedulerJobLog{},
+		&models.SchedulerConfig{},
+		&models.TelegramSubscriber{},
+		&models.YouTubeJob{},
+		&models.YouTubeConfig{},
+		&models.FileRegistry{},
+		&models.SpotifyConfig{},
+		&models.SpotifyJob{},
+		&models.V2RayNode{},
+		&models.V2RayInbound{},
+		&models.V2RayUser{},
+		&models.V2RayTrafficLog{},
+		&models.V2RayRoutingRule{},
+		&models.V2RaySecurityEvent{},
+		&models.V2RayClientConfig{},
+		&models.V2RayClientFrontingMap{},
+		&models.V2RayClientSetting{},
+		&models.V2RayClientSubscription{},
+	); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
 	
 	// Ensure the table collation is converted to utf8mb4 to support emoji/symbols in welcome messages
 	if DB.Dialector.Name() == "mysql" {
 		DB.Exec("ALTER TABLE `telegram_configs` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+		DB.Exec("ALTER TABLE `soroush_tunnel_configs` MODIFY COLUMN `call_access_hash` VARCHAR(1024) NULL")
 	}
 	logger.Info("DB", "Schema migrations completed successfully")
 
@@ -147,6 +179,24 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			EmbedMetadata:    true,
 			EmbedLyrics:      true,
 			FileNameTemplate: "{artist} - {title}",
+		})
+	}
+
+	// Seed default SoroushTunnelConfig
+	var soroushCfg models.SoroushTunnelConfig
+	if err := DB.First(&soroushCfg).Error; err != nil {
+		logger.Info("DB", "Seeding default Soroush tunnel configuration")
+		// Generate a cryptographically secure random PSK
+		pskBytes := make([]byte, 32)
+		if _, err := rand.Read(pskBytes); err != nil {
+			logger.Fatal("DB", "Failed to generate PSK for Soroush tunnel", "error", err)
+		}
+		DB.Create(&models.SoroushTunnelConfig{
+			PSK:                hex.EncodeToString(pskBytes),
+			SocksPort:           4046,
+			EngineMode:          "swarm",
+			MaxWorkers:          5,
+			LoadBalanceAlgo:     "least-latency",
 		})
 	}
 

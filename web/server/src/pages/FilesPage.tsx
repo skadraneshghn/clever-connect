@@ -9,6 +9,7 @@ import {
 	FiRotateCcw, FiVolume2, FiVolumeX, FiTv, FiMinimize2, FiEye, FiSend, FiSearch
 } from 'react-icons/fi';
 import Editor from '@monaco-editor/react';
+import { showGlobalAlert, showGlobalConfirm, showGlobalPrompt } from '../store/dialogStore';
 
 interface FileItem {
 	name: string;
@@ -930,14 +931,14 @@ export const FilesPage: React.FC = () => {
 		if (selectedItems.length === 0) return;
 		const itemsToCopy = files.filter(x => selectedItems.includes(x.name));
 		setClipboard({ action: 'copy', srcParent: currentPath, items: itemsToCopy });
-		alert(`Copied ${selectedItems.length} items to clipboard.`);
+		showGlobalAlert(`Copied ${selectedItems.length} items to clipboard.`, { title: 'Copied', variant: 'success' });
 	};
 
 	const handleCut = () => {
 		if (selectedItems.length === 0) return;
 		const itemsToCut = files.filter(x => selectedItems.includes(x.name));
 		setClipboard({ action: 'cut', srcParent: currentPath, items: itemsToCut });
-		alert(`Cut ${selectedItems.length} items to clipboard.`);
+		showGlobalAlert(`Cut ${selectedItems.length} items to clipboard.`, { title: 'Cut', variant: 'success' });
 	};
 
 	const handlePaste = async () => {
@@ -973,7 +974,7 @@ export const FilesPage: React.FC = () => {
 
 	// Rename item
 	const handleRename = async (file: FileItem) => {
-		const newName = prompt(`Enter new name for "${file.name}":`, file.name);
+		const newName = await showGlobalPrompt(`Enter new name for "${file.name}":`, file.name, { title: 'Rename Item' });
 		if (!newName || newName.trim() === '' || newName === file.name) return;
 
 		const src = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
@@ -1019,12 +1020,12 @@ export const FilesPage: React.FC = () => {
 			});
 			if (res.ok) {
 				const data = await res.json();
-				alert(`Compression job queued successfully! Job ID: ${data.job_id}`);
+				showGlobalAlert(`Compression job queued successfully! Job ID: ${data.job_id}`, { title: 'Compression Queued', variant: 'success' });
 				setShowArchiveModal(false);
 				fetchFiles(currentPath);
 			} else {
 				const errData = await res.json();
-				alert(`Compression failed: ${errData.error}`);
+				showGlobalAlert(`Compression failed: ${errData.error}`, { title: 'Compression Failed', variant: 'error' });
 			}
 		} catch (err) {
 			console.error(err);
@@ -1035,7 +1036,7 @@ export const FilesPage: React.FC = () => {
 
 	// Zip Extraction
 	const handleExtract = async (file: FileItem) => {
-		if (!confirm(`Do you want to extract "${file.name}" in the current directory?`)) return;
+		if (!(await showGlobalConfirm(`Do you want to extract "${file.name}" in the current directory?`, { title: 'Extract Archive', variant: 'question' }))) return;
 		const targetPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
 		setLoading(true);
 		try {
@@ -1066,10 +1067,10 @@ export const FilesPage: React.FC = () => {
 								});
 								const finalData = await finalRes.json();
 								if (finalRes.ok && finalData.status === 'success') {
-									alert(`Extraction job queued successfully! Job ID: ${finalData.job_id}`);
+									showGlobalAlert(`Extraction job queued successfully! Job ID: ${finalData.job_id}`, { title: 'Extraction Queued', variant: 'success' });
 									fetchFiles(currentPath);
 								} else {
-									alert(`Extraction failed: ${finalData.error || 'Wrong password or corrupt archive'}`);
+									showGlobalAlert(`Extraction failed: ${finalData.error || 'Wrong password or corrupt archive'}`, { title: 'Extraction Failed', variant: 'error' });
 								}
 							} catch (e) {
 								console.error(e);
@@ -1080,11 +1081,11 @@ export const FilesPage: React.FC = () => {
 					});
 					return;
 				}
-				alert(`Extraction job queued successfully! Job ID: ${data.job_id}`);
+				showGlobalAlert(`Extraction job queued successfully! Job ID: ${data.job_id}`, { title: 'Extraction Queued', variant: 'success' });
 				fetchFiles(currentPath);
 			} else {
 				const errData = await res.json();
-				alert(`Extraction failed: ${errData.error}`);
+				showGlobalAlert(`Extraction failed: ${errData.error}`, { title: 'Extraction Failed', variant: 'error' });
 			}
 		} catch (err) {
 			console.error(err);
@@ -1097,7 +1098,7 @@ export const FilesPage: React.FC = () => {
 		const fullPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
 		setCompressQueue(prev => {
 			if (prev.some(item => item.path === fullPath)) {
-				alert(`"${file.name}" is already in the compress queue.`);
+				showGlobalAlert(`"${file.name}" is already in the compress queue.`, { title: 'Already Queued', variant: 'info' });
 				return prev;
 			}
 			return [...prev, { name: file.name, path: fullPath }];
@@ -1119,7 +1120,7 @@ export const FilesPage: React.FC = () => {
 				}
 			});
 			if (addedCount > 0) {
-				alert(`Added ${addedCount} items to the compress queue.`);
+				showGlobalAlert(`Added ${addedCount} items to the compress queue.`, { title: 'Added to Queue', variant: 'success' });
 			}
 			return newItems;
 		});
@@ -1144,13 +1145,13 @@ export const FilesPage: React.FC = () => {
 			});
 			if (res.ok) {
 				const data = await res.json();
-				alert(`Compression job queued successfully for all queue items! Job ID: ${data.job_id}`);
+				showGlobalAlert(`Compression job queued successfully for all queue items! Job ID: ${data.job_id}`, { title: 'Compression Queued', variant: 'success' });
 				setCompressQueue([]);
 				setShowCompressQueueModal(false);
 				fetchFiles(currentPath);
 			} else {
 				const errData = await res.json();
-				alert(`Compression failed: ${errData.error}`);
+				showGlobalAlert(`Compression failed: ${errData.error}`, { title: 'Compression Failed', variant: 'error' });
 			}
 		} catch (err) {
 			console.error(err);
@@ -1194,13 +1195,13 @@ export const FilesPage: React.FC = () => {
 			});
 			if (res.ok) {
 				const data = await res.json();
-				alert(`Upload job queued in scheduler! Job ID: ${data.job_id}`);
+				showGlobalAlert(`Upload job queued in scheduler! Job ID: ${data.job_id}`, { title: 'Upload Queued', variant: 'success' });
 			} else {
 				const errData = await res.json();
-				alert(`Failed to send to Telegram: ${errData.error}`);
+				showGlobalAlert(`Failed to send to Telegram: ${errData.error}`, { title: 'Upload Failed', variant: 'error' });
 			}
 		} catch (err: any) {
-			alert(`Error sending file to Telegram: ${err.message}`);
+			showGlobalAlert(`Error sending file to Telegram: ${err.message}`, { title: 'Error', variant: 'error' });
 		}
 	};
 
@@ -1235,9 +1236,9 @@ export const FilesPage: React.FC = () => {
 					}
 				}
 			}
-			alert(`Successfully queued ${selectedItems.length} send jobs to Telegram!`);
+			showGlobalAlert(`Successfully queued ${selectedItems.length} send jobs to Telegram!`, { title: 'Bulk Upload Queued', variant: 'success' });
 		} catch (err: any) {
-			alert(`Error sending files to Telegram: ${err.message}`);
+			showGlobalAlert(`Error sending files to Telegram: ${err.message}`, { title: 'Error', variant: 'error' });
 		} finally {
 			setLoading(false);
 		}
@@ -1266,7 +1267,7 @@ export const FilesPage: React.FC = () => {
 			for (const name of selectedItems) {
 				const file = files.find(f => f.name === name);
 				if (!file) continue;
-				const newName = prompt(`Enter new name for "${file.name}":`, file.name);
+				const newName = await showGlobalPrompt(`Enter new name for "${file.name}":`, file.name, { title: 'Rename Item' });
 				if (!newName || newName.trim() === '' || newName === file.name) continue;
 
 				const src = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
@@ -1306,7 +1307,7 @@ export const FilesPage: React.FC = () => {
 				});
 			}
 			fetchFiles(currentPath);
-			alert(`Extraction jobs queued for ${archiveFiles.length} archives!`);
+			showGlobalAlert(`Extraction jobs queued for ${archiveFiles.length} archives!`, { title: 'Bulk Extraction Queued', variant: 'success' });
 		} catch (err) {
 			console.error("Bulk extract failed:", err);
 		} finally {
@@ -1360,7 +1361,7 @@ export const FilesPage: React.FC = () => {
 	// Delete Selected
 	const handleDeleteSelected = async () => {
 		if (selectedItems.length === 0) return;
-		if (!confirm(`Are you absolutely sure you want to permanently delete these ${selectedItems.length} items?`)) return;
+		if (!(await showGlobalConfirm(`Are you absolutely sure you want to permanently delete these ${selectedItems.length} items?`, { title: 'Delete Items', variant: 'warning' }))) return;
 		
 		setLoading(true);
 		try {
@@ -1385,7 +1386,7 @@ export const FilesPage: React.FC = () => {
 
 	// Single Delete
 	const handleDelete = async (file: FileItem) => {
-		if (!confirm(`Are you sure you want to permanently delete "${file.name}"?`)) return;
+		if (!(await showGlobalConfirm(`Are you sure you want to permanently delete "${file.name}"?`, { title: 'Delete Item', variant: 'warning' }))) return;
 		const targetPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
 		setLoading(true);
 		try {
@@ -1518,7 +1519,7 @@ export const FilesPage: React.FC = () => {
 				body: JSON.stringify({ path: targetPath, content: editorContent })
 			});
 			if (res.ok) {
-				alert('File saved successfully!');
+				showGlobalAlert('File saved successfully!', { title: 'Saved', variant: 'success' });
 			}
 		} catch (err) {
 			console.error(err);
@@ -2808,7 +2809,7 @@ export const FilesPage: React.FC = () => {
 						/>
 						<div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
 							<button 
-								onClick={() => { navigator.clipboard.writeText(shareUrl); alert('URL copied to clipboard!'); }} 
+								onClick={() => { navigator.clipboard.writeText(shareUrl); showGlobalAlert('URL copied to clipboard!', { title: 'Copied', variant: 'success' }); }} 
 								className="btn btn--primary"
 							>
 								Copy to Clipboard
