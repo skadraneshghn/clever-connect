@@ -1427,6 +1427,9 @@ type StartScanRequest struct {
 	RequireWS        bool     `json:"require_ws"`
 	EnableNeighbors  bool     `json:"enable_neighbors"`
 	TopLimit         int      `json:"top_limit"`
+	Retry            bool     `json:"retry"`
+	ConfigURLs       []string `json:"config_urls"`
+	TotalTargetCount int      `json:"total_target_count"`
 }
 
 // StartNetworkScannerSweep handles POST /api/v2ray/scanner/start
@@ -1435,6 +1438,53 @@ func (h *V2RayHandler) StartNetworkScannerSweep(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if req.Retry {
+		var lastConfig models.V2RayScannerConfig
+		if err := db.DB.Order("id desc").First(&lastConfig).Error; err == nil {
+			req.TargetCIDRs = lastConfig.TargetCIDRs
+			req.SelectedPorts = lastConfig.Ports
+			req.ConcurrencyLimit = lastConfig.ConcurrencyLimit
+			req.MaxRateLimit = lastConfig.MaxRateLimit
+			req.NetworkTimeoutMs = lastConfig.NetworkTimeoutSec * 1000
+			req.ProbeAttempts = lastConfig.ProbeAttempts
+			req.TargetMode = lastConfig.TargetMode
+			req.TargetSNI = lastConfig.TargetSNI
+			req.WebSocketHost = lastConfig.WebSocketHost
+			req.WebSocketPath = lastConfig.WebSocketPath
+			req.RequireWS = lastConfig.RequireWS
+			req.EnableNeighbors = lastConfig.EnableNeighbors
+			req.TopLimit = lastConfig.TopLimit
+			req.ConfigURLs = lastConfig.ConfigURLs
+			req.TotalTargetCount = lastConfig.TotalTargetCount
+		}
+	} else {
+		// Save/Overwrite active parameters
+		var configRecord models.V2RayScannerConfig
+		db.DB.First(&configRecord)
+		if configRecord.ID == 0 {
+			configRecord.ID = 1
+		}
+		configRecord.ConcurrencyLimit = req.ConcurrencyLimit
+		configRecord.TotalTargetCount = req.TotalTargetCount
+		configRecord.NetworkTimeoutSec = req.NetworkTimeoutMs / 1000
+		if configRecord.NetworkTimeoutSec <= 0 {
+			configRecord.NetworkTimeoutSec = 5
+		}
+		configRecord.ProbeAttempts = req.ProbeAttempts
+		configRecord.Ports = req.SelectedPorts
+		configRecord.ConfigURLs = req.ConfigURLs
+		configRecord.TopLimit = req.TopLimit
+		configRecord.EnableNeighbors = req.EnableNeighbors
+		configRecord.RequireWS = req.RequireWS
+		configRecord.WebSocketHost = req.WebSocketHost
+		configRecord.WebSocketPath = req.WebSocketPath
+		configRecord.TargetCIDRs = req.TargetCIDRs
+		configRecord.TargetMode = req.TargetMode
+		configRecord.TargetSNI = req.TargetSNI
+		configRecord.MaxRateLimit = req.MaxRateLimit
+		_ = db.DB.Save(&configRecord)
 	}
 
 	concurrency := req.ConcurrencyLimit
@@ -1477,6 +1527,7 @@ func (h *V2RayHandler) StartNetworkScannerSweep(c *gin.Context) {
 		RequireWS:        req.RequireWS,
 		EnableNeighbors:  req.EnableNeighbors,
 		TopLimit:         req.TopLimit,
+		TotalTargetCount: req.TotalTargetCount,
 	}
 
 	if len(cfg.SelectedPorts) == 0 {
@@ -1515,6 +1566,68 @@ func (h *V2RayHandler) GetNetworkScannerLiveTelemetry(c *gin.Context) {
 		"failed":     stats.Failed,
 		"in_flight":  stats.InFlight,
 	})
+}
+
+// GetNetworkScannerWebSocket handles GET /api/v2ray/scanner/ws
+func (h *V2RayHandler) GetNetworkScannerWebSocket(c *gin.Context) {
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		logger.Error("WS", "WebSocket scanner upgrade failed", "error", err.Error())
+		return
+	}
+	defer conn.Close()
+
+	// Generate a unique client ID
+	clientID := fmt.Sprintf("ws-%d", time.Now().UnixNano())
+
+	// Create a channel to receive stats/events
+	updateChan := make(chan gin.H, 50)
+
+	// Register listener
+	scanner.GetEngine().RegisterListener(clientID, func(stats scanner.JobStats, event string, details interface{}) {
+		select {
+		case updateChan <- gin.H{
+			"event": event,
+			"stats": stats,
+			"data":  details,
+		}:
+		default:
+			// Non-blocking write to avoid slow clients blocking the scanner
+		}
+	})
+	defer scanner.GetEngine().UnregisterListener(clientID)
+
+	// Keep-alive/Read loop to check connection status
+	closeChan := make(chan struct{})
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				close(closeChan)
+				return
+			}
+		}
+	}()
+
+	// Broadcast initial state
+	stats := scanner.GetEngine().GetLiveStats()
+	_ = conn.WriteJSON(gin.H{
+		"event": "scanner.init",
+		"stats": stats,
+		"data":  nil,
+	})
+
+	for {
+		select {
+		case msg := <-updateChan:
+			if err := conn.WriteJSON(msg); err != nil {
+				return
+			}
+		case <-closeChan:
+			return
+		case <-c.Request.Context().Done():
+			return
+		}
+	}
 }
 
 

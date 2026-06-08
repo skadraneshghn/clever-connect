@@ -1,6 +1,9 @@
 package models
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -502,4 +505,78 @@ type V2RayClientSetting struct {
 	ID    uint   `gorm:"primaryKey" json:"id"`
 	Key   string `json:"key" gorm:"size:191;uniqueIndex"`
 	Value string `json:"value"`
+}
+
+// IntArray represents an array of integers that GORM can persist as JSON text in SQLite/MySQL
+type IntArray []int
+
+func (a IntArray) Value() (driver.Value, error) {
+	if a == nil {
+		return "[]", nil
+	}
+	bytes, err := json.Marshal(a)
+	return string(bytes), err
+}
+
+func (a *IntArray) Scan(src interface{}) error {
+	var bytes []byte
+	switch v := src.(type) {
+	case string:
+		bytes = []byte(v)
+	case []byte:
+		bytes = v
+	case nil:
+		*a = nil
+		return nil
+	default:
+		return fmt.Errorf("failed to scan IntArray: %v", src)
+	}
+	return json.Unmarshal(bytes, a)
+}
+
+// StringArray represents an array of strings that GORM can persist as JSON text in SQLite/MySQL
+type StringArray []string
+
+func (a StringArray) Value() (driver.Value, error) {
+	if a == nil {
+		return "[]", nil
+	}
+	bytes, err := json.Marshal(a)
+	return string(bytes), err
+}
+
+func (a *StringArray) Scan(src interface{}) error {
+	var bytes []byte
+	switch v := src.(type) {
+	case string:
+		bytes = []byte(v)
+	case []byte:
+		bytes = v
+	case nil:
+		*a = nil
+		return nil
+	default:
+		return fmt.Errorf("failed to scan StringArray: %v", src)
+	}
+	return json.Unmarshal(bytes, a)
+}
+
+// V2RayScannerConfig stores the parameters of the scanner engine for persistence
+type V2RayScannerConfig struct {
+	gorm.Model
+	ConcurrencyLimit  int          `json:"concurrency_limit" gorm:"default:100"`
+	TotalTargetCount  int          `json:"total_target_count" gorm:"default:1000"`
+	NetworkTimeoutSec int          `json:"network_timeout_sec" gorm:"default:5"`
+	ProbeAttempts     int          `json:"probe_attempts" gorm:"default:1"`
+	Ports             IntArray     `json:"ports" gorm:"type:text"`
+	ConfigURLs        StringArray  `json:"config_urls" gorm:"type:text"`
+	TopLimit          int          `json:"top_limit" gorm:"default:20"`
+	EnableNeighbors   bool         `json:"enable_neighbors" gorm:"default:false"`
+	RequireWS         bool         `json:"require_ws" gorm:"default:false"`
+	WebSocketHost     string       `json:"websocket_host"`
+	WebSocketPath     string       `json:"websocket_path"`
+	TargetCIDRs      StringArray  `json:"target_cidrs" gorm:"type:text"`
+	TargetMode       string       `json:"target_mode"`
+	TargetSNI        string       `json:"target_sni"`
+	MaxRateLimit     float64      `json:"max_rate_limit" gorm:"default:0"`
 }

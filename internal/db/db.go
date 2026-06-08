@@ -130,6 +130,34 @@ func InitDB(cfg *config.Config) *gorm.DB {
 	}
 	logger.Info("DB", "Schema migrations completed successfully")
 
+	if cfg.AppMode == "client" {
+		logger.Info("DB", "Executing client-only database schema migrations")
+		if err := migrateDB.AutoMigrate(&models.V2RayScannerConfig{}); err != nil {
+			logger.Fatal("DB", "Client scanner migration failed", "error", err)
+		}
+		
+		// Seed default V2RayScannerConfig
+		var scannerCfg models.V2RayScannerConfig
+		if err := DB.First(&scannerCfg).Error; err != nil {
+			logger.Info("DB", "Seeding default scanner configuration")
+			DB.Create(&models.V2RayScannerConfig{
+				ConcurrencyLimit:  100,
+				TotalTargetCount:  1000,
+				NetworkTimeoutSec: 5,
+				ProbeAttempts:     1,
+				Ports:             models.IntArray{443, 80, 8443, 2053, 2083, 2087, 2096, 8080, 8880, 2052, 2082, 2086, 2095},
+				ConfigURLs:        models.StringArray{},
+				TopLimit:          20,
+				EnableNeighbors:   false,
+				RequireWS:         false,
+				TargetCIDRs:      models.StringArray{},
+				TargetMode:       "http",
+				TargetSNI:        "speed.cloudflare.com",
+				MaxRateLimit:     0,
+			})
+		}
+	}
+
 	// Seed default LeechConfig
 	var leechCfg models.LeechConfig
 	if err := DB.First(&leechCfg).Error; err != nil {
