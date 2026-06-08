@@ -271,6 +271,7 @@ func main() {
 			protected.POST("/v2ray/scanner/start", v2rayHandler.StartNetworkScannerSweep)
 			protected.POST("/v2ray/scanner/stop", v2rayHandler.StopNetworkScannerSweep)
 			protected.GET("/v2ray/scanner/stats", v2rayHandler.GetNetworkScannerLiveTelemetry)
+			protected.GET("/v2ray/scanner/ws", v2rayHandler.GetNetworkScannerWebSocket)
 			protected.POST("/v2ray/nodes/:id/provision", v2rayHandler.ProvisionNode)
 			protected.POST("/v2ray/firewall/block", v2rayHandler.BlockFirewallIP)
 			protected.POST("/v2ray/mcp", v2rayHandler.HandleMCP)

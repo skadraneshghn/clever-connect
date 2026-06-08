@@ -13,25 +13,22 @@ import (
 )
 
 func TestNeighborsAround(t *testing.T) {
-	// Initialize with test networks
-	cfIPNets = nil
 	_, ipNet1, _ := net.ParseCIDR("192.168.1.0/24")
-	cfIPNets = append(cfIPNets, ipNet1)
+	targetNets := []*net.IPNet{ipNet1}
 
 	ip := net.ParseIP("192.168.1.10")
-	neighbors := NeighborsAround(ip, 5, 2)
-	if len(neighbors) != 2 {
-		t.Fatalf("expected 2 neighbors, got %d", len(neighbors))
+	neighbors := NeighborsAround(ip, targetNets)
+	if len(neighbors) != 10 {
+		t.Fatalf("expected 10 neighbors, got %d", len(neighbors))
 	}
-	n1 := neighbors[0].String()
-	n2 := neighbors[1].String()
-	if n1 != "192.168.1.11" && n1 != "192.168.1.9" {
-		t.Errorf("unexpected neighbor: %s", n1)
-	}
-	if n2 != "192.168.1.11" && n2 != "192.168.1.9" {
-		t.Errorf("unexpected neighbor: %s", n2)
+	for _, n := range neighbors {
+		val := n.String()
+		if val == "192.168.1.10" {
+			t.Errorf("neighbor should not include the ip itself")
+		}
 	}
 }
+
 
 func TestScannerEngineStartStop(t *testing.T) {
 	engine := GetEngine()
