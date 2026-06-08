@@ -122,6 +122,9 @@ func StartCore(configPath string) error {
 			return fmt.Errorf("%s binary not found at %s or in system PATH. Please place the binary inside the project", coreName, binPath)
 		}
 	}
+	if abs, err := filepath.Abs(binPath); err == nil {
+		binPath = abs
+	}
 
 	logger.Info("V2Ray", "Starting proxy core process", "bin", binPath, "config", configPath)
 

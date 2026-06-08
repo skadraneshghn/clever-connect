@@ -71,12 +71,19 @@ type SingBoxOutbound struct {
 	Interval   string             `json:"interval,omitempty"`  // For urltest
 }
 
+type SingBoxPadding struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Size    string `json:"size,omitempty"`
+}
+
 type SingBoxOutboundTLS struct {
 	Enabled    bool                `json:"enabled"`
 	ServerName string              `json:"server_name,omitempty"`
 	Utls       *SingBoxUtls        `json:"utls,omitempty"`
 	Reality    *SingBoxOutReality  `json:"reality,omitempty"`
 	Fragment   *SingBoxFragment    `json:"fragment,omitempty"`
+	Padding    *SingBoxPadding     `json:"padding,omitempty"`
 }
 
 type SingBoxFragment struct {
@@ -302,24 +309,54 @@ func CompileSingBoxClientConfig(
 	evasionEnabled bool,
 	tcpDecoySni string,
 ) ([]byte, error) {
-	config := SingBoxConfig{
-		Log: &SingBoxLog{
-			Level: "warn",
-		},
-		Inbounds: []SingBoxInbound{
-			{
-				Type:       "socks",
-				Tag:        "socks-in",
-				Listen:     "127.0.0.1",
-				ListenPort: socksPort,
+	var config SingBoxConfig
+	useTemplate := false
+
+	if db.DB != nil {
+		var setting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "core_template_sing-box").First(&setting).Error; err == nil && setting.Value != "" {
+			if json.Unmarshal([]byte(setting.Value), &config) == nil {
+				useTemplate = true
+			}
+		}
+	}
+
+	if !useTemplate {
+		config = SingBoxConfig{
+			Log: &SingBoxLog{
+				Level: "warn",
 			},
-			{
-				Type:       "http",
-				Tag:        "http-in",
-				Listen:     "127.0.0.1",
-				ListenPort: httpPort,
-			},
-		},
+			Outbounds: []SingBoxOutbound{},
+		}
+	}
+
+	foundSocks := false
+	foundHttp := false
+	for i, in := range config.Inbounds {
+		if in.Tag == "socks-in" {
+			config.Inbounds[i].ListenPort = socksPort
+			foundSocks = true
+		} else if in.Tag == "http-in" {
+			config.Inbounds[i].ListenPort = httpPort
+			foundHttp = true
+		}
+	}
+
+	if !foundSocks {
+		config.Inbounds = append(config.Inbounds, SingBoxInbound{
+			Type:       "socks",
+			Tag:        "socks-in",
+			Listen:     "127.0.0.1",
+			ListenPort: socksPort,
+		})
+	}
+	if !foundHttp {
+		config.Inbounds = append(config.Inbounds, SingBoxInbound{
+			Type:       "http",
+			Tag:        "http-in",
+			Listen:     "127.0.0.1",
+			ListenPort: httpPort,
+		})
 	}
 
 	isAutoBalancer := activeConfig.Protocol == "balancer" || activeConfig.Address == "auto" || strings.Contains(activeConfig.Name, "Auto")
@@ -353,14 +390,28 @@ func CompileSingBoxClientConfig(
 		config.Outbounds = append(config.Outbounds, CompileSingBoxOutbound(activeConfig, evasionEnabled, "proxy"))
 	}
 
-	config.Outbounds = append(config.Outbounds, SingBoxOutbound{
-		Type: "direct",
-		Tag:  "direct",
-	})
-	config.Outbounds = append(config.Outbounds, SingBoxOutbound{
-		Type: "block",
-		Tag:  "block",
-	})
+	foundDirect := false
+	foundBlock := false
+	for _, out := range config.Outbounds {
+		if out.Tag == "direct" {
+			foundDirect = true
+		} else if out.Tag == "block" || out.Tag == "blocked" {
+			foundBlock = true
+		}
+	}
+
+	if !foundDirect {
+		config.Outbounds = append(config.Outbounds, SingBoxOutbound{
+			Type: "direct",
+			Tag:  "direct",
+		})
+	}
+	if !foundBlock {
+		config.Outbounds = append(config.Outbounds, SingBoxOutbound{
+			Type: "block",
+			Tag:  "block",
+		})
+	}
 
 	dohURL := "https://1.1.1.1/dns-query"
 	if db.DB != nil {
@@ -375,34 +426,36 @@ func CompileSingBoxClientConfig(
 		detourTarget = "balancer"
 	}
 
-	config.DNS = &SingBoxDNS{
-		Servers: []SingBoxDNSServer{
-			{
-				Tag:     "dns_doh",
-				Address: dohURL,
-				Detour:  detourTarget,
+	if !useTemplate || config.DNS == nil {
+		config.DNS = &SingBoxDNS{
+			Servers: []SingBoxDNSServer{
+				{
+					Tag:     "dns_doh",
+					Address: dohURL,
+					Detour:  detourTarget,
+				},
+				{
+					Tag:     "dns_direct",
+					Address: "8.8.8.8",
+					Detour:  "direct",
+				},
+				{
+					Tag:     "dns_local",
+					Address: "local",
+					Detour:  "direct",
+				},
 			},
-			{
-				Tag:     "dns_direct",
-				Address: "8.8.8.8",
-				Detour:  "direct",
+			Rules: []SingBoxDNSRule{
+				{
+					Geosite: []string{"geolocation-!ir"},
+					Server:  "dns_doh",
+				},
+				{
+					Geosite: []string{"ir"},
+					Server:  "dns_direct",
+				},
 			},
-			{
-				Tag:     "dns_local",
-				Address: "local",
-				Detour:  "direct",
-			},
-		},
-		Rules: []SingBoxDNSRule{
-			{
-				Geosite: []string{"geolocation-!ir"},
-				Server:  "dns_doh",
-			},
-			{
-				Geosite: []string{"ir"},
-				Server:  "dns_direct",
-			},
-		},
+		}
 	}
 
 	routingMode := "bypass_domestic"
@@ -458,8 +511,13 @@ func CompileSingBoxClientConfig(
 		Outbound: detourTarget,
 	})
 
-	config.Route = &SingBoxRoute{
-		Rules: rules,
+	if !useTemplate || config.Route == nil {
+		config.Route = &SingBoxRoute{
+			Rules: rules,
+		}
+	} else {
+		// Append dynamic rules to user's route
+		config.Route.Rules = append(config.Route.Rules, rules...)
 	}
 
 	return json.MarshalIndent(config, "", "  ")
@@ -516,7 +574,24 @@ func CompileSingBoxOutbound(activeConfig models.V2RayClientConfig, evasionEnable
 			}
 		}
 
-		if evasionEnabled {
+		evasionMixedCase := false
+		evasionPadding := false
+		if db.DB != nil {
+			var setting models.V2RayClientSetting
+			if err := db.DB.Where("key = ?", "evasion_mixed_case").First(&setting).Error; err == nil {
+				evasionMixedCase = setting.Value == "true"
+			}
+			setting = models.V2RayClientSetting{}
+			if err := db.DB.Where("key = ?", "evasion_padding").First(&setting).Error; err == nil {
+				evasionPadding = setting.Value == "true"
+			}
+		}
+
+		if evasionMixedCase && tlsConfig.ServerName != "" {
+			tlsConfig.ServerName = RandomizeCase(tlsConfig.ServerName)
+		}
+
+		if evasionEnabled || evasionMixedCase || evasionPadding {
 			evasionFingerprint := "chrome"
 			if db.DB != nil {
 				var setting models.V2RayClientSetting
@@ -529,6 +604,14 @@ func CompileSingBoxOutbound(activeConfig models.V2RayClientConfig, evasionEnable
 				Fingerprint: evasionFingerprint,
 			}
 
+			if evasionPadding {
+				tlsConfig.Padding = &SingBoxPadding{
+					Enabled: true,
+					Type:    "random",
+					Size:    "100-500",
+				}
+			}
+
 			// Smart Sing-Box Packet Fragmentation Mapping
 			evasionFragment := false
 			if db.DB != nil {
@@ -536,6 +619,10 @@ func CompileSingBoxOutbound(activeConfig models.V2RayClientConfig, evasionEnable
 				if err := db.DB.Where("key = ?", "evasion_fragment").First(&setting).Error; err == nil {
 					evasionFragment = setting.Value == "true"
 				}
+			}
+
+			if evasionPadding {
+				evasionFragment = false
 			}
 
 			if evasionFragment {
@@ -548,9 +635,11 @@ func CompileSingBoxOutbound(activeConfig models.V2RayClientConfig, evasionEnable
 					if err := db.DB.Where("key = ?", "fragment_mode").First(&setting).Error; err == nil && setting.Value != "" {
 						fragMode = setting.Value
 					}
+					setting = models.V2RayClientSetting{}
 					if err := db.DB.Where("key = ?", "fragment_length").First(&setting).Error; err == nil && setting.Value != "" {
 						fragLength = setting.Value
 					}
+					setting = models.V2RayClientSetting{}
 					if err := db.DB.Where("key = ?", "fragment_interval").First(&setting).Error; err == nil && setting.Value != "" {
 						fragInterval = setting.Value
 					}

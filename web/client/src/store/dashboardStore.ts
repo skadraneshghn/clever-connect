@@ -1,3 +1,4 @@
+import { showGlobalConfirm } from './dialogStore';
 import { create } from 'zustand';
 
 export interface VPNNode {
@@ -33,10 +34,19 @@ interface DashboardState {
   disconnectNode: () => Promise<void>;
   deleteAllNodes: () => Promise<void>;
   initWebSocket: (token: string) => () => void;
+  
+  // Real-time gRPC Stats
+  activeConns: number;
+  totalUplink: number;
+  totalDownlink: number;
+  trafficHistory: { time: string; upload: number; download: number }[];
+  connectStream: () => void;
+  disconnectStream: () => void;
 }
 
 export const useDashboardStore = create<DashboardState>((set, get) => {
   let ws: WebSocket | null = null;
+  let wsStats: WebSocket | null = null;
   let mockInterval: any = null;
 
   return {
@@ -58,6 +68,54 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
     latency: 0,
     wsConnected: false,
     logs: ['[System] Client ready. Select a node to establish connection.'],
+
+    // Real-time gRPC Stats
+    activeConns: 0,
+    totalUplink: 0,
+    totalDownlink: 0,
+    trafficHistory: [],
+
+    connectStream: () => {
+      if (wsStats) return;
+      
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      const token = localStorage.getItem('cc_client_token') || '';
+      
+      wsStats = new WebSocket(`${protocol}//${host}/ws/stats?token=${token}`);
+
+      wsStats.onopen = () => set({ wsConnected: true });
+      wsStats.onclose = () => set({ wsConnected: false });
+
+      wsStats.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const now = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+          set((state) => {
+            const newHistory = [...state.trafficHistory, {
+              time: now,
+              upload: data.uplinkSpeed / 1024, 
+              download: data.downlinkSpeed / 1024,
+            }].slice(-60);
+
+            return {
+              activeConns: data.activeConns,
+              totalUplink: data.totalUplink,
+              totalDownlink: data.totalDownlink,
+              trafficHistory: newHistory,
+            };
+          });
+        } catch (err) {}
+      };
+    },
+
+    disconnectStream: () => {
+      if (wsStats) {
+        wsStats.close();
+        wsStats = null;
+      }
+    },
 
     connectNode: async (node) => {
       set({ connectionState: 'connecting', selectedNode: node });
@@ -118,7 +176,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
     },
 
     deleteAllNodes: async () => {
-      if (!window.confirm('Are you sure you want to delete all gateway nodes? This will also remove them from the backend configs!')) return;
+      const confirmed = await showGlobalConfirm('Are you sure you want to delete all gateway nodes? This will also remove them from the backend configs!', { title: 'Delete Gateway Nodes', variant: 'warning' });
+      if (!confirmed) return;
       
       try {
         const token = localStorage.getItem('cc_client_token') || '';

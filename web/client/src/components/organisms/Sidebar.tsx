@@ -20,7 +20,8 @@ const navItems = [
   {
     id: 'v2ray-section', label: 'V2Ray Manager', icon: FiGlobe,
     children: [
-      { id: 'v2ray-dashboard', label: 'Dashboard & Nodes' },
+      { id: 'v2ray-dashboard', label: 'Realtime Dashboard' },
+      { id: 'v2ray-nodes', label: 'Nodes Manager' },
       { id: 'v2ray-core', label: 'Core Configuration' },
       { id: 'v2ray-routing', label: 'Routing Rules' }
     ]

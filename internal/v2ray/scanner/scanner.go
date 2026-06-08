@@ -2,10 +2,13 @@ package scanner
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
@@ -26,6 +29,8 @@ import (
 	"clever-connect/internal/v2ray/core"
 	"clever-connect/internal/v2ray/speed"
 	"clever-connect/internal/v2ray/sub"
+
+	"golang.org/x/time/rate"
 )
 
 // DefaultCloudflareRanges represents default Cloudflare edge IP blocks
@@ -35,6 +40,17 @@ var DefaultCloudflareRanges = []string{
 	"190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22",
 	"198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
 	"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+}
+
+var cfIPNets []*net.IPNet
+
+func init() {
+	for _, cidr := range DefaultCloudflareRanges {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			cfIPNets = append(cfIPNets, ipNet)
+		}
+	}
 }
 
 // CDNConfigRow represents a tested IP with diagnostics info
@@ -238,7 +254,7 @@ type CDNConfigsOptions struct {
 	BasePort        int      `json:"base_port"`
 }
 
-// StartScan runs the CDN scan in the background
+// StartScan runs the CDN scan in the background (legacy)
 func StartScan(opts CDNConfigsOptions) (*CDNScanState, error) {
 	scanMu.Lock()
 	defer scanMu.Unlock()
@@ -394,7 +410,7 @@ func runCDNScan(ctx context.Context, state *CDNScanState, opts CDNConfigsOptions
 			defer func() { <-sem }()
 			res := FrontTest(t.IP, t.Port, frontSNI, clientCfg.Address, time.Duration(opts.PingTimeoutSec)*time.Second)
 			pingRows[idx] = pingRow{IP: t.IP, Port: t.Port, Ms: res.PingMs, OK: res.OK}
-			
+
 			state.mu.Lock()
 			state.PingDone++
 			state.mu.Unlock()
@@ -458,7 +474,7 @@ func runCDNScan(ctx context.Context, state *CDNScanState, opts CDNConfigsOptions
 			row := cdnSpeedOne(ctx, bin, clientCfg, cand.IP, cand.Port, socksPort, httpPort, opts)
 			row.PingMs = cand.Ms
 			classify(&row)
-			
+
 			// Build rewritten URI
 			row.URI = rewriteURI(opts.URI, cand.IP, cand.Port, row.Colo, row.PingMs)
 
@@ -480,7 +496,7 @@ func runCDNScan(ctx context.Context, state *CDNScanState, opts CDNConfigsOptions
 		}
 		return rowsCopy[a].Score > rowsCopy[b].Score
 	})
-	
+
 	finalCount := opts.FinalCount
 	if finalCount > len(rowsCopy) {
 		finalCount = len(rowsCopy)
@@ -519,6 +535,10 @@ func cdnSpeedOne(ctx context.Context, bin string, templateCfg models.V2RayClient
 
 	runCtx, runCancel := context.WithTimeout(ctx, time.Duration(opts.SpeedTimeoutSec+8)*time.Second)
 	defer runCancel()
+
+	if abs, err := filepath.Abs(bin); err == nil {
+		bin = abs
+	}
 
 	cmd := exec.CommandContext(runCtx, bin, "run", "-c", tempPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -560,7 +580,7 @@ func cdnSpeedOne(ctx context.Context, bin string, templateCfg models.V2RayClient
 
 	time.Sleep(100 * time.Millisecond)
 	spTimeout := time.Duration(opts.SpeedTimeoutSec) * time.Second
-	
+
 	t0 := time.Now()
 	status, _, err := fetchThroughSocks("127.0.0.1", socksPort, "https://speed.cloudflare.com/", spTimeout)
 	row.RelayMs = int(time.Since(t0).Milliseconds())
@@ -571,7 +591,7 @@ func cdnSpeedOne(ctx context.Context, bin string, templateCfg models.V2RayClient
 	}
 
 	row.Colo = speed.DetectColo("127.0.0.1", socksPort, 3*time.Second)
-	
+
 	down, err := speed.MeasureDownload("127.0.0.1", socksPort, opts.DownloadBytes, spTimeout)
 	if err == nil {
 		row.DownKbps = down
@@ -580,7 +600,7 @@ func cdnSpeedOne(ctx context.Context, bin string, templateCfg models.V2RayClient
 	if err == nil {
 		row.UpKbps = up
 	}
-	
+
 	row.OK = down > 0
 	return row
 }
@@ -639,7 +659,7 @@ func rewriteURI(origURI string, ip string, port int, colo string, ping int) stri
 			name = decoded
 		}
 	}
-	
+
 	// Format name: "OriginalName | COLO | Pingms | @CleverConnect"
 	var parts []string
 	parts = append(parts, name)
@@ -766,10 +786,10 @@ func SendWakeOnLAN(macStr string, broadcastIP string) error {
 
 // DiscoveredDevice represents a device found on the local network
 type DiscoveredDevice struct {
-	IP        string `json:"ip"`
-	Hostname  string `json:"hostname,omitempty"`
-	PingMs    int64  `json:"ping_ms"`
-	Active    bool   `json:"active"`
+	IP       string `json:"ip"`
+	Hostname string `json:"hostname,omitempty"`
+	PingMs   int64  `json:"ping_ms"`
+	Active   bool   `json:"active"`
 }
 
 // DiscoverDevices scans the local network subnet of the first active non-loopback network interface
@@ -850,4 +870,561 @@ func DiscoverDevices(timeout time.Duration) ([]DiscoveredDevice, error) {
 
 	wg.Wait()
 	return discovered, nil
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// V2Ray Network Scanner Sweep (New Scanner Engine)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// JobStats represents the live stats of the network scanner sweep
+type JobStats struct {
+	Tested   int64 `json:"tested"`
+	Healthy  int64 `json:"healthy"`
+	Failed   int64 `json:"failed"`
+	InFlight int64 `json:"in_flight"`
+}
+
+// ScanConfig defines the operational bounds for a live network verification sweep
+type ScanConfig struct {
+	TargetCIDRs      []string      `json:"target_cidrs"`
+	SelectedPorts    []int         `json:"selected_ports"`
+	ConcurrencyLimit int           `json:"concurrency_limit"`
+	MaxRateLimit     float64       `json:"max_rate_limit"`
+	NetworkTimeout   time.Duration `json:"network_timeout"`
+	ProbeAttempts    int           `json:"probe_attempts"`
+	TargetMode       string        `json:"target_mode"`
+	TargetSNI        string        `json:"target_sni"`
+	WebSocketHost    string        `json:"websocket_host"`
+	WebSocketPath    string        `json:"websocket_path"`
+	RequireWS        bool          `json:"require_ws"`
+	EnableNeighbors  bool          `json:"enable_neighbors"`
+	TopLimit         int           `json:"top_limit"`
+}
+
+// ScannerEngine orchestrates the live network verification sweep
+type ScannerEngine struct {
+	mu         sync.RWMutex
+	isRunning  bool
+	stats      JobStats
+	cancelFunc context.CancelFunc
+}
+
+var (
+	engineOnce   sync.Once
+	globalEngine *ScannerEngine
+)
+
+// GetEngine returns the singleton ScannerEngine instance
+func GetEngine() *ScannerEngine {
+	engineOnce.Do(func() {
+		globalEngine = &ScannerEngine{}
+	})
+	return globalEngine
+}
+
+// IsRunning returns whether the scanner engine is currently active
+func (s *ScannerEngine) IsRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isRunning
+}
+
+// GetLiveStats returns a copy of the current statistics
+func (s *ScannerEngine) GetLiveStats() JobStats {
+	return JobStats{
+		Tested:   atomic.LoadInt64(&s.stats.Tested),
+		Healthy:  atomic.LoadInt64(&s.stats.Healthy),
+		Failed:   atomic.LoadInt64(&s.stats.Failed),
+		InFlight: atomic.LoadInt64(&s.stats.InFlight),
+	}
+}
+
+// CancelActiveScan cancels the running scanner engine sweep
+func (s *ScannerEngine) CancelActiveScan() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancelFunc != nil {
+		s.cancelFunc()
+		s.cancelFunc = nil
+	}
+	s.isRunning = false
+}
+
+// StartScan triggers the network scan sweep in a background goroutine
+func (s *ScannerEngine) StartScan(parentCtx context.Context, cfg *ScanConfig) error {
+	s.mu.Lock()
+	if s.isRunning {
+		s.mu.Unlock()
+		return fmt.Errorf("a scan sweep is already running")
+	}
+
+	ctx, cancel := context.WithCancel(parentCtx)
+	s.cancelFunc = cancel
+	s.isRunning = true
+	s.stats = JobStats{}
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.isRunning = false
+			s.cancelFunc = nil
+			s.mu.Unlock()
+			cancel()
+		}()
+		s.runScanLoop(ctx, cfg)
+	}()
+
+	return nil
+}
+
+type configProbeJob struct {
+	ip   net.IP
+	port int
+}
+
+var defaultEdgeSNIs = []string{
+	"speed.cloudflare.com",
+	"www.cloudflare.com",
+	"cloudflare.com",
+	"1.1.1.1.cdn.cloudflare.net",
+	"blog.cloudflare.com",
+}
+
+func (s *ScannerEngine) runScanLoop(ctx context.Context, cfg *ScanConfig) {
+	var initialIPs []net.IP
+	for _, cidr := range cfg.TargetCIDRs {
+		if !strings.Contains(cidr, "/") {
+			if ip := net.ParseIP(cidr); ip != nil {
+				initialIPs = append(initialIPs, ip)
+			}
+			continue
+		}
+		expandedStr := ExpandCIDR(cidr, 256)
+		for _, ipStr := range expandedStr {
+			if ip := net.ParseIP(ipStr); ip != nil {
+				initialIPs = append(initialIPs, ip)
+			}
+		}
+	}
+
+	if len(initialIPs) == 0 {
+		for _, cidr := range DefaultCloudflareRanges {
+			expandedStr := ExpandCIDR(cidr, 50)
+			for _, ipStr := range expandedStr {
+				if ip := net.ParseIP(ipStr); ip != nil {
+					initialIPs = append(initialIPs, ip)
+				}
+			}
+		}
+	}
+
+	concurrency := cfg.ConcurrencyLimit
+	if concurrency <= 0 {
+		concurrency = 100
+	}
+
+	jobs := make(chan configProbeJob)
+	type probeResult struct {
+		ip   net.IP
+		port int
+		ok   bool
+	}
+	results := make(chan probeResult, concurrency)
+	seen := make(map[string]struct{})
+	var queue []configProbeJob
+	var pending int
+	neighborsQueued := 0
+	maxNeighbors := 400
+
+	jobKey := func(ip net.IP, port int) string {
+		return fmt.Sprintf("%s:%d", ip.String(), port)
+	}
+
+	submit := func(ip net.IP, port int) bool {
+		key := jobKey(ip, port)
+		if _, ok := seen[key]; ok {
+			return false
+		}
+		seen[key] = struct{}{}
+		queue = append(queue, configProbeJob{ip: ip, port: port})
+		pending++
+		return true
+	}
+
+	for _, ip := range initialIPs {
+		for _, port := range cfg.SelectedPorts {
+			submit(ip, port)
+		}
+	}
+
+	var limiter *rate.Limiter
+	if cfg.MaxRateLimit > 0 {
+		limiter = rate.NewLimiter(rate.Limit(cfg.MaxRateLimit), int(cfg.MaxRateLimit)+1)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+
+				if limiter != nil {
+					_ = limiter.Wait(ctx)
+				}
+
+				atomic.AddInt64(&s.stats.InFlight, 1)
+
+				sni := cfg.TargetSNI
+				if sni == "" {
+					sni = selectRandomSNI(defaultEdgeSNIs)
+				}
+
+				var ok bool
+				var err error
+
+				if cfg.TargetMode == "tcp" {
+					_, err = probeTCP(ctx, job.ip, job.port, cfg.NetworkTimeout)
+					ok = err == nil
+				} else if cfg.TargetMode == "tls" {
+					_, err = probeTLS(ctx, job.ip, job.port, sni, cfg.NetworkTimeout)
+					ok = err == nil
+				} else { // http / default
+					_, _, wsOk, errHTTP := probeHTTP(ctx, job.ip, job.port, sni, cfg.NetworkTimeout, cfg.RequireWS, cfg.WebSocketHost, cfg.WebSocketPath)
+					ok = errHTTP == nil
+					if cfg.RequireWS && !wsOk {
+						ok = false
+					}
+				}
+
+				atomic.AddInt64(&s.stats.InFlight, -1)
+
+				select {
+				case results <- probeResult{ip: job.ip, port: job.port, ok: ok}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	for pending > 0 || len(queue) > 0 {
+		var send chan<- configProbeJob
+		var next configProbeJob
+		if len(queue) > 0 {
+			send = jobs
+			next = queue[0]
+		}
+
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		case send <- next:
+			queue = queue[1:]
+		case r := <-results:
+			pending--
+			atomic.AddInt64(&s.stats.Tested, 1)
+			if r.ok {
+				atomic.AddInt64(&s.stats.Healthy, 1)
+
+				if cfg.EnableNeighbors && neighborsQueued < maxNeighbors {
+					neighbors := NeighborsAround(r.ip, 32, 12)
+					for _, nip := range neighbors {
+						if neighborsQueued >= maxNeighbors {
+							break
+						}
+						added := false
+						for _, port := range cfg.SelectedPorts {
+							if submit(nip, port) {
+								added = true
+							}
+						}
+						if added {
+							neighborsQueued++
+						}
+					}
+				}
+			} else {
+				atomic.AddInt64(&s.stats.Failed, 1)
+			}
+		}
+	}
+
+	close(jobs)
+	wg.Wait()
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Scanner Engine Probing Implementations
+// ──────────────────────────────────────────────────────────────────────────────
+
+func cryptoRandIntn(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	bigN := big.NewInt(int64(n))
+	val, err := crand.Int(crand.Reader, bigN)
+	if err != nil {
+		return 0
+	}
+	return int(val.Int64())
+}
+
+func selectRandomSNI(defaultSNIs []string) string {
+	if len(defaultSNIs) == 0 {
+		return ""
+	}
+	return defaultSNIs[cryptoRandIntn(len(defaultSNIs))]
+}
+
+func probeTCP(ctx context.Context, ip net.IP, port int, timeout time.Duration) (time.Duration, error) {
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	d := net.Dialer{Timeout: timeout}
+	start := time.Now()
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	return time.Since(start), nil
+}
+
+func probeTLS(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration) (time.Duration, error) {
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	dialer := &net.Dialer{Timeout: timeout}
+	start := time.Now()
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		ServerName:         sni,
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS12,
+	})
+	handshakeCtx, cancel := context.WithTimeout(ctx, timeout/2)
+	defer cancel()
+	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
+		return 0, err
+	}
+	return time.Since(start), nil
+}
+
+func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, requireWS bool, wsHost, wsPath string) (time.Duration, string, bool, error) {
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: timeout / 4}).DialContext(ctx, network, addr)
+		},
+		TLSClientConfig: &tls.Config{
+			ServerName:         sni,
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: true,
+		},
+		DisableKeepAlives:   true,
+		TLSHandshakeTimeout: timeout / 2,
+	}
+
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+
+	scheme := "https"
+	if port == 80 {
+		scheme = "http"
+	}
+	reqURL := fmt.Sprintf("%s://%s/cdn-cgi/trace", scheme, sni)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return 0, "", false, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Host = sni
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, "", false, err
+	}
+	defer resp.Body.Close()
+
+	latency := time.Since(start)
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return 0, "", false, fmt.Errorf("status code %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	if err != nil {
+		return 0, "", false, err
+	}
+	bodyStr := string(bodyBytes)
+	colo := parseTraceColo(bodyStr)
+
+	wsOk := false
+	if requireWS {
+		wsOk = probeWebSocket(ctx, ip, port, sni, wsHost, wsPath, timeout)
+	}
+
+	return latency, colo, wsOk, nil
+}
+
+func probeWebSocket(ctx context.Context, ip net.IP, port int, sni, host, path string, timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	wsCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	deadline, _ := wsCtx.Deadline()
+
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	if host == "" {
+		host = sni
+	}
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	dialer := &net.Dialer{Timeout: timeout / 3}
+	conn, err := dialer.DialContext(wsCtx, "tcp", addr)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		ServerName:         sni,
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true,
+	})
+	_ = tlsConn.SetDeadline(deadline)
+	if err := tlsConn.HandshakeContext(wsCtx); err != nil {
+		return false
+	}
+
+	idleHold := 2 * time.Second
+	if remaining := time.Until(deadline); remaining < 2*idleHold {
+		idleHold = remaining / 2
+	}
+	idleDeadline := time.Now().Add(idleHold)
+	if !deadline.IsZero() && deadline.Before(idleDeadline) {
+		idleDeadline = deadline
+	}
+	_ = tlsConn.SetReadDeadline(idleDeadline)
+	oneByte := make([]byte, 1)
+	if _, err := tlsConn.Read(oneByte); err != nil {
+		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+			return false
+		}
+	}
+
+	wsReq := fmt.Sprintf(
+		"GET %s HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: c2VucGFpc2Nhbm5lcg==\r\n"+
+			"Sec-WebSocket-Version: 13\r\n"+
+			"\r\n", path, host)
+
+	_ = tlsConn.SetWriteDeadline(time.Now().Add(timeout / 2))
+	if _, err := tlsConn.Write([]byte(wsReq)); err != nil {
+		return false
+	}
+
+	respBuf := make([]byte, 1024)
+	_ = tlsConn.SetReadDeadline(time.Now().Add(timeout / 3))
+	n, err := tlsConn.Read(respBuf)
+	if err != nil || n == 0 {
+		return false
+	}
+
+	return strings.Contains(string(respBuf[:n]), "HTTP/")
+}
+
+func parseTraceColo(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "colo=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "colo="))
+		}
+	}
+	return ""
+}
+
+// NeighborsAround returns up to limit IPv4 addresses near ip that also fall inside cfIPNets
+func NeighborsAround(ip net.IP, radius, limit int) []net.IP {
+	if limit <= 0 || radius <= 0 || len(cfIPNets) == 0 {
+		return nil
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return nil
+	}
+
+	base := binary.BigEndian.Uint32(ip4)
+	out := make([]net.IP, 0, limit)
+
+	for delta := uint32(1); delta <= uint32(radius) && len(out) < limit; delta++ {
+		for _, sign := range []int32{int32(delta), -int32(delta)} {
+			next, ok := offsetIPv4(base, sign)
+			if !ok {
+				continue
+			}
+			candidate := uint32ToIPv4(next)
+			if candidate.Equal(ip) {
+				continue
+			}
+			if !containsAnyNet(cfIPNets, candidate) {
+				continue
+			}
+			out = append(out, candidate)
+			if len(out) >= limit {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func offsetIPv4(base uint32, delta int32) (uint32, bool) {
+	if delta >= 0 {
+		sum := uint64(base) + uint64(delta)
+		if sum > 0xFFFFFFFF {
+			return 0, false
+		}
+		return uint32(sum), true
+	}
+	d := uint32(-delta)
+	if d > base {
+		return 0, false
+	}
+	return base - d, true
+}
+
+func uint32ToIPv4(v uint32) net.IP {
+	ip := make(net.IP, 4)
+	binary.BigEndian.PutUint32(ip, v)
+	return ip
+}
+
+func containsAnyNet(nets []*net.IPNet, ip net.IP) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

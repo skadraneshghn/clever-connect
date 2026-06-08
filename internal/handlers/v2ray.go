@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -27,6 +28,7 @@ import (
 	"clever-connect/internal/v2ray/speed"
 	"clever-connect/internal/v2ray/sub"
 	"clever-connect/internal/v2ray/traffic"
+	"clever-connect/internal/v2ray/traffic/desync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -326,7 +328,7 @@ func (h *V2RayHandler) GetClientStatus(c *gin.Context) {
 
 // StartClientCore handles POST /api/v2ray/client/start
 func (h *V2RayHandler) StartClientCore(c *gin.Context) {
-	configs, _ := pebble.ListClientConfigs("", nil, 0, 0)
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
 	var activeConfig *models.V2RayClientConfig
 	for _, cfg := range configs {
 		if cfg.IsActive {
@@ -336,11 +338,8 @@ func (h *V2RayHandler) StartClientCore(c *gin.Context) {
 			break
 		}
 	}
-	if activeConfig == nil && len(configs) > 0 {
-		activeConfig = &configs[0]
-	}
 	if activeConfig == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No imported client profiles found"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No active configuration selected. Please select/activate a configuration profile from the list before starting the core engine."})
 		return
 	}
 
@@ -365,9 +364,9 @@ func (h *V2RayHandler) StartClientCore(c *gin.Context) {
 
 	// Port availability verification & allocation
 	socksPortPublic := core.FindAvailablePort(socksPort)
-	socksPortInternal := core.FindAvailablePort(socksPortPublic + 1000)
-	httpPortPublic := core.FindAvailablePort(httpPort)
-	httpPortInternal := core.FindAvailablePort(httpPortPublic + 1000)
+	socksPortInternal := core.FindAvailablePort(socksPortPublic + 1000, socksPortPublic)
+	httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic, socksPortInternal)
+	httpPortInternal := core.FindAvailablePort(httpPortPublic + 1000, socksPortPublic, socksPortInternal, httpPortPublic)
 
 	configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortInternal, httpPortInternal, evasion, "")
 	if err != nil {
@@ -497,6 +496,15 @@ func BuildProxyLink(cfg models.V2RayClientConfig) string {
 // ListClientConfigs handles GET /api/v2ray/client/configs
 func (h *V2RayHandler) ListClientConfigs(c *gin.Context) {
 	search := c.Query("search")
+	protocol := c.Query("protocol")
+	network := c.Query("network")
+	pingStatus := c.Query("ping_status")
+	sortBy := c.Query("sort_by")
+	var port int
+	if pStr := c.Query("port"); pStr != "" {
+		port, _ = strconv.Atoi(pStr)
+	}
+
 	var subID *uint
 	if subIDStr := c.Query("subscription_id"); subIDStr != "" {
 		if id, err := strconv.Atoi(subIDStr); err == nil {
@@ -507,7 +515,17 @@ func (h *V2RayHandler) ListClientConfigs(c *gin.Context) {
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100")) // Virtual windowing default
 
-	configs, total := pebble.ListClientConfigs(search, subID, offset, limit)
+	filter := pebble.ConfigFilter{
+		Search:         search,
+		SubscriptionID: subID,
+		Protocol:       protocol,
+		Network:        network,
+		Port:           port,
+		PingStatus:     pingStatus,
+		SortBy:         sortBy,
+	}
+
+	configs, total := pebble.ListClientConfigs(filter, offset, limit)
 	
 	// Temporarily support old frontend which expects []models.V2RayClientConfig
 	// BUT since we are adding windowing in this PR, we should return {data, total}
@@ -568,6 +586,13 @@ func (h *V2RayHandler) UpdateClientConfig(c *gin.Context) {
 // DeleteClientConfig handles DELETE /api/v2ray/client/configs/:id
 func (h *V2RayHandler) DeleteClientConfig(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+
+	// Check if this config is active
+	cfg, err := pebble.GetClientConfig(uint(id))
+	if err == nil && cfg != nil && cfg.IsActive {
+		_ = core.StopClientCore()
+	}
+
 	if err := pebble.DeleteClientConfig(uint(id)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -577,11 +602,67 @@ func (h *V2RayHandler) DeleteClientConfig(c *gin.Context) {
 
 // DeleteAllClientConfigs handles DELETE /api/v2ray/client/configs/all
 func (h *V2RayHandler) DeleteAllClientConfigs(c *gin.Context) {
+	// Always stop client core since we are deleting all client configurations
+	_ = core.StopClientCore()
+
 	if err := pebble.DeleteAllClientConfigs(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted_all"})
+}
+
+// DeleteFailedClientConfigs handles DELETE /api/v2ray/client/configs/failed
+func (h *V2RayHandler) DeleteFailedClientConfigs(c *gin.Context) {
+	// Check if the currently active configuration is one of the failed nodes (latency < 0)
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+	for _, cfg := range configs {
+		if cfg.IsActive && cfg.LatencyMs < 0 {
+			_ = core.StopClientCore()
+			break
+		}
+	}
+
+	count, err := pebble.DeleteFailedClientConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted_failed", "count": count})
+}
+
+// DeleteSelectedClientConfigs handles POST /api/v2ray/client/configs/delete-selected
+func (h *V2RayHandler) DeleteSelectedClientConfigs(c *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload: " + err.Error()})
+		return
+	}
+
+	// Stop client core if any of the deleted configs is active
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+	for _, cfg := range configs {
+		if cfg.IsActive {
+			for _, id := range req.IDs {
+				if cfg.ID == id {
+					_ = core.StopClientCore()
+					break
+				}
+			}
+		}
+	}
+
+	// Delete them in Pebble
+	count := 0
+	for _, id := range req.IDs {
+		if err := pebble.DeleteClientConfig(id); err == nil {
+			count++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "deleted_selected", "count": count})
 }
 
 // SetActiveClientConfig handles POST /api/v2ray/client/configs/:id/active
@@ -595,7 +676,7 @@ func (h *V2RayHandler) SetActiveClientConfig(c *gin.Context) {
 	}
 
 	// Fetch all to deactivate
-	configs, _ := pebble.ListClientConfigs("", nil, 0, 0)
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
 	var toUpdate []models.V2RayClientConfig
 	for _, cfg := range configs {
 		if cfg.IsActive {
@@ -682,7 +763,7 @@ func (h *V2RayHandler) ImportSubscription(c *gin.Context) {
 
 	var toInsert []models.V2RayClientConfig
 	
-	allConfigs, _ := pebble.ListClientConfigs("", nil, 0, 0)
+	allConfigs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
 	existingMap := make(map[string]models.V2RayClientConfig)
 	for _, c := range allConfigs {
 		key := fmt.Sprintf("%s-%s-%d", c.UUID, c.Address, c.Port)
@@ -858,7 +939,7 @@ func (h *V2RayHandler) DeleteSubscription(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	
 	subID := uint(id)
-	configs, _ := pebble.ListClientConfigs("", &subID, 0, 0)
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{SubscriptionID: &subID}, 0, 0)
 	for _, cfg := range configs {
 		pebble.DeleteClientConfig(cfg.ID)
 	}
@@ -1136,9 +1217,25 @@ func (h *V2RayHandler) GetClientSettings(c *gin.Context) {
 	if _, ok := result["fragment_interval"]; !ok {
 		result["fragment_interval"] = "10-20"
 	}
+	if _, ok := result["evasion_mixed_case"]; !ok {
+		result["evasion_mixed_case"] = "false"
+	}
+	if _, ok := result["evasion_padding"]; !ok {
+		result["evasion_padding"] = "false"
+	}
+	if _, ok := result["concurrency_limit"]; !ok {
+		result["concurrency_limit"] = "100"
+	}
+	if _, ok := result["network_timeout_seconds"]; !ok {
+		result["network_timeout_seconds"] = "5"
+	}
+	if _, ok := result["default_sni_targets"]; !ok {
+		result["default_sni_targets"] = "speed.cloudflare.com,www.cloudflare.com,cloudflare.com"
+	}
 
 	c.JSON(http.StatusOK, result)
 }
+
 
 // SaveClientSettings handles POST /api/v2ray/client/settings
 func (h *V2RayHandler) SaveClientSettings(c *gin.Context) {
@@ -1146,6 +1243,13 @@ func (h *V2RayHandler) SaveClientSettings(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if enabled, ok := req["dpibypass_enabled"]; ok && enabled == "true" {
+		if err := desync.CheckRawSocketAccess(); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Cannot enable DPI Bypass: " + err.Error() + ". Please run as root or assign cap_net_raw."})
+			return
+		}
 	}
 
 	tx := db.DB.Begin()
@@ -1159,6 +1263,12 @@ func (h *V2RayHandler) SaveClientSettings(c *gin.Context) {
 		}
 	}
 	tx.Commit()
+
+	if enabled, ok1 := req["dpibypass_enabled"]; ok1 {
+		if args, ok2 := req["dpibypass_args"]; ok2 {
+			desync.UpdateDesyncConfig(args, enabled == "true")
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "saved"})
 }
@@ -1242,7 +1352,7 @@ func (h *V2RayHandler) TestMassProfiles(c *gin.Context) {
 			}
 		}
 	} else {
-		configs, _ = pebble.ListClientConfigs("", nil, 0, 0)
+		configs, _ = pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
 	}
 
 	if len(configs) == 0 {
@@ -1301,6 +1411,112 @@ func (h *V2RayHandler) StopScan(c *gin.Context) {
 	scanner.CancelActiveScan()
 	c.JSON(http.StatusOK, gin.H{"status": "stopped"})
 }
+
+// StartScanRequest defines the request body to initiate the scanner sweep
+type StartScanRequest struct {
+	TargetCIDRs      []string `json:"target_cidrs"`
+	SelectedPorts    []int    `json:"selected_ports"`
+	ConcurrencyLimit int      `json:"concurrency_limit"`
+	MaxRateLimit     float64  `json:"max_rate_limit"`
+	NetworkTimeoutMs int      `json:"network_timeout_ms"`
+	ProbeAttempts    int      `json:"probe_attempts"`
+	TargetMode       string   `json:"target_mode"`
+	TargetSNI        string   `json:"target_sni"`
+	WebSocketHost    string   `json:"websocket_host"`
+	WebSocketPath    string   `json:"websocket_path"`
+	RequireWS        bool     `json:"require_ws"`
+	EnableNeighbors  bool     `json:"enable_neighbors"`
+	TopLimit         int      `json:"top_limit"`
+}
+
+// StartNetworkScannerSweep handles POST /api/v2ray/scanner/start
+func (h *V2RayHandler) StartNetworkScannerSweep(c *gin.Context) {
+	var req StartScanRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	concurrency := req.ConcurrencyLimit
+	if concurrency <= 0 {
+		var setting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "concurrency_limit").First(&setting).Error; err == nil {
+			if val, err := strconv.Atoi(setting.Value); err == nil {
+				concurrency = val
+			}
+		}
+	}
+	if concurrency <= 0 {
+		concurrency = 100
+	}
+
+	timeoutSec := 5
+	var setting models.V2RayClientSetting
+	if err := db.DB.Where("key = ?", "network_timeout_seconds").First(&setting).Error; err == nil {
+		if val, err := strconv.Atoi(setting.Value); err == nil {
+			timeoutSec = val
+		}
+	}
+
+	timeout := time.Duration(timeoutSec) * time.Second
+	if req.NetworkTimeoutMs > 0 {
+		timeout = time.Duration(req.NetworkTimeoutMs) * time.Millisecond
+	}
+
+	cfg := &scanner.ScanConfig{
+		TargetCIDRs:      req.TargetCIDRs,
+		SelectedPorts:    req.SelectedPorts,
+		ConcurrencyLimit: concurrency,
+		MaxRateLimit:     req.MaxRateLimit,
+		NetworkTimeout:   timeout,
+		ProbeAttempts:    req.ProbeAttempts,
+		TargetMode:       req.TargetMode,
+		TargetSNI:        req.TargetSNI,
+		WebSocketHost:    req.WebSocketHost,
+		WebSocketPath:    req.WebSocketPath,
+		RequireWS:        req.RequireWS,
+		EnableNeighbors:  req.EnableNeighbors,
+		TopLimit:         req.TopLimit,
+	}
+
+	if len(cfg.SelectedPorts) == 0 {
+		cfg.SelectedPorts = []int{443}
+	}
+	if cfg.ProbeAttempts <= 0 {
+		cfg.ProbeAttempts = 1
+	}
+	if cfg.TargetMode == "" {
+		cfg.TargetMode = "http"
+	}
+
+	engine := scanner.GetEngine()
+	if err := engine.StartScan(context.Background(), cfg); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "scanning started"})
+}
+
+// StopNetworkScannerSweep handles POST /api/v2ray/scanner/stop
+func (h *V2RayHandler) StopNetworkScannerSweep(c *gin.Context) {
+	scanner.GetEngine().CancelActiveScan()
+	c.JSON(http.StatusOK, gin.H{"status": "scanning stopped"})
+}
+
+// GetNetworkScannerLiveTelemetry handles GET /api/v2ray/scanner/stats
+func (h *V2RayHandler) GetNetworkScannerLiveTelemetry(c *gin.Context) {
+	engine := scanner.GetEngine()
+	stats := engine.GetLiveStats()
+	c.JSON(http.StatusOK, gin.H{
+		"is_running": engine.IsRunning(),
+		"tested":     stats.Tested,
+		"healthy":    stats.Healthy,
+		"failed":     stats.Failed,
+		"in_flight":  stats.InFlight,
+	})
+}
+
 
 // RunDetailedSpeedTest handles POST /api/v2ray/client/speed-test
 func (h *V2RayHandler) RunDetailedSpeedTest(c *gin.Context) {
@@ -1563,4 +1779,40 @@ func (h *V2RayHandler) HandleMCP(c *gin.Context) {
 func (h *V2RayHandler) ServeWebDAV(c *gin.Context) {
 	handler := &core.WebDAVHandler{LogDir: "logs"}
 	handler.ServeHTTP(c.Writer, c.Request)
+}
+
+// GetCoreTemplate handles GET /api/v2ray/client/core-template
+func (h *V2RayHandler) GetCoreTemplate(c *gin.Context) {
+	coreName := c.Query("core")
+	if coreName == "" {
+		coreName = "xray"
+	}
+	
+	var setting models.V2RayClientSetting
+	key := "core_template_" + coreName
+	if err := db.DB.Where("key = ?", key).First(&setting).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{"template": ""})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"template": setting.Value})
+}
+
+// SaveCoreTemplate handles POST /api/v2ray/client/core-template
+func (h *V2RayHandler) SaveCoreTemplate(c *gin.Context) {
+	var req struct {
+		Core     string `json:"core"`
+		Template string `json:"template"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	key := "core_template_" + req.Core
+	var setting models.V2RayClientSetting
+	db.DB.Where("key = ?", key).FirstOrCreate(&setting, models.V2RayClientSetting{Key: key})
+	setting.Value = req.Template
+	db.DB.Save(&setting)
+
+	c.JSON(http.StatusOK, gin.H{"status": "saved"})
 }

@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"clever-connect/internal/db"
 	"clever-connect/internal/models"
 	"clever-connect/internal/v2ray/compiler"
 	"clever-connect/internal/v2ray/core"
@@ -286,6 +287,10 @@ func TestProfile(cfg models.V2RayClientConfig, socksPort, httpPort int, measureS
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec+10)*time.Second)
 	defer cancel()
 
+	if abs, err := filepath.Abs(binPath); err == nil {
+		binPath = abs
+	}
+
 	cmd := exec.CommandContext(ctx, binPath, "run", "-c", tempPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	absBinDir, err := filepath.Abs(filepath.Dir(binPath))
@@ -326,14 +331,21 @@ func TestProfile(cfg models.V2RayClientConfig, socksPort, httpPort int, measureS
 	}
 
 	time.Sleep(200 * time.Millisecond)
-	medianMs, err := MeasureMedianRTT("127.0.0.1", socksPort, "http://www.gstatic.com/generate_204", 3*time.Second)
+	testURL := "http://www.gstatic.com/generate_204"
+	if db.DB != nil {
+		var setting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "tester_test_url").First(&setting).Error; err == nil && setting.Value != "" {
+			testURL = setting.Value
+		}
+	}
+	medianMs, statusCode, err := MeasureMedianRTT("127.0.0.1", socksPort, testURL, 3*time.Second)
 	if err != nil {
 		res.Error = "Latency probe failed: " + err.Error()
 		return res
 	}
 
 	res.RelayMs = medianMs
-	res.HTTPStatus = 204
+	res.HTTPStatus = statusCode
 	res.OK = true
 
 	if res.OK {
@@ -353,10 +365,11 @@ func TestProfile(cfg models.V2RayClientConfig, socksPort, httpPort int, measureS
 }
 
 // MeasureMedianRTT runs 3 probes to a test URL via a proxy and takes the median RTT
-func MeasureMedianRTT(socksHost string, socksPort int, testURL string, timeout time.Duration) (int, error) {
+func MeasureMedianRTT(socksHost string, socksPort int, testURL string, timeout time.Duration) (int, int, error) {
 	client := socksHTTPClient(socksHost, socksPort, timeout)
 	var rtts []time.Duration
 	successCount := 0
+	lastStatusCode := 200
 
 	for i := 0; i < 3; i++ {
 		t0 := time.Now()
@@ -369,6 +382,7 @@ func MeasureMedianRTT(socksHost string, socksPort int, testURL string, timeout t
 		resp, err := client.Do(req)
 		if err == nil {
 			rtts = append(rtts, time.Since(t0))
+			lastStatusCode = resp.StatusCode
 			resp.Body.Close()
 			successCount++
 		} else {
@@ -377,7 +391,7 @@ func MeasureMedianRTT(socksHost string, socksPort int, testURL string, timeout t
 	}
 
 	if successCount == 0 {
-		return -1, fmt.Errorf("all probes failed")
+		return -1, -1, fmt.Errorf("all probes failed")
 	}
 
 	// Sort RTTs (3 items)
@@ -393,10 +407,10 @@ func MeasureMedianRTT(socksHost string, socksPort int, testURL string, timeout t
 
 	median := rtts[1]
 	if median >= timeout && successCount < 2 {
-		return -1, fmt.Errorf("majority of probes failed")
+		return -1, -1, fmt.Errorf("majority of probes failed")
 	}
 
-	return int(median.Milliseconds()), nil
+	return int(median.Milliseconds()), lastStatusCode, nil
 }
 
 // MassTestProfiles runs tests concurrently across multiple profiles

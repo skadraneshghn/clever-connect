@@ -202,8 +202,19 @@ func DeleteAllClientConfigs() error {
 	return err
 }
 
-// ListClientConfigs returns configs with optional search, pagination, and subscription filtering.
-func ListClientConfigs(search string, subscriptionID *uint, offset, limit int) ([]models.V2RayClientConfig, int) {
+// ConfigFilter contains options to filter configurations in PebbleDB
+type ConfigFilter struct {
+	Search         string   `json:"search"`
+	SubscriptionID *uint    `json:"subscription_id"`
+	Protocol       string   `json:"protocol"`
+	Network        string   `json:"network"`
+	Port           int      `json:"port"`
+	PingStatus     string   `json:"ping_status"` // "all", "pass", "fail"
+	SortBy         string   `json:"sort_by"`     // "priority", "speed" or "latency"
+}
+
+// ListClientConfigs returns configs with advanced filtering and pagination.
+func ListClientConfigs(filter ConfigFilter, offset, limit int) ([]models.V2RayClientConfig, int) {
 	var all []models.V2RayClientConfig
 	
 	iter, err := DB.NewIter(nil)
@@ -212,20 +223,44 @@ func ListClientConfigs(search string, subscriptionID *uint, offset, limit int) (
 	}
 	defer iter.Close()
 
-	searchLower := ""
-	if search != "" {
-		searchLower = strings.ToLower(search)
-	}
+	searchLower := strings.ToLower(strings.TrimSpace(filter.Search))
+	protoLower := strings.ToLower(strings.TrimSpace(filter.Protocol))
+	netLower := strings.ToLower(strings.TrimSpace(filter.Network))
 
 	for iter.First(); iter.Valid(); iter.Next() {
 		var cfg models.V2RayClientConfig
 		if err := json.Unmarshal(iter.Value(), &cfg); err == nil {
-			// Filtering
-			if subscriptionID != nil && cfg.SubscriptionID != *subscriptionID {
+			// Subscription ID filter
+			if filter.SubscriptionID != nil && cfg.SubscriptionID != *filter.SubscriptionID {
 				continue
 			}
+			// Protocol filter
+			if protoLower != "" && strings.ToLower(cfg.Protocol) != protoLower {
+				continue
+			}
+			// Network filter
+			if netLower != "" && strings.ToLower(cfg.Network) != netLower {
+				continue
+			}
+			// Port filter
+			if filter.Port > 0 && cfg.Port != filter.Port {
+				continue
+			}
+			// Ping Status filter
+			if filter.PingStatus != "" && filter.PingStatus != "all" {
+				if filter.PingStatus == "pass" && cfg.LatencyMs <= 0 {
+					continue
+				}
+				if filter.PingStatus == "fail" && cfg.LatencyMs > 0 {
+					continue
+				}
+			}
+			// Generic text search (name, address, uuid)
 			if searchLower != "" {
-				if !strings.Contains(strings.ToLower(cfg.Name), searchLower) && !strings.Contains(strings.ToLower(cfg.Address), searchLower) {
+				nameMatch := strings.Contains(strings.ToLower(cfg.Name), searchLower)
+				addrMatch := strings.Contains(strings.ToLower(cfg.Address), searchLower)
+				uuidMatch := strings.Contains(strings.ToLower(cfg.UUID), searchLower)
+				if !nameMatch && !addrMatch && !uuidMatch {
 					continue
 				}
 			}
@@ -233,27 +268,66 @@ func ListClientConfigs(search string, subscriptionID *uint, offset, limit int) (
 		}
 	}
 
-	// Sort by priority asc, then name asc
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].Priority == all[j].Priority {
-			return all[i].Name < all[j].Name
-		}
-		return all[i].Priority < all[j].Priority
-	})
+	// Sort by chosen field
+	if filter.SortBy == "speed" || filter.SortBy == "latency" {
+		sort.Slice(all, func(i, j int) bool {
+			li := all[i].LatencyMs
+			lj := all[j].LatencyMs
+			if li <= 0 && lj <= 0 {
+				return all[i].Name < all[j].Name
+			}
+			if li <= 0 {
+				return false
+			}
+			if lj <= 0 {
+				return true
+			}
+			if li == lj {
+				return all[i].Name < all[j].Name
+			}
+			return li < lj
+		})
+	} else {
+		// Sort by priority asc, then name asc
+		sort.Slice(all, func(i, j int) bool {
+			if all[i].Priority == all[j].Priority {
+				return all[i].Name < all[j].Name
+			}
+			return all[i].Priority < all[j].Priority
+		})
+	}
 
 	total := len(all)
 
 	// Apply pagination
-	if offset >= total {
-		return []models.V2RayClientConfig{}, total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
 	if limit > 0 {
+		if offset >= total {
+			return []models.V2RayClientConfig{}, total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
 		return all[offset:end], total
 	}
 
 	return all, total
 }
+
+// DeleteFailedClientConfigs deletes all configs with latency_ms < 0 (i.e. -1 for failed)
+func DeleteFailedClientConfigs() (int, error) {
+	configs, _ := ListClientConfigs(ConfigFilter{}, 0, 0)
+	count := 0
+	batch := DB.NewBatch()
+	for _, cfg := range configs {
+		if cfg.LatencyMs < 0 {
+			key := []byte(fmt.Sprintf("%d", cfg.ID))
+			batch.Delete(key, pebble.Sync)
+			count++
+		}
+	}
+	err := batch.Commit(pebble.Sync)
+	batch.Close()
+	return count, err
+}
+
