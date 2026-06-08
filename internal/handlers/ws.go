@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"encoding/json"
 	"math/rand"
 	"net/http"
@@ -58,26 +59,183 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 		"ip", c.ClientIP(),
 	)
 
+	// Channel to signal handler exit
+	doneChan := make(chan struct{})
+
+	// Registry listener
+	clientID := fmt.Sprintf("ws-main-%d", time.Now().UnixNano())
+	telemetryChan := make(chan gin.H, 200)
+
+	scanner.GetEngine().RegisterListener(clientID, func(stats scanner.JobStats, event string, details interface{}) {
+		select {
+		case telemetryChan <- gin.H{
+			"type":  "scanner:telemetry",
+			"event": event,
+			"stats": stats,
+			"data":  details,
+		}:
+		default:
+		}
+	})
+	defer func() {
+		scanner.GetEngine().UnregisterListener(clientID)
+		if h.cfg.AppMode == "client" && scanner.GetEngine().IsRunning() {
+			logger.Info("WS", "User disconnected, stopping active scan sweep")
+			scanner.GetEngine().CancelActiveScan()
+		}
+	}()
+
+	// Read loop (to handle inbound actions like scanner:start, scanner:stop)
+	go func() {
+		defer close(doneChan)
+		for {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			var incoming struct {
+				Type string          `json:"type"`
+				Data json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal(message, &incoming); err != nil {
+				continue
+			}
+
+			switch incoming.Type {
+			case "scanner:start":
+				var req struct {
+					TargetCIDRs      []string `json:"target_cidrs"`
+					SelectedPorts    []int    `json:"selected_ports"`
+					ConcurrencyLimit int      `json:"concurrency_limit"`
+					MaxRateLimit     float64  `json:"max_rate_limit"`
+					NetworkTimeoutMs int      `json:"network_timeout_ms"`
+					ProbeAttempts    int      `json:"probe_attempts"`
+					TargetMode       string   `json:"target_mode"`
+					TargetSNI        string   `json:"target_sni"`
+					WebSocketHost    string   `json:"websocket_host"`
+					WebSocketPath    string   `json:"websocket_path"`
+					RequireWS        bool     `json:"require_ws"`
+					EnableNeighbors  bool     `json:"enable_neighbors"`
+					TopLimit         int      `json:"top_limit"`
+					TotalTargetCount int      `json:"total_target_count"`
+					Retry            bool     `json:"retry"`
+				}
+				if err := json.Unmarshal(incoming.Data, &req); err == nil {
+					var scanCfg scanner.ScanConfig
+					if req.Retry {
+						var saved models.V2RayScannerConfig
+						if db.DB != nil && db.DB.First(&saved, 1).Error == nil {
+							scanCfg = scanner.ScanConfig{
+								TargetCIDRs:      []string(saved.TargetCIDRs),
+								SelectedPorts:    []int(saved.Ports),
+								ConcurrencyLimit: saved.ConcurrencyLimit,
+								MaxRateLimit:     saved.MaxRateLimit,
+								NetworkTimeout:   time.Duration(saved.NetworkTimeoutSec) * time.Second,
+								ProbeAttempts:    saved.ProbeAttempts,
+								TargetMode:       saved.TargetMode,
+								TargetSNI:        saved.TargetSNI,
+								WebSocketHost:    saved.WebSocketHost,
+								WebSocketPath:    saved.WebSocketPath,
+								RequireWS:        saved.RequireWS,
+								EnableNeighbors:  saved.EnableNeighbors,
+								TopLimit:         saved.TopLimit,
+								TotalTargetCount: saved.TotalTargetCount,
+							}
+						}
+					} else {
+						if db.DB != nil {
+							dbCfg := models.V2RayScannerConfig{
+								ConcurrencyLimit:  req.ConcurrencyLimit,
+								TotalTargetCount:  req.TotalTargetCount,
+								NetworkTimeoutSec: req.NetworkTimeoutMs / 1000,
+								ProbeAttempts:     req.ProbeAttempts,
+								Ports:             models.IntArray(req.SelectedPorts),
+								TargetCIDRs:       models.StringArray(req.TargetCIDRs),
+								TargetMode:        req.TargetMode,
+								TargetSNI:         req.TargetSNI,
+								WebSocketHost:     req.WebSocketHost,
+								WebSocketPath:     req.WebSocketPath,
+								RequireWS:         req.RequireWS,
+								EnableNeighbors:   req.EnableNeighbors,
+								MaxRateLimit:      req.MaxRateLimit,
+								TopLimit:          req.TopLimit,
+							}
+							dbCfg.ID = 1
+							db.DB.Save(&dbCfg)
+						}
+
+						scanCfg = scanner.ScanConfig{
+							TargetCIDRs:      req.TargetCIDRs,
+							SelectedPorts:    req.SelectedPorts,
+							ConcurrencyLimit: req.ConcurrencyLimit,
+							MaxRateLimit:     req.MaxRateLimit,
+							NetworkTimeout:   time.Duration(req.NetworkTimeoutMs) * time.Millisecond,
+							ProbeAttempts:    req.ProbeAttempts,
+							TargetMode:       req.TargetMode,
+							TargetSNI:        req.TargetSNI,
+							WebSocketHost:    req.WebSocketHost,
+							WebSocketPath:    req.WebSocketPath,
+							RequireWS:        req.RequireWS,
+							EnableNeighbors:  req.EnableNeighbors,
+							TopLimit:         req.TopLimit,
+							TotalTargetCount: req.TotalTargetCount,
+						}
+					}
+
+					if scanCfg.NetworkTimeout <= 0 {
+						scanCfg.NetworkTimeout = 5 * time.Second
+					}
+					_ = scanner.GetEngine().StartScan(c.Request.Context(), &scanCfg)
+				}
+			case "scanner:stop":
+				scanner.GetEngine().CancelActiveScan()
+			case "scanner:telemetry":
+				stats := scanner.GetEngine().GetLiveStats()
+				resp := gin.H{
+					"type":  "scanner:telemetry",
+					"event": "scanner.init",
+					"stats": stats,
+				}
+				_ = conn.WriteJSON(resp)
+			}
+		}
+	}()
+
+	// Write loop
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	// Initial Total counters
 	totalDownload := 8120.0
 	totalUpload := 2450.0
-	messageCount := 0
 
-	// Loop streaming telemetries
+	// 250ms Rate-Limited Dispatcher for high-frequency updates
+	rateTicker := time.NewTicker(250 * time.Millisecond)
+	defer rateTicker.Stop()
+
+	var pendingTelemetry gin.H
+	var lastSentTelemetry time.Time
+
 	for {
 		select {
+		case <-doneChan:
+			return
+		case msg := <-telemetryChan:
+			pendingTelemetry = msg
+		case <-rateTicker.C:
+			if pendingTelemetry != nil && time.Since(lastSentTelemetry) >= 250*time.Millisecond {
+				if err := conn.WriteJSON(pendingTelemetry); err != nil {
+					return
+				}
+				pendingTelemetry = nil
+				lastSentTelemetry = time.Now()
+			}
 		case <-ticker.C:
 			var msg interface{}
-
 			if h.cfg.AppMode == "client" {
-				// Client Telemetry
-				downloadSpeed := float64(rand.Intn(80) + 10) // 10 to 90 MB/s
-				uploadSpeed := float64(rand.Intn(20) + 2)    // 2 to 22 MB/s
-				latency := rand.Intn(15) + 35               // 35 to 50 ms
-
+				downloadSpeed := float64(rand.Intn(80) + 10)
+				uploadSpeed := float64(rand.Intn(20) + 2)
+				latency := rand.Intn(15) + 35
 				totalDownload += downloadSpeed / 10
 				totalUpload += uploadSpeed / 10
 
@@ -90,28 +248,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 					"latency":        latency,
 					"soroush_tunnel": soroush.GetStatus(),
 				}
-
-				if scanner.GetEngine().IsRunning() {
-					stats := scanner.GetEngine().GetLiveStats()
-					telemetryMsg := gin.H{
-						"event": "scanner.telemetry.update",
-						"data": gin.H{
-							"tested":    stats.Tested,
-							"healthy":   stats.Healthy,
-							"failed":    stats.Failed,
-							"in_flight": stats.InFlight,
-						},
-					}
-					if err := conn.WriteJSON(telemetryMsg); err != nil {
-						logger.Warn("WS", "Connection closed — scanner telemetry write failed",
-							"error", err.Error(),
-							"ip", c.ClientIP(),
-						)
-						return
-					}
-				}
 			} else {
-				// Server Telemetry
 				sysStats := GetSystemStatsData()
 				cpu := int(sysStats.CPUPercent)
 				memory := int(sysStats.MemPercent)
@@ -126,7 +263,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 				var activeSchedulerCount int64
 				db.DB.Model(&models.SchedulerJob{}).Where("status = ?", "running").Count(&activeSchedulerCount)
 
-				downloadSpeed := float64(rand.Intn(120) + 40) // Combined node aggregate speed
+				downloadSpeed := float64(rand.Intn(120) + 40)
 				uploadSpeed := float64(rand.Intn(40) + 10)
 
 				totalDownload += downloadSpeed / 100
@@ -181,23 +318,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			}
 
 			if err := conn.WriteJSON(msg); err != nil {
-				logger.Warn("WS", "Connection closed — write failed",
-					"error", err.Error(),
-					"ip", c.ClientIP(),
-					"messagesSent", messageCount,
-				)
 				return
-			}
-			messageCount++
-
-			// Log periodic telemetry summary (every 30 messages ≈ 1 minute)
-			if messageCount%30 == 0 {
-				logger.Debug("WS", "Telemetry stream active",
-					"ip", c.ClientIP(),
-					"messagesSent", messageCount,
-					"totalDown", totalDownload,
-					"totalUp", totalUpload,
-				)
 			}
 		}
 	}
