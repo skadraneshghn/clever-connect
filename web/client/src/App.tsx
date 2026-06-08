@@ -65,7 +65,7 @@ const ProtectedLayout: React.FC = () => {
     'v2ray-nodes': ['V2Ray', 'Nodes Manager'],
     'v2ray-core': ['V2Ray', 'Core Configuration'],
     'v2ray-routing': ['V2Ray', 'Routing Rules'],
-    'v2ray-scanner': ['V2Ray', 'Scanner Engine'],
+    'v2ray-scanner': ['Network Tools', 'Scanner Engine'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap

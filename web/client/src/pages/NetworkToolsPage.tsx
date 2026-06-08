@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   FiRefreshCw, FiPlay, FiSquare, FiDownload, FiUpload, FiSettings, 
-  FiSearch, FiClipboard, FiAlertCircle, FiCheckCircle, FiFileText, FiList
+  FiSearch, FiClipboard, FiAlertCircle, FiCheckCircle, FiFileText, FiList,
+  FiTerminal, FiTrash2
 } from 'react-icons/fi';
 import { useAuthStore } from '../store/authStore';
 
@@ -34,7 +35,11 @@ export const NetworkToolsPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'latency' | 'speed' | 'time'>('latency');
 
-  // Input states
+  // Logs state
+  const [scannerLogs, setScannerLogs] = useState<string[]>([]);
+  const [logsFilter, setLogsFilter] = useState('');
+
+  // Input states (ScanConfig alignment)
   const [rawConfigLink, setRawConfigLink] = useState('');
   const [targetCidrs, setTargetCidrs] = useState('108.162.192.0/18\n103.21.244.0/22');
   const [selectedPorts, setSelectedPorts] = useState('443, 80, 8443');
@@ -49,12 +54,21 @@ export const NetworkToolsPage: React.FC = () => {
   const [requireWs, setRequireWs] = useState(true);
   const [enableNeighbors, setEnableNeighbors] = useState(true);
   const [topLimit, setTopLimit] = useState(20);
+  const [totalTargetCount, setTotalTargetCount] = useState(0);
 
   // Drag and drop state
   const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
   const dragCounter = useRef(0);
+  const logsContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto scroll logic for logs terminal
+  useEffect(() => {
+    if (logsContainerRef.current) {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+    }
+  }, [scannerLogs]);
 
   // Parse connection link logic
   const handleParseLink = () => {
@@ -118,6 +132,15 @@ export const NetworkToolsPage: React.FC = () => {
             setIsScanning((msg.stats.in_flight || 0) > 0 || (msg.event === 'scanner.progress'));
           }
 
+          if (msg.event === 'scanner.log' && msg.data) {
+            setScannerLogs((prev) => [...prev, String(msg.data)]);
+          }
+
+          if (msg.event === 'scanner.error' && msg.data) {
+            setMessage({ type: 'error', text: String(msg.data) });
+            setScannerLogs((prev) => [...prev, `[ERROR] ${msg.data}`]);
+          }
+
           if (msg.event === 'scanner.candidate' && msg.data) {
             const c = msg.data;
             setCandidates((prev) => {
@@ -141,7 +164,6 @@ export const NetworkToolsPage: React.FC = () => {
           if (msg.event === 'scanner.finished') {
             setIsScanning(false);
             setMessage({ type: 'success', text: 'Scanning operations completed.' });
-            // Fetch final list
             fetchSavedConfigs();
           }
         }
@@ -171,7 +193,7 @@ export const NetworkToolsPage: React.FC = () => {
       });
       if (response.ok) {
         const list = await response.json();
-        const parsed: ScannedCandidate[] = list
+        const parsed: ScannedCandidate[] = (list.data || list)
           .filter((item: any) => item.name && item.name.startsWith('Discovered-'))
           .map((item: any) => ({
             ip: item.address,
@@ -189,6 +211,54 @@ export const NetworkToolsPage: React.FC = () => {
     }
   };
 
+  const downloadTxt = () => {
+    const healthyList = candidates
+      .filter((c) => c.status === 'healthy')
+      .map((c) => `${c.ip}:${c.port}`)
+      .join('\n');
+    if (!healthyList) {
+      setMessage({ type: 'info', text: 'No verified candidates available to download.' });
+      return;
+    }
+    const blob = new Blob([healthyList], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'healthy_ips.txt';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setMessage({ type: 'success', text: 'Downloaded healthy_ips.txt successfully.' });
+  };
+
+  const downloadCsv = () => {
+    const healthy = candidates.filter((c) => c.status === 'healthy');
+    if (healthy.length === 0) {
+      setMessage({ type: 'info', text: 'No verified candidates available to download.' });
+      return;
+    }
+    const headers = ['IP', 'Port', 'Protocol', 'Latency(ms)', 'Speed(Mbps)'];
+    const rows = healthy.map((c) => [
+      c.ip,
+      c.port,
+      c.protocol,
+      c.latencyMs,
+      c.speedMbps.toFixed(2)
+    ]);
+    const content = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'healthy_ips.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setMessage({ type: 'success', text: 'Downloaded healthy_ips.csv successfully.' });
+  };
+
   useEffect(() => {
     fetchSavedConfigs();
   }, []);
@@ -196,7 +266,6 @@ export const NetworkToolsPage: React.FC = () => {
   // Keyboard shortcut listener (c key to copy results)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't copy if user is typing in forms
       const tag = document.activeElement?.tagName.toLowerCase();
       if (tag === 'input' || tag === 'textarea') {
         return;
@@ -224,15 +293,23 @@ export const NetworkToolsPage: React.FC = () => {
   }, [candidates]);
 
   // Start scanning routine
-  const handleStartScan = (retry = false) => {
+  const handleStartScan = (retry = false, scanDiscoveredOnly = false) => {
     if (!wsConnected || !ws) {
       setMessage({ type: 'error', text: 'WebSocket connection not ready!' });
       return;
     }
 
-    setMessage({ type: 'info', text: retry ? 'Retrying last configuration scan sweep...' : 'Launching network scan sweep...' });
+    let msg = 'Launching network scan sweep...';
+    if (retry) {
+      msg = 'Retrying last configuration scan sweep...';
+    } else if (scanDiscoveredOnly) {
+      msg = 'Rerunning scan on saved healthy discovered list...';
+    }
+
+    setMessage({ type: 'info', text: msg });
     setIsScanning(true);
     setCandidates([]);
+    setScannerLogs([]); // Clear logs for the new sweep session
     
     const ports = selectedPorts
       .split(',')
@@ -260,12 +337,37 @@ export const NetworkToolsPage: React.FC = () => {
         require_ws: requireWs,
         enable_neighbors: enableNeighbors,
         top_limit: Number(topLimit),
-        total_target_count: 0,
+        total_target_count: Number(totalTargetCount),
         retry: retry,
+        scan_discovered_only: scanDiscoveredOnly,
       },
     };
 
     ws.send(JSON.stringify(payload));
+  };
+
+  const handleCleanupDiscovered = async () => {
+    if (!confirm('Are you sure you want to clean up all failed candidates from the database?')) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/v2ray/client/configs/failed', {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMessage({ type: 'success', text: `Cleaned up ${data.count || 0} failed candidates.` });
+        fetchSavedConfigs();
+      } else {
+        setMessage({ type: 'error', text: 'Failed to clean up configs.' });
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: 'Network error during cleanup.' });
+    }
   };
 
   const handleStopScan = () => {
@@ -312,7 +414,6 @@ export const NetworkToolsPage: React.FC = () => {
       reader.onload = (event) => {
         const text = event.target?.result as string;
         if (text) {
-          // Clean empty lines and extract valid entries
           const lines = text
             .split('\n')
             .map((line) => line.trim())
@@ -326,7 +427,7 @@ export const NetworkToolsPage: React.FC = () => {
     }
   };
 
-  // Filtering and sorting logic
+  // Filtering and sorting logic for candidates
   const filteredCandidates = candidates
     .filter((c) => {
       const q = searchQuery.toLowerCase().trim();
@@ -338,32 +439,40 @@ export const NetworkToolsPage: React.FC = () => {
       } else if (sortBy === 'speed') {
         return b.speedMbps - a.speedMbps;
       }
-      return 0; // standard order
+      return 0;
     });
 
+  // Filtering logs
+  const filteredLogs = scannerLogs.filter((log) => {
+    return log.toLowerCase().includes(logsFilter.toLowerCase());
+  });
+
   return (
-    <div style={{ padding: '32px 40px', background: 'var(--color-brand-bg, #0f111a)', minHeight: '100vh', fontFamily: '"Inter", sans-serif' }}>
+    <div className="page-container animate-fade-in" style={{ padding: '4px 0', fontFamily: 'var(--font-sans)' }}>
       
       {/* Header section */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
-          <h1 style={{ fontSize: 24, fontWeight: 'bold', color: 'var(--color-brand-heading, #fff)', margin: 0, letterSpacing: '-0.5px' }}>V2Ray Network Scanner</h1>
-          <p style={{ fontSize: 13, color: 'var(--color-brand-muted, #94a3b8)', margin: '4px 0 0' }}>
-            High-velocity deep-packet inspection (DPI) bypass verification engine. Emulates browser handshakes and tests proxy throughput in memory.
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>
+            V2Ray Network Scanner
+          </h1>
+          <p style={{ fontSize: 12, color: 'var(--color-brand-text)', margin: '4px 0 0' }}>
+            High-velocity deep-packet inspection (DPI) bypass verification engine. Emulates TLS and WebSocket handshakes.
           </p>
         </div>
+        
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', background: 'var(--color-brand-light)', border: '1px solid var(--color-brand-border)', borderRadius: 20 }}>
             <span style={{ display: 'flex', width: 8, height: 8, position: 'relative' }}>
-              <span style={{ position: 'absolute', width: '100%', height: '100%', borderRadius: '50%', backgroundColor: wsConnected ? '#4ade80' : '#f87171', opacity: 0.7, animation: 'ping 1s cubic-bezier(0, 0, 0.2, 1) infinite' }} />
-              <span style={{ position: 'relative', width: '100%', height: '100%', borderRadius: '50%', backgroundColor: wsConnected ? '#22c55e' : '#ef4444' }} />
+              <span style={{ position: 'absolute', width: '100%', height: '100%', borderRadius: '50%', backgroundColor: wsConnected ? 'var(--color-brand-green)' : 'var(--color-brand-red)', opacity: 0.7, animation: 'ping 1s cubic-bezier(0, 0, 0.2, 1) infinite' }} />
+              <span style={{ position: 'relative', width: '100%', height: '100%', borderRadius: '50%', backgroundColor: wsConnected ? 'var(--color-brand-green)' : 'var(--color-brand-red)' }} />
             </span>
-            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-brand-heading, #fff)' }}>
-              {wsConnected ? 'Telemetry Stream Connected' : 'Offline'}
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+              {wsConnected ? 'Telemetry Connected' : 'Offline'}
             </span>
           </div>
           <button className="btn btn--sm btn--secondary" onClick={fetchSavedConfigs}>
-            <FiRefreshCw style={{ marginRight: 6 }} /> Refresh
+            <FiRefreshCw style={{ marginRight: 6 }} /> Refresh List
           </button>
         </div>
       </div>
@@ -372,15 +481,15 @@ export const NetworkToolsPage: React.FC = () => {
         <div style={{
           padding: '12px 18px',
           borderRadius: 10,
-          marginBottom: 24,
+          marginBottom: 20,
           fontSize: 13,
           fontWeight: 500,
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          background: message.type === 'success' ? 'rgba(34, 197, 94, 0.1)' : message.type === 'error' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.1)',
-          border: message.type === 'success' ? '1px solid rgba(34, 197, 94, 0.2)' : message.type === 'error' ? '1px solid rgba(239, 68, 68, 0.2)' : '1px solid rgba(59, 130, 246, 0.2)',
-          color: message.type === 'success' ? '#4ade80' : message.type === 'error' ? '#f87171' : '#60a5fa'
+          background: message.type === 'success' ? 'var(--color-brand-light)' : 'rgba(239, 68, 68, 0.08)',
+          border: '1px solid var(--color-brand-border)',
+          color: message.type === 'success' ? 'var(--color-brand)' : '#ef4444'
         }}>
           {message.type === 'success' ? <FiCheckCircle size={16} /> : <FiAlertCircle size={16} />}
           <span>{message.text}</span>
@@ -388,231 +497,298 @@ export const NetworkToolsPage: React.FC = () => {
       )}
 
       {/* Summary Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 24 }}>
-        <div style={{ background: 'var(--color-brand-card, #111827)', border: '1px solid var(--color-brand-border, rgba(255,255,255,0.05))', borderRadius: 12, padding: '16px 20px' }}>
-          <div style={{ fontSize: 12, color: 'var(--color-brand-muted, #94a3b8)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Tested Targets</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-brand-heading, #fff)', marginTop: 8 }}>{stats.tested}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 20 }}>
+        <div className="g-card" style={{ padding: '14px 20px', borderLeft: '3px solid var(--color-brand-text)' }}>
+          <div style={{ fontSize: 11, color: 'var(--color-brand-text)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Tested Targets</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-brand-heading)', marginTop: 4 }}>{stats.tested}</div>
         </div>
-        <div style={{ background: 'var(--color-brand-card, #111827)', border: '1px solid var(--color-brand-border, rgba(255,255,255,0.05))', borderRadius: 12, padding: '16px 20px' }}>
-          <div style={{ fontSize: 12, color: '#22c55e', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Healthy Nodes</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: '#4ade80', marginTop: 8 }}>{stats.healthy}</div>
+        <div className="g-card" style={{ padding: '14px 20px', borderLeft: '3px solid var(--color-brand-green)' }}>
+          <div style={{ fontSize: 11, color: 'var(--color-brand-green)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Healthy Nodes</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-brand-green)', marginTop: 4 }}>{stats.healthy}</div>
         </div>
-        <div style={{ background: 'var(--color-brand-card, #111827)', border: '1px solid var(--color-brand-border, rgba(255,255,255,0.05))', borderRadius: 12, padding: '16px 20px' }}>
-          <div style={{ fontSize: 12, color: '#ef4444', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Failed Nodes</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: '#f87171', marginTop: 8 }}>{stats.failed}</div>
+        <div className="g-card" style={{ padding: '14px 20px', borderLeft: '3px solid var(--color-brand-red)' }}>
+          <div style={{ fontSize: 11, color: 'var(--color-brand-red)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Failed Nodes</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-brand-red)', marginTop: 4 }}>{stats.failed}</div>
         </div>
-        <div style={{ background: 'var(--color-brand-card, #111827)', border: '1px solid var(--color-brand-border, rgba(255,255,255,0.05))', borderRadius: 12, padding: '16px 20px' }}>
-          <div style={{ fontSize: 12, color: '#3b82f6', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Active Workers</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: '#60a5fa', marginTop: 8 }}>{stats.in_flight}</div>
+        <div className="g-card" style={{ padding: '14px 20px', borderLeft: '3px solid var(--color-brand-blue)' }}>
+          <div style={{ fontSize: 11, color: 'var(--color-brand-blue)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Active Workers</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-brand-blue)', marginTop: 4 }}>{stats.in_flight}</div>
         </div>
       </div>
 
-      {/* Main Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: 24 }}>
+      {/* Main Grid Layout */}
+      <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 20 }}>
         
-        {/* Left column: inputs / parser controls */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        {/* Left Column: Tuner Configuration Controls */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           
-          {/* Link Parser box */}
-          <div className="g-card" style={{ padding: 20, background: 'var(--color-brand-card, #111827)', border: '1px solid var(--color-brand-border, rgba(255,255,255,0.05))', borderRadius: 12 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-brand-heading, #fff)', margin: '0 0 12px' }}>Connection Link Parser</h3>
+          {/* Card 1: Connection Link Parser */}
+          <div className="g-card" style={{ padding: 16 }}>
+            <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', margin: '0 0 12px' }}>Connection Link Parser</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <input
                 type="text"
                 value={rawConfigLink}
                 onChange={(e) => setRawConfigLink(e.target.value)}
-                placeholder="Paste VLESS / Trojan outbound URL here..."
+                placeholder="Paste vless:// or trojan:// outbound URL..."
                 style={{
                   width: '100%',
-                  padding: '10px 12px',
-                  borderRadius: 8,
+                  padding: '8px 12px',
+                  borderRadius: 6,
                   border: '1px solid var(--color-brand-border)',
-                  background: 'var(--color-brand-bg, #0f111a)',
+                  background: 'var(--color-brand-bg)',
                   color: 'var(--color-brand-heading)',
-                  fontSize: 12
+                  fontSize: 12,
+                  outline: 'none'
                 }}
               />
               <button className="btn btn--primary btn--sm" onClick={handleParseLink} style={{ justifyContent: 'center' }}>
-                Parse Outbound Link
+                Parse URI Link
               </button>
             </div>
           </div>
 
-          {/* Sweep parameter inputs */}
-          <div className="g-card" style={{ padding: 20, background: 'var(--color-brand-card, #111827)', border: '1px solid var(--color-brand-border, rgba(255,255,255,0.05))', borderRadius: 12 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-brand-heading, #fff)', margin: '0 0 16px' }}>Scanner Parameters</h3>
+          {/* Card 2: Sweep Parameters Tuning */}
+          <div className="g-card" style={{ padding: 16 }}>
+            <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', margin: '0 0 16px' }}>Scan Settings Center</h3>
             
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               
-              {/* Drag and Drop Area */}
+              {/* Drag and Drop Zone */}
               <div 
                 onDragEnter={handleDragEnter}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
                 style={{
-                  border: isDragging ? '2px dashed var(--color-brand, #3b82f6)' : '1px dashed var(--color-brand-border)',
-                  background: isDragging ? 'rgba(59, 130, 246, 0.05)' : 'rgba(255,255,255,0.01)',
+                  border: isDragging ? '2px dashed var(--color-brand)' : '1px dashed var(--color-brand-border)',
+                  background: isDragging ? 'var(--color-brand-light)' : 'rgba(255,255,255,0.01)',
                   borderRadius: 8,
-                  padding: 16,
+                  padding: 14,
                   textAlign: 'center',
                   cursor: 'pointer',
-                  transition: 'all 0.2s ease-in-out'
+                  transition: 'all 0.15s ease'
                 }}
               >
-                <FiUpload size={20} style={{ color: 'var(--color-brand-muted)', marginBottom: 8 }} />
-                <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-brand-heading)' }}>
-                  Drag & Drop CIDR Target File
+                <FiUpload size={18} style={{ color: 'var(--color-brand-muted)', marginBottom: 6 }} />
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                  Drag & Drop CIDR Subnets File
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', marginTop: 4 }}>
-                  Supports plain text (.txt) and CSV files
+                <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', marginTop: 2 }}>
+                  Accepts standard text (.txt) files
                 </div>
               </div>
 
+              {/* CIDRs subnets textarea */}
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Target CIDR Subnets</label>
+                <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Target Subnet CIDRs</label>
                 <textarea
                   value={targetCidrs}
                   onChange={(e) => setTargetCidrs(e.target.value)}
-                  rows={4}
+                  rows={3}
                   style={{
                     width: '100%',
                     padding: '8px 10px',
-                    borderRadius: 8,
+                    borderRadius: 6,
                     border: '1px solid var(--color-brand-border)',
                     background: 'var(--color-brand-bg)',
-                    fontSize: 12,
+                    fontSize: 11,
                     color: 'var(--color-brand-heading)',
-                    resize: 'none'
+                    resize: 'none',
+                    outline: 'none'
                   }}
+                  placeholder="One subnet per line (e.g. 1.1.1.0/24)"
                 />
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {/* Ports and Concurrency */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Ports (comma-separated)</label>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Ports</label>
                   <input
                     type="text"
                     value={selectedPorts}
                     onChange={(e) => setSelectedPorts(e.target.value)}
-                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
                   />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Concurrency Limit</label>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Concurrency</label>
                   <input
                     type="number"
                     value={concurrencyLimit}
                     onChange={(e) => setConcurrencyLimit(Number(e.target.value))}
-                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
                   />
                 </div>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {/* Timeout and Max Rate */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Timeout (ms)</label>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Timeout (ms)</label>
                   <input
                     type="number"
                     value={networkTimeoutMs}
                     onChange={(e) => setNetworkTimeoutMs(Number(e.target.value))}
-                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
                   />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Max Rate Limit</label>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Max Rate Limit</label>
                   <input
                     type="number"
                     value={maxRateLimit}
                     onChange={(e) => setMaxRateLimit(Number(e.target.value))}
-                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
                   />
                 </div>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {/* Attempts and Top Limit */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Target Mode</label>
-                  <select
-                    value={targetMode}
-                    onChange={(e: any) => setTargetMode(e.target.value)}
-                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
-                  >
-                    <option value="ws">WebSocket (WS)</option>
-                    <option value="tls">Direct TLS</option>
-                    <option value="http">HTTP Direct</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Attempts</label>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Probe Attempts</label>
                   <input
                     type="number"
                     value={probeAttempts}
                     onChange={(e) => setProbeAttempts(Number(e.target.value))}
-                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Top Save Limit</label>
+                  <input
+                    type="number"
+                    value={topLimit}
+                    onChange={(e) => setTopLimit(Number(e.target.value))}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
                   />
                 </div>
               </div>
 
+              {/* Total Target Count */}
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Target SNI</label>
+                <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Total Targets Cap (0 = Unlimited)</label>
+                <input
+                  type="number"
+                  value={totalTargetCount}
+                  onChange={(e) => setTotalTargetCount(Number(e.target.value))}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                />
+              </div>
+
+              {/* Target Mode */}
+              <div>
+                <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Target Mode</label>
+                <select
+                  value={targetMode}
+                  onChange={(e: any) => setTargetMode(e.target.value)}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                >
+                  <option value="ws">WebSocket (WS)</option>
+                  <option value="tls">Direct TLS</option>
+                  <option value="http">HTTP Direct</option>
+                </select>
+              </div>
+
+              {/* Target SNI */}
+              <div>
+                <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Target SNI Fingerprint</label>
                 <input
                   type="text"
                   value={targetSni}
                   onChange={(e) => setTargetSni(e.target.value)}
-                  style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
                 />
               </div>
 
+              {/* Conditionally reveal WebSocket Host and Path settings */}
               {targetMode === 'ws' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, borderLeft: '2px solid var(--color-brand)', paddingLeft: 10 }}>
                   <div>
-                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>WS Host</label>
+                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>WS Host Header</label>
                     <input
                       type="text"
                       value={websocketHost}
                       onChange={(e) => setWebsocketHost(e.target.value)}
-                      style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
                     />
                   </div>
                   <div>
-                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>WS Path</label>
+                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>WS Query Path</label>
                     <input
                       type="text"
                       value={websocketPath}
                       onChange={(e) => setWebsocketPath(e.target.value)}
-                      style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
                     />
                   </div>
                 </div>
               )}
 
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
-                <div>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Auto-Discovery of Neighbors</span>
-                  <p style={{ margin: 0, fontSize: 10, color: 'var(--color-brand-muted)' }}>Scan +/- 5 adjacent subnets hosts.</p>
+              {/* Checkboxes parameters */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Require WS Nodes</span>
+                    <p style={{ margin: 0, fontSize: 9, color: 'var(--color-brand-muted)' }}>Scan WebSocket-compatible ports only.</p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={requireWs}
+                    onChange={(e) => setRequireWs(e.target.checked)}
+                    style={{ width: 14, height: 14, accentColor: 'var(--color-brand)' }}
+                  />
                 </div>
-                <input
-                  type="checkbox"
-                  checked={enableNeighbors}
-                  onChange={(e) => setEnableNeighbors(e.target.checked)}
-                  style={{ width: 16, height: 16, accentColor: 'var(--color-brand)' }}
-                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Auto-Discover Neighbors</span>
+                    <p style={{ margin: 0, fontSize: 9, color: 'var(--color-brand-muted)' }}>Probes adjacent subnets of healthy IPs.</p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={enableNeighbors}
+                    onChange={(e) => setEnableNeighbors(e.target.checked)}
+                    style={{ width: 14, height: 14, accentColor: 'var(--color-brand)' }}
+                  />
+                </div>
               </div>
 
-              <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+              {/* Action sweeps control buttons */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
                 {isScanning ? (
-                  <button className="btn" onClick={handleStopScan} style={{ flex: 1, justifyContent: 'center', background: '#ef4444', borderColor: '#ef4444', color: '#fff' }}>
-                    <FiSquare style={{ marginRight: 6 }} /> Stop Scan
+                  <button className="btn" onClick={handleStopScan} style={{ flex: 1, justifyContent: 'center', background: 'var(--color-brand-red)', borderColor: 'var(--color-brand-red)', color: '#fff' }}>
+                    <FiSquare style={{ marginRight: 6 }} /> Stop Sweep
                   </button>
                 ) : (
                   <>
-                    <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 1, justifyContent: 'center' }}>
-                      <FiPlay style={{ marginRight: 6 }} /> Start Sweep
-                    </button>
-                    <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Run the last saved settings scanner sweep">
-                      Retry Last
-                    </button>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 1, justifyContent: 'center' }}>
+                        <FiPlay style={{ marginRight: 4 }} /> Start Sweep
+                      </button>
+                      <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Reload and rerun historical settings from Pebble DB cache">
+                        Retry Last
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button 
+                        className="btn btn--secondary" 
+                        onClick={() => handleStartScan(false, true)} 
+                        style={{ flex: 1, justifyContent: 'center' }}
+                        title="Scan only previously saved discovered nodes to verify if they are still healthy"
+                      >
+                        <FiRefreshCw style={{ marginRight: 4 }} /> Rescan Healthy
+                      </button>
+                      <button 
+                        className="btn btn--secondary" 
+                        onClick={handleCleanupDiscovered} 
+                        style={{ flex: 1, justifyContent: 'center', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                        title="Delete failed discovered nodes from database"
+                      >
+                        <FiTrash2 style={{ marginRight: 4 }} /> Cleanup Failed
+                      </button>
+                    </div>
                   </>
                 )}
               </div>
@@ -621,141 +797,243 @@ export const NetworkToolsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Right column: results grid table */}
-        <div className="g-card" style={{ padding: 24, background: 'var(--color-brand-card, #111827)', border: '1px solid var(--color-brand-border, rgba(255,255,255,0.05))', borderRadius: 12, display: 'flex', flexDirection: 'column' }}>
+        {/* Right Column: Split panel (Top: Candidates list table, Bottom: Live logs terminal) */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           
-          {/* Controls line */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, gap: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <FiList style={{ color: 'var(--color-brand)', fontSize: 18 }} />
-              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Discovered Proxy Candidates ({filteredCandidates.length})</span>
-            </div>
-            
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{ position: 'relative', width: 220 }}>
-                <FiSearch style={{ position: 'absolute', left: 10, top: 10, color: 'var(--color-brand-muted)' }} />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search candidate IP/port..."
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px 8px 30px',
-                    borderRadius: 8,
-                    border: '1px solid var(--color-brand-border)',
-                    background: 'var(--color-brand-bg, #0f111a)',
-                    color: 'var(--color-brand-heading)',
-                    fontSize: 12
-                  }}
-                />
+          {/* Top card: Discovered Candidates table */}
+          <div className="g-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', minHeight: 320, maxHeight: 420 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <FiList style={{ color: 'var(--color-brand)', fontSize: 16 }} />
+                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                  Discovered Proxy Candidates ({filteredCandidates.length})
+                </span>
               </div>
+              
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ position: 'relative', width: 180 }}>
+                  <FiSearch style={{ position: 'absolute', left: 8, top: 8, color: 'var(--color-brand-muted)', fontSize: 12 }} />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search candidates..."
+                    style={{
+                      width: '100%',
+                      padding: '5px 10px 5px 26px',
+                      borderRadius: 6,
+                      border: '1px solid var(--color-brand-border)',
+                      background: 'var(--color-brand-bg)',
+                      color: 'var(--color-brand-heading)',
+                      fontSize: 11,
+                      outline: 'none'
+                    }}
+                  />
+                </div>
 
-              <select
-                value={sortBy}
-                onChange={(e: any) => setSortBy(e.target.value)}
-                style={{
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  border: '1px solid var(--color-brand-border)',
-                  background: 'var(--color-brand-bg, #0f111a)',
-                  color: 'var(--color-brand-heading)',
-                  fontSize: 12
-                }}
-              >
-                <option value="latency">Sort by Latency</option>
-                <option value="speed">Sort by Speed</option>
-                <option value="time">Sort by Date</option>
-              </select>
+                <select
+                  value={sortBy}
+                  onChange={(e: any) => setSortBy(e.target.value)}
+                  style={{
+                    padding: '5px 8px',
+                    borderRadius: 6,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-bg)',
+                    color: 'var(--color-brand-heading)',
+                    fontSize: 11,
+                    outline: 'none'
+                  }}
+                >
+                  <option value="latency">Latency</option>
+                  <option value="speed">Speed</option>
+                  <option value="time">Time Added</option>
+                </select>
 
-              <button 
-                className="btn btn--sm btn--secondary" 
-                onClick={() => {
-                  const healthyList = candidates
-                    .filter((c) => c.status === 'healthy')
-                    .map((c) => `${c.ip}:${c.port}`)
-                    .join('\n');
-                  if (healthyList) {
-                    navigator.clipboard.writeText(healthyList);
-                    setMessage({ type: 'success', text: 'Copied verified IPs to clipboard!' });
-                  } else {
-                    setMessage({ type: 'info', text: 'No verified candidates available to copy.' });
-                  }
-                }}
-                title="Copy all healthy candidates (shortcut: C)"
-              >
-                <FiClipboard /> Copy All
-              </button>
+                <button 
+                  className="btn btn--sm btn--secondary" 
+                  onClick={() => {
+                    const healthyList = candidates
+                      .filter((c) => c.status === 'healthy')
+                      .map((c) => `${c.ip}:${c.port}`)
+                      .join('\n');
+                    if (healthyList) {
+                      navigator.clipboard.writeText(healthyList);
+                      setMessage({ type: 'success', text: 'Copied all verified IP:port endpoints to clipboard.' });
+                    } else {
+                      setMessage({ type: 'info', text: 'No verified candidates available to copy.' });
+                    }
+                  }}
+                  title="Copy verified hosts (shortcut: C)"
+                >
+                  <FiClipboard /> Copy All
+                </button>
+
+                <button 
+                  className="btn btn--sm btn--secondary" 
+                  onClick={downloadTxt}
+                  title="Export healthy results to TXT file"
+                >
+                  <FiFileText /> TXT
+                </button>
+
+                <button 
+                  className="btn btn--sm btn--secondary" 
+                  onClick={downloadCsv}
+                  title="Export healthy results to CSV file"
+                >
+                  <FiDownload /> CSV
+                </button>
+              </div>
+            </div>
+
+            {/* Candidates Table List */}
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, textAlign: 'left' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Endpoint IP</th>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Port</th>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Mode</th>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Latency</th>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Speed</th>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Status</th>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600, textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredCandidates.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} style={{ padding: 30, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+                        <FiFileText size={20} style={{ marginBottom: 8, opacity: 0.3 }} />
+                        <div>No candidates found.</div>
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredCandidates.map((c, idx) => (
+                      <tr key={idx} style={{ borderBottom: '1px solid var(--color-brand-border)', verticalAlign: 'middle' }}>
+                        <td style={{ padding: '8px 6px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>{c.ip}</td>
+                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-heading)' }}>{c.port}</td>
+                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-muted)' }}>
+                          <span style={{ fontSize: 9, padding: '2px 5px', background: 'var(--color-brand-light)', border: '1px solid var(--color-brand-border)', borderRadius: 4, textTransform: 'uppercase' }}>
+                            {c.protocol}
+                          </span>
+                        </td>
+                        <td style={{ padding: '8px 6px', fontWeight: 600, color: c.latencyMs > 0 ? 'var(--color-brand-green)' : 'var(--color-brand-red)' }}>
+                          {c.latencyMs > 0 ? `${c.latencyMs} ms` : '-'}
+                        </td>
+                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-blue)', fontWeight: 600 }}>
+                          {c.speedMbps > 0 ? `${c.speedMbps.toFixed(2)} Mbps` : '-'}
+                        </td>
+                        <td style={{ padding: '8px 6px' }}>
+                          <span style={{
+                            fontSize: 9,
+                            fontWeight: 600,
+                            padding: '3px 8px',
+                            borderRadius: 12,
+                            background: c.status === 'healthy' ? 'rgba(34,197,94,0.1)' : c.status === 'failed' ? 'rgba(239,68,68,0.1)' : 'rgba(59,130,246,0.1)',
+                            color: c.status === 'healthy' ? 'var(--color-brand-green)' : c.status === 'failed' ? 'var(--color-brand-red)' : 'var(--color-brand-blue)',
+                          }}>
+                            {c.status.toUpperCase()}
+                          </span>
+                        </td>
+                        <td style={{ padding: '8px 6px', textAlign: 'right' }}>
+                          <button
+                            className="btn btn--xs btn--secondary"
+                            onClick={() => {
+                              navigator.clipboard.writeText(`${c.ip}:${c.port}`);
+                              setMessage({ type: 'success', text: `Copied ${c.ip}:${c.port} to clipboard.` });
+                            }}
+                            style={{ padding: '3px 6px', fontSize: 10 }}
+                          >
+                            Copy IP
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
 
-          {/* Results table */}
-          <div style={{ flex: 1, overflowY: 'auto', maxHeight: 600 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
-                  <th style={{ padding: '12px 8px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Endpoint Address</th>
-                  <th style={{ padding: '12px 8px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Port</th>
-                  <th style={{ padding: '12px 8px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Protocol</th>
-                  <th style={{ padding: '12px 8px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Latency</th>
-                  <th style={{ padding: '12px 8px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Throughput</th>
-                  <th style={{ padding: '12px 8px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Status</th>
-                  <th style={{ padding: '12px 8px', color: 'var(--color-brand-muted)', fontWeight: 600, textAlign: 'right' }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredCandidates.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} style={{ padding: 40, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
-                      <FiFileText size={24} style={{ marginBottom: 12, opacity: 0.3 }} />
-                      <div>No discovered candidates matching filters.</div>
-                      <div style={{ fontSize: 11, marginTop: 4 }}>Drag-and-drop subnets list or click "Start Sweep" to begin.</div>
-                    </td>
-                  </tr>
-                ) : (
-                  filteredCandidates.map((c, idx) => (
-                    <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)', verticalAlign: 'middle' }}>
-                      <td style={{ padding: '12px 8px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>{c.ip}</td>
-                      <td style={{ padding: '12px 8px', color: 'var(--color-brand-heading)' }}>{c.port}</td>
-                      <td style={{ padding: '12px 8px', color: 'var(--color-brand-muted)' }}>
-                        <span style={{ fontSize: 10, padding: '2px 6px', background: 'rgba(255,255,255,0.05)', borderRadius: 4, textTransform: 'uppercase' }}>
-                          {c.protocol}
-                        </span>
-                      </td>
-                      <td style={{ padding: '12px 8px', fontWeight: 500, color: c.latencyMs > 0 ? '#4ade80' : '#ef4444' }}>
-                        {c.latencyMs > 0 ? `${c.latencyMs} ms` : '-'}
-                      </td>
-                      <td style={{ padding: '12px 8px', color: '#60a5fa', fontWeight: 500 }}>
-                        {c.speedMbps > 0 ? `${c.speedMbps.toFixed(2)} Mbps` : '-'}
-                      </td>
-                      <td style={{ padding: '12px 8px' }}>
-                        <span style={{
-                          fontSize: 10,
-                          fontWeight: 600,
-                          padding: '3px 8px',
-                          borderRadius: 20,
-                          background: c.status === 'healthy' ? 'rgba(34,197,94,0.1)' : c.status === 'failed' ? 'rgba(239,68,68,0.1)' : 'rgba(59,130,246,0.1)',
-                          color: c.status === 'healthy' ? '#22c55e' : c.status === 'failed' ? '#ef4444' : '#3b82f6',
-                        }}>
-                          {c.status.toUpperCase()}
-                        </span>
-                      </td>
-                      <td style={{ padding: '12px 8px', textAlign: 'right' }}>
-                        <button
-                          className="btn btn--xs btn--secondary"
-                          onClick={() => {
-                            navigator.clipboard.writeText(`${c.ip}:${c.port}`);
-                            setMessage({ type: 'success', text: `Copied endpoint address ${c.ip}:${c.port} to clipboard.` });
-                          }}
-                        >
-                          Copy
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+          {/* Bottom card: Live Monospace Scanner Logs Terminal */}
+          <div className="g-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', height: 280 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <FiTerminal style={{ color: 'var(--color-brand)', fontSize: 16 }} />
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                  Live Diagnostic Scanner Logs
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="text"
+                  placeholder="Filter logs..."
+                  value={logsFilter}
+                  onChange={(e) => setLogsFilter(e.target.value)}
+                  style={{
+                    width: 140,
+                    padding: '4px 8px',
+                    borderRadius: 6,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-bg)',
+                    fontSize: 11,
+                    color: 'var(--color-brand-heading)',
+                    outline: 'none'
+                  }}
+                />
+                <button 
+                  className="btn btn--sm btn--secondary" 
+                  onClick={() => setScannerLogs([])}
+                  title="Clear scanner logs"
+                  style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                >
+                  <FiTrash2 size={12} /> Clear
+                </button>
+              </div>
+            </div>
+
+            {/* Terminal logs content */}
+            <div
+              ref={logsContainerRef}
+              style={{
+                flex: 1,
+                background: 'var(--color-brand-bg)',
+                border: '1px solid var(--color-brand-border)',
+                borderRadius: 8,
+                padding: 12,
+                fontFamily: 'Fira Code, Courier, monospace',
+                fontSize: 11,
+                color: 'var(--color-brand-text)',
+                overflowY: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4
+              }}
+            >
+              {filteredLogs.length === 0 ? (
+                <div style={{ color: 'var(--color-brand-muted)', textAlign: 'center', marginTop: 70 }}>
+                  No diagnostic scanner logs available. Click "Start Sweep" to stream.
+                </div>
+              ) : (
+                filteredLogs.map((log, idx) => {
+                  let color = 'var(--color-brand-text)';
+                  if (log.includes('[ERROR]') || log.includes('Critical:') || log.includes('Failed candidate:')) {
+                    color = 'var(--color-brand-red)';
+                  } else if (log.includes('Healthy candidate:') || log.includes('Success')) {
+                    color = 'var(--color-brand-green)';
+                  } else if (log.includes('Initiating') || log.includes('Parameters:')) {
+                    color = 'var(--color-brand)';
+                  }
+                  
+                  return (
+                    <div key={idx} style={{ wordBreak: 'break-all', whiteSpace: 'pre-wrap', color }}>
+                      {log}
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
 
         </div>

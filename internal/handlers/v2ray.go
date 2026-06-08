@@ -1381,34 +1381,32 @@ func (h *V2RayHandler) TestMassProfiles(c *gin.Context) {
 
 // ScanCDN handles POST /api/v2ray/client/scan-cdn
 func (h *V2RayHandler) ScanCDN(c *gin.Context) {
-	var opts scanner.CDNConfigsOptions
-	if err := c.ShouldBindJSON(&opts); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	state, err := scanner.StartScan(opts)
-	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, state.Snapshot())
+	c.JSON(http.StatusOK, gin.H{
+		"phase":       3,
+		"ping_total":  0,
+		"ping_done":   0,
+		"speed_total": 0,
+		"speed_done":  0,
+		"rows":        []string{},
+		"finished":    true,
+	})
 }
 
 // GetScanStatus handles GET /api/v2ray/client/scan-cdn/status
 func (h *V2RayHandler) GetScanStatus(c *gin.Context) {
-	state := scanner.GetActiveScan()
-	if state == nil {
-		c.JSON(http.StatusOK, gin.H{"status": "idle"})
-		return
-	}
-	c.JSON(http.StatusOK, state.Snapshot())
+	c.JSON(http.StatusOK, gin.H{
+		"phase":       3,
+		"ping_total":  0,
+		"ping_done":   0,
+		"speed_total": 0,
+		"speed_done":  0,
+		"rows":        []string{},
+		"finished":    true,
+	})
 }
 
 // StopScan handles POST /api/v2ray/client/scan-cdn/stop
 func (h *V2RayHandler) StopScan(c *gin.Context) {
-	scanner.CancelActiveScan()
 	c.JSON(http.StatusOK, gin.H{"status": "stopped"})
 }
 
@@ -1541,7 +1539,7 @@ func (h *V2RayHandler) StartNetworkScannerSweep(c *gin.Context) {
 	}
 
 	engine := scanner.GetEngine()
-	if err := engine.StartScan(context.Background(), cfg); err != nil {
+	if err := engine.StartScan(context.Background(), cfg, req.Retry); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
