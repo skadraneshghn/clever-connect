@@ -459,7 +459,7 @@ type V2RayRoutingRule struct {
 type V2RaySecurityEvent struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	Timestamp   time.Time `json:"timestamp" gorm:"index"`
-	IPAddress   string    `json:"ip_address" gorm:"index"`
+	IPAddress   string    `json:"ip_address" gorm:"size:100;index"`
 	EventType   string    `json:"event_type"` // failed_auth, port_scan
 	ActionTaken string    `json:"action_taken"` // banned, warned
 }
@@ -587,9 +587,9 @@ type V2RayScannerConfig struct {
 
 type Domain struct {
 	ID            string    `gorm:"primaryKey" json:"id"` // UUID
-	DomainName    string    `gorm:"uniqueIndex;not null" json:"domain_name"`
-	Status        string    `json:"status" gorm:"index"` // pending, checking, online, offline, timeout, nxdomain
-	Category      string    `json:"category" gorm:"index;default:'ALL'"` // Category name, default 'ALL'
+	DomainName    string    `gorm:"size:191;uniqueIndex;not null" json:"domain_name"`
+	Status        string    `json:"status" gorm:"size:50;index"` // pending, checking, online, offline, timeout, nxdomain
+	Category      string    `json:"category" gorm:"size:100;index;default:'ALL'"` // Category name, default 'ALL'
 	IPAddresses   string    `json:"ip_addresses"`
 	HTTPStatus    int       `json:"http_status"`
 	LatencyMs     int       `json:"latency_ms" gorm:"index"`
