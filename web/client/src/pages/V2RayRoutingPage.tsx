@@ -19,7 +19,7 @@ export const V2RayRoutingPage: React.FC = () => {
   
   // GUI rules state
   const [guiRules, setGuiRules] = useState<any[]>([
-    { outboundTag: 'direct', domain: 'geosite:ir', ip: 'geoip:ir', port: '', network: 'any' }
+    { outboundTag: 'direct', domain: 'regexp:.*\\.ir$', ip: 'geoip:ir', port: '', network: 'any' }
   ]);
 
   // Fronting Maps state

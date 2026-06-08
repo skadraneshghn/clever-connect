@@ -3,6 +3,7 @@ package compiler
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strings"
 
 	"clever-connect/internal/db"
@@ -28,8 +29,10 @@ type StatsConfig struct{}
 
 // PolicyUserConfig defines system level policy settings
 type PolicyUserConfig struct {
-	StatsUserUplink   bool `json:"statsUserUplink"`
-	StatsUserDownlink bool `json:"statsUserDownlink"`
+	StatsInboundUplink    bool `json:"statsInboundUplink,omitempty"`
+	StatsInboundDownlink  bool `json:"statsInboundDownlink,omitempty"`
+	StatsOutboundUplink   bool `json:"statsOutboundUplink,omitempty"`
+	StatsOutboundDownlink bool `json:"statsOutboundDownlink,omitempty"`
 }
 
 // PolicyLevelConfig defines user level policy settings
@@ -66,12 +69,14 @@ type Certificate struct {
 
 // WsSettings defines websocket transport settings
 type WsSettings struct {
-	Path string `json:"path"`
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // GrpcSettings defines grpc transport settings
 type GrpcSettings struct {
 	ServiceName string `json:"serviceName"`
+	MultiMode   bool   `json:"multiMode,omitempty"`
 }
 
 // SockoptConfig defines socket options
@@ -86,28 +91,38 @@ type EchConfig struct {
 	Config  string `json:"config,omitempty"`
 }
 
+// PaddingSettings defines TLS padding configurations
+type PaddingSettings struct {
+	Type string `json:"type,omitempty"`
+	Size string `json:"size,omitempty"`
+}
+
 // TlsSettings defines tls settings
 type TlsSettings struct {
-	ServerName   string        `json:"serverName,omitempty"`
-	Certificates []Certificate `json:"certificates,omitempty"`
-	MinVersion   string        `json:"minVersion,omitempty"`
-	Alpn         []string      `json:"alpn,omitempty"`
-	Fingerprint  string        `json:"fingerprint,omitempty"`
-	Ech          *EchConfig    `json:"ech,omitempty"`
+	ServerName    string           `json:"serverName,omitempty"`
+	Certificates  []Certificate    `json:"certificates,omitempty"`
+	MinVersion    string           `json:"minVersion,omitempty"`
+	Alpn          []string         `json:"alpn,omitempty"`
+	Fingerprint   string           `json:"fingerprint,omitempty"`
+	Ech           *EchConfig       `json:"ech,omitempty"`
+	AllowInsecure bool             `json:"allowInsecure,omitempty"`
+	Padding       *PaddingSettings `json:"padding,omitempty"`
 }
 
 // RealitySettings defines REALITY settings
 type RealitySettings struct {
-	Show        bool     `json:"show"`
-	Dest        string   `json:"dest"`
-	ServerNames []string `json:"serverNames"`
-	PrivateKey  string   `json:"privateKey,omitempty"`
-	PublicKey   string   `json:"publicKey,omitempty"`
-	MinClient   string   `json:"minClient,omitempty"`
-	MaxClient   string   `json:"maxClient,omitempty"`
-	ShortIds    []string `json:"shortIds"`
-	ServerName  string   `json:"serverName,omitempty"`
-	Fingerprint string   `json:"fingerprint,omitempty"`
+	Show        bool             `json:"show"`
+	Dest        string           `json:"dest"`
+	ServerNames []string         `json:"serverNames"`
+	PrivateKey  string           `json:"privateKey,omitempty"`
+	PublicKey   string           `json:"publicKey,omitempty"`
+	MinClient   string           `json:"minClient,omitempty"`
+	MaxClient   string           `json:"maxClient,omitempty"`
+	ShortIds    []string         `json:"shortIds"`
+	ServerName  string           `json:"serverName,omitempty"`
+	Fingerprint string           `json:"fingerprint,omitempty"`
+	SpiderX     string           `json:"spiderX,omitempty"`
+	Padding     *PaddingSettings `json:"padding,omitempty"`
 }
 
 // FragmentConfig defines fragmentation settings for uTLS desync/evasion
@@ -115,6 +130,30 @@ type FragmentConfig struct {
 	Packets  string `json:"packets,omitempty"`
 	Length   string `json:"length,omitempty"`
 	Interval string `json:"interval,omitempty"`
+}
+
+// TcpSettings defines tcp transport settings
+type TcpSettings struct {
+	Header map[string]interface{} `json:"header,omitempty"`
+}
+
+// KcpSettings defines mKCP transport settings
+type KcpSettings struct {
+	Mtu              int                    `json:"mtu,omitempty"`
+	Tti              int                    `json:"tti,omitempty"`
+	UplinkCapacity   int                    `json:"uplinkCapacity,omitempty"`
+	DownlinkCapacity int                    `json:"downlinkCapacity,omitempty"`
+	Congestion       bool                   `json:"congestion,omitempty"`
+	ReadBufferSize   int                    `json:"readBufferSize,omitempty"`
+	WriteBufferSize  int                    `json:"writeBufferSize,omitempty"`
+	Header           map[string]interface{} `json:"header,omitempty"`
+}
+
+// QuicSettings defines quic transport settings
+type QuicSettings struct {
+	Security string                 `json:"security,omitempty"`
+	Key      string                 `json:"key,omitempty"`
+	Header   map[string]interface{} `json:"header,omitempty"`
 }
 
 // StreamSettings defines network and transport settings
@@ -125,6 +164,9 @@ type StreamSettings struct {
 	RealitySettings *RealitySettings `json:"realitySettings,omitempty"`
 	WsSettings      *WsSettings      `json:"wsSettings,omitempty"`
 	GrpcSettings    *GrpcSettings    `json:"grpcSettings,omitempty"`
+	TcpSettings     *TcpSettings     `json:"tcpSettings,omitempty"`
+	KcpSettings     *KcpSettings     `json:"kcpSettings,omitempty"`
+	QuicSettings    *QuicSettings    `json:"quicSettings,omitempty"`
 	Sockopt         *SockoptConfig   `json:"sockopt,omitempty"`
 	Fragment        *FragmentConfig  `json:"fragment,omitempty"`
 }
@@ -158,6 +200,7 @@ type OutboundConfig struct {
 // RoutingRule defines routing rules
 type RoutingRule struct {
 	Type        string   `json:"type"`
+	InboundTag  []string `json:"inboundTag,omitempty"`
 	Domain      []string `json:"domain,omitempty"`
 	IP          []string `json:"ip,omitempty"`
 	Port        string   `json:"port,omitempty"`
@@ -259,8 +302,10 @@ func compileServerConfigXray(
 				},
 			},
 			System: PolicyUserConfig{
-				StatsUserUplink:   true,
-				StatsUserDownlink: true,
+				StatsInboundUplink:    true,
+				StatsInboundDownlink:  true,
+				StatsOutboundUplink:   true,
+				StatsOutboundDownlink: true,
 			},
 		},
 		Inbounds: []InboundConfig{
@@ -461,7 +506,18 @@ func CompileClientConfig(
 	evasionEnabled bool,
 	tcpDecoySni string,
 ) ([]byte, error) {
-	coreName := core.GetSelectedCoreName()
+	return CompileClientConfigForCore(core.GetSelectedCoreName(), activeConfig, socksPort, httpPort, evasionEnabled, tcpDecoySni)
+}
+
+// CompileClientConfigForCore compiles the client-side local config JSON for a specific core
+func CompileClientConfigForCore(
+	coreName string,
+	activeConfig models.V2RayClientConfig,
+	socksPort int,
+	httpPort int,
+	evasionEnabled bool,
+	tcpDecoySni string,
+) ([]byte, error) {
 	if coreName == "sing-box" {
 		return CompileSingBoxClientConfig(activeConfig, socksPort, httpPort, evasionEnabled, tcpDecoySni)
 	}
@@ -478,6 +534,7 @@ func CompileClientConfig(
 	return configBytes, nil
 }
 
+
 // compileClientConfigXray compiles the client-side local Xray config JSON
 func compileClientConfigXray(
 	activeConfig models.V2RayClientConfig,
@@ -487,34 +544,108 @@ func compileClientConfigXray(
 	tcpDecoySni string,
 ) ([]byte, error) {
 
-	config := XrayConfig{
-		Log: &LogConfig{
-			LogLevel: "warning",
-		},
-		Inbounds: []InboundConfig{
-			// Local SOCKS5 proxy
-			{
-				Listen:   "127.0.0.1",
-				Port:     socksPort,
-				Protocol: "socks",
-				Settings: map[string]interface{}{
-					"auth": "noauth",
-					"udp":  true,
-				},
-				Tag: "socks-in",
+	var config XrayConfig
+	useTemplate := false
+
+	coreName := core.GetSelectedCoreName()
+	var setting models.V2RayClientSetting
+	key := "core_template_xray"
+	if coreName == "v2ray" {
+		key = "core_template_v2ray"
+	}
+
+	if db.DB != nil {
+		if err := db.DB.Where("key = ?", key).First(&setting).Error; err == nil && setting.Value != "" {
+			if json.Unmarshal([]byte(setting.Value), &config) == nil {
+				useTemplate = true
+			}
+		}
+	}
+
+	if !useTemplate {
+		config = XrayConfig{
+			Log: &LogConfig{
+				LogLevel: "warning",
 			},
-			// Local HTTP proxy
-			{
-				Listen:   "127.0.0.1",
-				Port:     httpPort,
-				Protocol: "http",
-				Settings: map[string]interface{}{
-					"allowRedirect": true,
-				},
-				Tag: "http-in",
+			Outbounds: []OutboundConfig{},
+		}
+	}
+
+	foundSocks := false
+	foundHttp := false
+	for i, in := range config.Inbounds {
+		if in.Tag == "socks-in" {
+			config.Inbounds[i].Port = socksPort
+			foundSocks = true
+		} else if in.Tag == "http-in" {
+			config.Inbounds[i].Port = httpPort
+			foundHttp = true
+		}
+	}
+
+	if !foundSocks {
+		config.Inbounds = append(config.Inbounds, InboundConfig{
+			Listen:   "127.0.0.1",
+			Port:     socksPort,
+			Protocol: "socks",
+			Settings: map[string]interface{}{
+				"auth": "noauth",
+				"udp":  true,
 			},
-		},
-		Outbounds: []OutboundConfig{},
+			Tag: "socks-in",
+		})
+	}
+
+	if !foundHttp {
+		config.Inbounds = append(config.Inbounds, InboundConfig{
+			Listen:   "127.0.0.1",
+			Port:     httpPort,
+			Protocol: "http",
+			Settings: map[string]interface{}{
+				"allowRedirect": true,
+			},
+			Tag: "http-in",
+		})
+	}
+
+	foundApiInbound := false
+	for _, in := range config.Inbounds {
+		if in.Tag == "api" {
+			foundApiInbound = true
+			break
+		}
+	}
+	if !foundApiInbound {
+		config.Inbounds = append(config.Inbounds, InboundConfig{
+			Listen:   "127.0.0.1",
+			Port:     10085,
+			Protocol: "dokodemo-door",
+			Settings: map[string]interface{}{
+				"address": "127.0.0.1",
+			},
+			Tag: "api",
+		})
+	}
+
+	// Inject Stats and API config
+	if config.Stats == nil {
+		config.Stats = &StatsConfig{}
+	}
+	if config.Api == nil {
+		config.Api = &ApiConfig{
+			Tag:      "api",
+			Services: []string{"StatsService", "LoggerService"},
+		}
+	}
+	if config.Policy == nil {
+		config.Policy = &PolicyConfig{}
+	}
+	// PolicyUserConfig is not a pointer, just set its fields directly
+	config.Policy.System = PolicyUserConfig{
+		StatsInboundUplink:    true,
+		StatsInboundDownlink:  true,
+		StatsOutboundUplink:   true,
+		StatsOutboundDownlink: true,
 	}
 
 	// ────────────────────────────────────────────────────────────────────────
@@ -591,15 +722,28 @@ func compileClientConfigXray(
 		config.Outbounds = append(config.Outbounds, CompileOutbound(activeConfig, evasionEnabled, "proxy"))
 	}
 
-	// Always append standard Direct and Block outbounds
-	config.Outbounds = append(config.Outbounds, OutboundConfig{
-		Protocol: "freedom",
-		Tag:      "direct",
-	})
-	config.Outbounds = append(config.Outbounds, OutboundConfig{
-		Protocol: "blackhole",
-		Tag:      "block",
-	})
+	foundDirect := false
+	foundBlock := false
+	for _, out := range config.Outbounds {
+		if out.Tag == "direct" {
+			foundDirect = true
+		} else if out.Tag == "block" || out.Tag == "blocked" {
+			foundBlock = true
+		}
+	}
+
+	if !foundDirect {
+		config.Outbounds = append(config.Outbounds, OutboundConfig{
+			Protocol: "freedom",
+			Tag:      "direct",
+		})
+	}
+	if !foundBlock {
+		config.Outbounds = append(config.Outbounds, OutboundConfig{
+			Protocol: "blackhole",
+			Tag:      "block",
+		})
+	}
 
 	// ────────────────────────────────────────────────────────────────────────
 	// 2. DNS SPLIT CONFIGURATION
@@ -612,18 +756,17 @@ func compileClientConfigXray(
 		}
 	}
 
-	config.DNS = &DnsConfig{
-		Servers: []interface{}{
-			DnsServerConfig{
-				Address: dohURL,
-				Domains: []string{"geosite:geolocation-!ir"},
+	if !useTemplate || config.DNS == nil {
+		config.DNS = &DnsConfig{
+			Servers: []interface{}{
+				dohURL,
+				DnsServerConfig{
+					Address: "8.8.8.8",
+					Domains: []string{"geosite:ir", "regexp:.*\\.ir$"},
+				},
+				"localhost",
 			},
-			DnsServerConfig{
-				Address: "8.8.8.8",
-				Domains: []string{"geosite:ir"},
-			},
-			"localhost",
-		},
+		}
 	}
 
 	// ────────────────────────────────────────────────────────────────────────
@@ -644,7 +787,7 @@ func compileClientConfigXray(
 	}
 
 	// Rules list
-	var rules []RoutingRule
+	rules := config.Routing.Rules
 
 	// Preset modes
 	switch routingMode {
@@ -665,7 +808,7 @@ func compileClientConfigXray(
 		// Bypass domestic Iranian websites and private local networks
 		rules = append(rules, RoutingRule{
 			Type:        "field",
-			Domain:      []string{"geosite:private", "geosite:ir"},
+			Domain:      []string{"geosite:private", "geosite:ir", "regexp:.*\\.ir$"},
 			OutboundTag: "direct",
 		})
 		rules = append(rules, RoutingRule{
@@ -683,7 +826,7 @@ func compileClientConfigXray(
 		})
 		rules = append(rules, RoutingRule{
 			Type:        "field",
-			Domain:      []string{"geosite:private", "geosite:ir"},
+			Domain:      []string{"geosite:private", "geosite:ir", "regexp:.*\\.ir$"},
 			OutboundTag: "direct",
 		})
 		rules = append(rules, RoutingRule{
@@ -741,6 +884,22 @@ func compileClientConfigXray(
 		})
 	}
 
+	foundApiRule := false
+	for _, r := range rules {
+		if r.OutboundTag == "api" {
+			foundApiRule = true
+			break
+		}
+	}
+	if !foundApiRule {
+		apiRule := RoutingRule{
+			Type:        "field",
+			InboundTag:  []string{"api"},
+			OutboundTag: "api",
+		}
+		rules = append([]RoutingRule{apiRule}, rules...)
+	}
+
 	config.Routing.Rules = rules
 
 	// Generate JSON config
@@ -782,16 +941,65 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 		if p, ok := dbTlsSettings["path"].(string); ok && p != "" {
 			path = p
 		}
+		headers := map[string]string{}
+		if h, ok := dbTlsSettings["host"].(string); ok && h != "" {
+			headers["Host"] = h
+		}
+		if hdrs, ok := dbTlsSettings["headers"].(map[string]interface{}); ok {
+			for k, v := range hdrs {
+				if vs, ok := v.(string); ok {
+					headers[k] = vs
+				}
+			}
+		}
+		var wsHeaders map[string]string
+		if len(headers) > 0 {
+			wsHeaders = headers
+		}
 		clientStreamSettings.WsSettings = &WsSettings{
-			Path: path,
+			Path:    path,
+			Headers: wsHeaders,
 		}
 	} else if activeConfig.Network == "grpc" {
 		svc := "TunService"
 		if s, ok := dbTlsSettings["serviceName"].(string); ok && s != "" {
 			svc = s
 		}
+		multiMode := false
+		if mm, ok := dbTlsSettings["multiMode"].(bool); ok {
+			multiMode = mm
+		}
 		clientStreamSettings.GrpcSettings = &GrpcSettings{
 			ServiceName: svc,
+			MultiMode:   multiMode,
+		}
+	} else if activeConfig.Network == "tcp" {
+		if tcpMap, ok := dbTlsSettings["tcpSettings"].(map[string]interface{}); ok {
+			var tcpSettings TcpSettings
+			if jsonBytes, err := json.Marshal(tcpMap); err == nil {
+				_ = json.Unmarshal(jsonBytes, &tcpSettings)
+				clientStreamSettings.TcpSettings = &tcpSettings
+			}
+		} else if headerMap, ok := dbTlsSettings["header"].(map[string]interface{}); ok {
+			clientStreamSettings.TcpSettings = &TcpSettings{
+				Header: headerMap,
+			}
+		}
+	} else if activeConfig.Network == "kcp" {
+		if kcpMap, ok := dbTlsSettings["kcpSettings"].(map[string]interface{}); ok {
+			var kcpSettings KcpSettings
+			if jsonBytes, err := json.Marshal(kcpMap); err == nil {
+				_ = json.Unmarshal(jsonBytes, &kcpSettings)
+				clientStreamSettings.KcpSettings = &kcpSettings
+			}
+		}
+	} else if activeConfig.Network == "quic" {
+		if quicMap, ok := dbTlsSettings["quicSettings"].(map[string]interface{}); ok {
+			var quicSettings QuicSettings
+			if jsonBytes, err := json.Marshal(quicMap); err == nil {
+				_ = json.Unmarshal(jsonBytes, &quicSettings)
+				clientStreamSettings.QuicSettings = &quicSettings
+			}
 		}
 	}
 
@@ -803,18 +1011,34 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 	evasionFingerprint := "chrome"
 	evasionFragment := true
 	evasionTcpFastOpen := true
+	evasionMixedCase := false
+	evasionPadding := false
 
-	if evasionEnabled && db.DB != nil {
+	if db.DB != nil {
 		var setting models.V2RayClientSetting
 		if err := db.DB.Where("key = ?", "evasion_fingerprint").First(&setting).Error; err == nil && setting.Value != "" {
 			evasionFingerprint = setting.Value
 		}
+		setting = models.V2RayClientSetting{}
 		if err := db.DB.Where("key = ?", "evasion_fragment").First(&setting).Error; err == nil {
 			evasionFragment = setting.Value == "true"
 		}
+		setting = models.V2RayClientSetting{}
 		if err := db.DB.Where("key = ?", "evasion_tcp_fast_open").First(&setting).Error; err == nil {
 			evasionTcpFastOpen = setting.Value == "true"
 		}
+		setting = models.V2RayClientSetting{}
+		if err := db.DB.Where("key = ?", "evasion_mixed_case").First(&setting).Error; err == nil {
+			evasionMixedCase = setting.Value == "true"
+		}
+		setting = models.V2RayClientSetting{}
+		if err := db.DB.Where("key = ?", "evasion_padding").First(&setting).Error; err == nil {
+			evasionPadding = setting.Value == "true"
+		}
+	}
+
+	if evasionPadding {
+		evasionFragment = false
 	}
 
 	if security == "reality" {
@@ -822,25 +1046,92 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 		pubKey, _ := dbTlsSettings["publicKey"].(string)
 		shortId, _ := dbTlsSettings["shortId"].(string)
 		sni, _ := dbTlsSettings["sni"].(string)
+		dest := ""
+		spiderX := ""
+		minClient := ""
+		maxClient := ""
 
-		clientRealitySettings = &RealitySettings{
-			Show:       false,
-			PublicKey:  pubKey,
-			ShortIds:   []string{shortId},
-			ServerName: sni,
+		if rMap, ok := dbTlsSettings["realitySettings"].(map[string]interface{}); ok {
+			if pk, ok := rMap["publicKey"].(string); ok && pk != "" { pubKey = pk }
+			if sid, ok := rMap["shortId"].(string); ok && sid != "" { shortId = sid }
+			if sn, ok := rMap["serverName"].(string); ok && sn != "" { sni = sn }
+			if d, ok := rMap["dest"].(string); ok { dest = d }
+			if sp, ok := rMap["spiderX"].(string); ok { spiderX = sp }
+			if minC, ok := rMap["minClient"].(string); ok { minClient = minC }
+			if maxC, ok := rMap["maxClient"].(string); ok { maxClient = maxC }
 		}
 
-		if evasionEnabled {
+		shortIds := []string{}
+		if shortId != "" {
+			shortIds = []string{shortId}
+		}
+
+		if evasionMixedCase && sni != "" {
+			sni = RandomizeCase(sni)
+		}
+
+		var paddingSettings *PaddingSettings
+		if evasionPadding {
+			paddingSettings = &PaddingSettings{
+				Type: "random",
+				Size: "100-500",
+			}
+		}
+
+		clientRealitySettings = &RealitySettings{
+			Show:        false,
+			PublicKey:   pubKey,
+			ShortIds:    shortIds,
+			ServerName:  sni,
+			Dest:        dest,
+			MinClient:   minClient,
+			MaxClient:   maxClient,
+			SpiderX:     spiderX,
+			Padding:     paddingSettings,
+		}
+
+		if evasionEnabled || evasionMixedCase || evasionPadding {
 			clientRealitySettings.Fingerprint = evasionFingerprint
 		}
 		clientStreamSettings.RealitySettings = clientRealitySettings
 	} else if security == "tls" {
 		clientStreamSettings.Security = "tls"
 		sni, _ := dbTlsSettings["sni"].(string)
-		clientTlsSettings = &TlsSettings{
-			ServerName: sni,
+		var alpn []string
+		allowInsecure := false
+		if tMap, ok := dbTlsSettings["tlsSettings"].(map[string]interface{}); ok {
+			if sn, ok := tMap["serverName"].(string); ok && sn != "" { sni = sn }
+			if alp, ok := tMap["alpn"].([]interface{}); ok {
+				for _, a := range alp {
+					if as, ok := a.(string); ok {
+						alpn = append(alpn, as)
+					}
+				}
+			}
+			if ins, ok := tMap["allowInsecure"].(bool); ok {
+				allowInsecure = ins
+			}
 		}
-		if evasionEnabled {
+
+		if evasionMixedCase && sni != "" {
+			sni = RandomizeCase(sni)
+		}
+
+		var paddingSettings *PaddingSettings
+		if evasionPadding {
+			paddingSettings = &PaddingSettings{
+				Type: "random",
+				Size: "100-500",
+			}
+		}
+
+		clientTlsSettings = &TlsSettings{
+			ServerName:    sni,
+			Alpn:          alpn,
+			AllowInsecure: allowInsecure,
+			Padding:       paddingSettings,
+		}
+		if evasionEnabled || evasionMixedCase || evasionPadding {
 			clientTlsSettings.Fingerprint = evasionFingerprint
 
 			// Encrypted Client Hello (ECH) support
@@ -933,6 +1224,14 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 
 	var outboundSettings map[string]interface{}
 	if activeConfig.Protocol == "vless" {
+		flowVal := "xtls-rprx-vision"
+		if f, ok := dbTlsSettings["flow"].(string); ok {
+			flowVal = f
+		}
+		encryptVal := "none"
+		if e, ok := dbTlsSettings["encryption"].(string); ok {
+			encryptVal = e
+		}
 		outboundSettings = map[string]interface{}{
 			"vnext": []map[string]interface{}{
 				{
@@ -941,14 +1240,26 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 					"users": []map[string]interface{}{
 						{
 							"id":         activeConfig.UUID,
-							"encryption": "none",
-							"flow":       "xtls-rprx-vision",
+							"encryption": encryptVal,
+							"flow":       flowVal,
 						},
 					},
 				},
 			},
 		}
 	} else if activeConfig.Protocol == "vmess" {
+		secVal := "auto"
+		if s, ok := dbTlsSettings["vmess_security"].(string); ok {
+			secVal = s
+		} else if s, ok := dbTlsSettings["security_vmess"].(string); ok {
+			secVal = s
+		}
+		alterIdVal := 0
+		if aid, ok := dbTlsSettings["alterId"].(float64); ok {
+			alterIdVal = int(aid)
+		} else if aid, ok := dbTlsSettings["alterId"].(int); ok {
+			alterIdVal = aid
+		}
 		outboundSettings = map[string]interface{}{
 			"vnext": []map[string]interface{}{
 				{
@@ -957,7 +1268,8 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 					"users": []map[string]interface{}{
 						{
 							"id":       activeConfig.UUID,
-							"security": "auto",
+							"security": secVal,
+							"alterId":  alterIdVal,
 						},
 					},
 				},
@@ -1000,9 +1312,15 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 
 	// Connection Multiplexing (Mux)
 	if activeConfig.MuxEnabled {
+		concurrency := 8
+		if muxC, ok := dbTlsSettings["muxConcurrency"].(float64); ok {
+			concurrency = int(muxC)
+		} else if muxC, ok := dbTlsSettings["muxConcurrency"].(int); ok {
+			concurrency = muxC
+		}
 		outbound.Mux = &MuxConfig{
 			Enabled:     true,
-			Concurrency: 8,
+			Concurrency: concurrency,
 		}
 	}
 
@@ -1113,3 +1431,24 @@ func cleanMapForV2Ray(m map[string]interface{}) {
 		}
 	}
 }
+
+// RandomizeCase dynamically toggles the case of alpha characters
+// e.g., "www.google.com" -> "wWw.GoOgLe.CoM"
+func RandomizeCase(domain string) string {
+	var result strings.Builder
+	for _, char := range domain {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') {
+			if rand.Intn(2) == 0 {
+				// Force lowercase
+				result.WriteRune(char | 32)
+			} else {
+				// Force uppercase
+				result.WriteRune(char &^ 32)
+			}
+		} else {
+			result.WriteRune(char)
+		}
+	}
+	return result.String()
+}
+

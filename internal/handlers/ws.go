@@ -19,6 +19,7 @@ import (
 	"clever-connect/internal/soroush"
 	"clever-connect/internal/spotify"
 	"clever-connect/internal/torrent"
+	"clever-connect/internal/v2ray/scanner"
 	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
@@ -88,6 +89,26 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 					"totalUpload":    totalUpload,
 					"latency":        latency,
 					"soroush_tunnel": soroush.GetStatus(),
+				}
+
+				if scanner.GetEngine().IsRunning() {
+					stats := scanner.GetEngine().GetLiveStats()
+					telemetryMsg := gin.H{
+						"event": "scanner.telemetry.update",
+						"data": gin.H{
+							"tested":    stats.Tested,
+							"healthy":   stats.Healthy,
+							"failed":    stats.Failed,
+							"in_flight": stats.InFlight,
+						},
+					}
+					if err := conn.WriteJSON(telemetryMsg); err != nil {
+						logger.Warn("WS", "Connection closed — scanner telemetry write failed",
+							"error", err.Error(),
+							"ip", c.ClientIP(),
+						)
+						return
+					}
 				}
 			} else {
 				// Server Telemetry

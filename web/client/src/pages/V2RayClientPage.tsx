@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import { showGlobalAlert, showGlobalConfirm } from '../store/dialogStore';
 import { FiRefreshCw } from 'react-icons/fi';
 
 // Skeleton fallbacks
@@ -12,6 +13,7 @@ import {
 // Lazy-loaded components
 const HelpModal = lazy(() => import('./v2ray-client/components/HelpModal'));
 const ClipboardModal = lazy(() => import('./v2ray-client/components/ClipboardModal'));
+const EditConfigModal = lazy(() => import('./v2ray-client/components/EditConfigModal'));
 const EngineStatusCard = lazy(() => import('./v2ray-client/components/EngineStatusCard'));
 const SubscriptionsCard = lazy(() => import('./v2ray-client/components/SubscriptionsCard'));
 const CdnScannerCard = lazy(() => import('./v2ray-client/components/CdnScannerCard'));
@@ -59,6 +61,8 @@ export const V2RayClientPage: React.FC = () => {
   const [evasionEch, setEvasionEch] = useState(false);
   const [evasionEchConfig, setEvasionEchConfig] = useState('');
   const [evasionTcpBrutal, setEvasionTcpBrutal] = useState(false);
+  const [evasionMixedCase, setEvasionMixedCase] = useState(false);
+  const [evasionPadding, setEvasionPadding] = useState(false);
 
   // Subscriptions & Profiles (Infinite Scroll / Windowing)
   const [subUrl, setSubUrl] = useState('');
@@ -68,6 +72,170 @@ export const V2RayClientPage: React.FC = () => {
   const PAGE_LIMIT = 50;
   const [activeProfileId, setActiveProfileId] = useState<number | null>(null);
   const [manualUri, setManualUri] = useState('');
+
+  // Advanced Config Testing States
+  const [testingStatus, setTestingStatus] = useState<'idle' | 'running' | 'completed' | 'stopped' | 'error'>('idle');
+  const [testingProgress, setTestingProgress] = useState({ total: 0, current: 0 });
+  const [filterSearch, setFilterSearch] = useState('');
+  const [filterProtocol, setFilterProtocol] = useState('');
+  const [filterNetwork, setFilterNetwork] = useState('');
+  const [filterPort, setFilterPort] = useState('');
+  const [filterPingStatus, setFilterPingStatus] = useState('');
+  const [filterSortBy, setFilterSortBy] = useState('priority');
+  const [nodeTestStates, setNodeTestStates] = useState<Record<number, {
+    status: 'idle' | 'testing' | 'done' | 'error';
+    pingMs?: number;
+    relayMs?: number;
+    httpStatus?: number;
+    colo?: string;
+    error?: string;
+  }>>({});
+  const [recentResults, setRecentResults] = useState<any[]>([]);
+
+  const wsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
+
+  const startAdvancedTest = (opts: {
+    ids: number[];
+    testType: string;
+    concurrency: number;
+    timeoutMs: number;
+    delayMs: number;
+    url: string;
+    core: string;
+  }) => {
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+
+    const token = localStorage.getItem('cc_client_token') || '';
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/v2ray/test?token=${encodeURIComponent(token)}`);
+    wsRef.current = ws;
+
+    setTestingStatus('running');
+    setTestingProgress({ total: opts.ids.length || totalProfiles, current: 0 });
+    setRecentResults([]);
+
+    const initialStates: Record<number, any> = {};
+    if (opts.ids.length > 0) {
+      opts.ids.forEach(id => {
+        initialStates[id] = { status: 'testing' };
+      });
+    } else {
+      profiles.forEach(p => {
+        initialStates[p.ID] = { status: 'testing' };
+      });
+    }
+    setNodeTestStates(initialStates);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        action: 'start',
+        ids: opts.ids,
+        test_type: opts.testType,
+        concurrency: opts.concurrency,
+        timeout_ms: opts.timeoutMs,
+        delay_ms: opts.delayMs,
+        url: opts.url,
+        core: opts.core
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'status') {
+          setTestingStatus(msg.status);
+          setTestingProgress({ total: msg.total, current: msg.current });
+          if (msg.status === 'completed' || msg.status === 'stopped' || msg.status === 'error') {
+            ws.close();
+          }
+        } else if (msg.type === 'result' && msg.result) {
+          const res = msg.result;
+          setTestingProgress({ total: msg.total, current: msg.current });
+          
+          setRecentResults(prev => {
+            const node = profiles.find(p => p.ID === res.config_id);
+            const nodeName = node ? node.name : `Node #${res.config_id}`;
+            return [
+              {
+                id: res.config_id,
+                name: nodeName,
+                ok: res.ok,
+                latency: res.ok ? res.relay_ms : -1,
+                error: res.error,
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+              },
+              ...prev
+            ].slice(0, 5);
+          });
+
+          setNodeTestStates(prev => ({
+            ...prev,
+            [res.config_id]: {
+              status: res.ok ? 'done' : 'error',
+              pingMs: res.ping_ms,
+              relayMs: res.relay_ms,
+              httpStatus: res.http_status,
+              colo: res.colo,
+              error: res.error
+            }
+          }));
+
+          setProfiles(prev => prev.map(p => {
+            if (p.ID === res.config_id) {
+              return {
+                ...p,
+                latency_ms: res.ok ? res.relay_ms : -1
+              };
+            }
+            return p;
+          }));
+        }
+      } catch (err) {
+        console.error('WS parse error', err);
+      }
+    };
+
+    ws.onclose = () => {
+      setTestingStatus(prev => prev === 'running' ? 'stopped' : prev);
+      wsRef.current = null;
+    };
+
+    ws.onerror = (err) => {
+      console.error('WS error', err);
+      setTestingStatus('error');
+      ws.close();
+    };
+  };
+
+  const stopAdvancedTest = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ action: 'stop' }));
+    }
+    setTestingStatus('stopped');
+  };
+
+  const testSingleProfileAdvanced = (id: number, testType: string, url?: string) => {
+    startAdvancedTest({
+      ids: [id],
+      testType: testType,
+      concurrency: 1,
+      timeoutMs: 5000,
+      delayMs: 0,
+      url: url || 'http://www.gstatic.com/generate_204',
+      core: 'current'
+    });
+  };
+
 
   // Port prober state
   const [probeIP, setProbeIP] = useState('8.8.8.8');
@@ -89,8 +257,10 @@ export const V2RayClientPage: React.FC = () => {
   const [debugProxyLogs, setDebugProxyLogs] = useState<string[]>([]);
 
   // Hotkeys & System tray
-  const [hotkeys, setHotkeys] = useState('Ctrl+Shift+X');
+  const [hotkeys, setHotkeys] = useState('');
   const [systemTrayEnabled, setSystemTrayEnabled] = useState(true);
+  const [dpiBypassEnabled, setDpiBypassEnabled] = useState(false);
+  const [dpiBypassArgs, setDpiBypassArgs] = useState('-d1+s -t 5');
 
   const qrFileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedProfileIds, setSelectedProfileIds] = useState<number[]>([]);
@@ -111,6 +281,10 @@ export const V2RayClientPage: React.FC = () => {
   const [isImportingBulk, setIsImportingBulk] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [parseProgress, setParseProgress] = useState(0);
+
+  // Edit Config Modal States
+  const [editingProfile, setEditingProfile] = useState<any | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
   // Refs for zero-render high performance
   const parsedConfigsRef = useRef<any[]>([]);
@@ -143,6 +317,13 @@ export const V2RayClientPage: React.FC = () => {
         setEvasionEch(data.evasion_ech === 'true');
         setEvasionEchConfig(data.evasion_ech_config || '');
         setEvasionTcpBrutal(data.evasion_tcp_brutal === 'true');
+        setEvasionMixedCase(data.evasion_mixed_case === 'true');
+        setEvasionPadding(data.evasion_padding === 'true');
+
+        if (data.keyboard_shortcuts) setHotkeys(data.keyboard_shortcuts);
+        if (data.system_tray_config) setSystemTrayEnabled(data.system_tray_config === 'true');
+        if (data.dpibypass_enabled) setDpiBypassEnabled(data.dpibypass_enabled === 'true');
+        if (data.dpibypass_args) setDpiBypassArgs(data.dpibypass_args);
       }
 
       // Fetch core status
@@ -166,10 +347,33 @@ export const V2RayClientPage: React.FC = () => {
     }
   };
 
-  const fetchProfiles = async (offset: number, reset: boolean = false) => {
+  const fetchProfiles = async (offset: number, reset: boolean = false, customFilters?: {
+    search?: string;
+    protocol?: string;
+    network?: string;
+    port?: string;
+    pingStatus?: string;
+    sortBy?: string;
+  }) => {
     try {
       const token = localStorage.getItem('cc_client_token') || '';
-      const pResp = await fetch(`/api/v2ray/client/configs?offset=${offset}&limit=${PAGE_LIMIT}`, {
+
+      const searchVal = customFilters?.search ?? filterSearch;
+      const protocolVal = customFilters?.protocol ?? filterProtocol;
+      const networkVal = customFilters?.network ?? filterNetwork;
+      const portVal = customFilters?.port ?? filterPort;
+      const pingStatusVal = customFilters?.pingStatus ?? filterPingStatus;
+      const sortByVal = customFilters?.sortBy ?? filterSortBy;
+
+      let url = `/api/v2ray/client/configs?offset=${offset}&limit=${PAGE_LIMIT}`;
+      if (searchVal) url += `&search=${encodeURIComponent(searchVal)}`;
+      if (protocolVal) url += `&protocol=${encodeURIComponent(protocolVal)}`;
+      if (networkVal) url += `&network=${encodeURIComponent(networkVal)}`;
+      if (portVal) url += `&port=${encodeURIComponent(portVal)}`;
+      if (pingStatusVal) url += `&ping_status=${encodeURIComponent(pingStatusVal)}`;
+      if (sortByVal) url += `&sort_by=${encodeURIComponent(sortByVal)}`;
+
+      const pResp = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (pResp.ok) {
@@ -186,7 +390,11 @@ export const V2RayClientPage: React.FC = () => {
         }
 
         const active = data.find((p: any) => p.is_active);
-        if (active) setActiveProfileId(active.ID);
+        if (active) {
+          setActiveProfileId(active.ID);
+        } else if (reset) {
+          setActiveProfileId(null);
+        }
       }
     } catch (err) {
       console.error('Failed to fetch profiles', err);
@@ -254,6 +462,8 @@ export const V2RayClientPage: React.FC = () => {
           evasion_ech: String(evasionEch),
           evasion_ech_config: String(evasionEchConfig),
           evasion_tcp_brutal: String(evasionTcpBrutal),
+          evasion_mixed_case: String(evasionMixedCase),
+          evasion_padding: String(evasionPadding),
         }),
       });
       if (res.ok) {
@@ -270,7 +480,44 @@ export const V2RayClientPage: React.FC = () => {
     }
   };
 
+  const handleSaveSystemSettings = async () => {
+    setIsLoading(true);
+    setMessage(null);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          keyboard_shortcuts: hotkeys,
+          system_tray_config: String(systemTrayEnabled),
+          dpibypass_enabled: String(dpiBypassEnabled),
+          dpibypass_args: dpiBypassArgs,
+        }),
+      });
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'System settings saved successfully!' });
+      } else {
+        const data = await res.json();
+        setMessage({ type: 'error', text: data.error || 'Failed to save system settings.' });
+        loadSettings(); // Reload settings to revert to actual state in DB
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+      loadSettings(); // Revert on network error
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleStartCore = async () => {
+    if (activeProfileId === null) {
+      setMessage({ type: 'error', text: 'No active configuration selected. Please select/activate a configuration profile from the list before starting the core engine.' });
+      return;
+    }
     setIsLoading(true);
     setMessage(null);
     try {
@@ -470,7 +717,7 @@ export const V2RayClientPage: React.FC = () => {
     });
 
     if (selectedUris.length === 0) {
-      alert('Please select at least one configuration to import.');
+      showGlobalAlert('Please select at least one configuration to import.', { title: 'No Configurations Selected', variant: 'warning' });
       return;
     }
 
@@ -741,7 +988,13 @@ export const V2RayClientPage: React.FC = () => {
   };
 
   const handleDeleteProfile = async (id: number) => {
-    if (!window.confirm('Delete this outbound configuration?')) return;
+    const profile = profiles.find(p => p.ID === id);
+    const profileName = profile ? ` "${profile.name}"` : '';
+    const confirmed = await showGlobalConfirm(`Are you sure you want to delete the outbound configuration${profileName}? (1 node targeted)`, {
+      title: 'Delete Outbound Configuration',
+      variant: 'warning'
+    });
+    if (!confirmed) return;
     setIsLoading(true);
     try {
       const token = localStorage.getItem('cc_client_token') || '';
@@ -761,10 +1014,11 @@ export const V2RayClientPage: React.FC = () => {
   };
 
   const handleDeleteAllNodes = async () => {
-    if (
-      !window.confirm('Are you sure you want to delete ALL outbound configurations? This action cannot be undone!')
-    )
-      return;
+    const confirmed = await showGlobalConfirm(`Are you sure you want to delete ALL outbound configurations? This action will permanently remove all ${totalProfiles} configurations and cannot be undone!`, {
+      title: 'Delete All Configurations',
+      variant: 'warning'
+    });
+    if (!confirmed) return;
     setIsLoading(true);
     try {
       const token = localStorage.getItem('cc_client_token') || '';
@@ -787,6 +1041,89 @@ export const V2RayClientPage: React.FC = () => {
     }
   };
 
+  const handleDeleteFailedNodes = async () => {
+    const confirmed = await showGlobalConfirm(`Are you sure you want to delete ALL failed (RTT < 0 / failed latency test) outbound configurations from the entire database? This action cannot be undone.`, {
+      title: 'Delete Failed Configurations',
+      variant: 'warning'
+    });
+    if (!confirmed) return;
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/configs/failed', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMessage({ type: 'success', text: `Successfully deleted ${data.count || 0} failed configuration profiles.` });
+        setPageOffset(0);
+        loadSettings();
+      } else {
+        const data = await res.json();
+        setMessage({ type: 'error', text: data.error || 'Failed to delete failed nodes.' });
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: 'Network/server error while deleting failed nodes.' });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteSelectedNodes = async () => {
+    if (selectedProfileIds.length === 0) return;
+    const confirmed = await showGlobalConfirm(`Are you sure you want to delete the ${selectedProfileIds.length} selected outbound configurations?`, {
+      title: 'Delete Selected Configurations',
+      variant: 'warning'
+    });
+    if (!confirmed) return;
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/configs/delete-selected', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ ids: selectedProfileIds }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMessage({ type: 'success', text: `Successfully deleted ${data.count || 0} selected configuration profiles.` });
+        setSelectedProfileIds([]);
+        setPageOffset(0);
+        loadSettings();
+      } else {
+        const data = await res.json();
+        setMessage({ type: 'error', text: data.error || 'Failed to delete selected nodes.' });
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: 'Network/server error while deleting selected nodes.' });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const applyFilters = (newFilters: {
+    search: string;
+    protocol: string;
+    network: string;
+    port: string;
+    pingStatus: string;
+    sortBy: string;
+  }) => {
+    setFilterSearch(newFilters.search);
+    setFilterProtocol(newFilters.protocol);
+    setFilterNetwork(newFilters.network);
+    setFilterPort(newFilters.port);
+    setFilterPingStatus(newFilters.pingStatus);
+    setFilterSortBy(newFilters.sortBy);
+    fetchProfiles(0, true, newFilters);
+  };
+
   const handleTestLatency = async () => {
     setIsLoading(true);
     setMessage({ type: 'success', text: 'Running parallel RTT latency test sweep...' });
@@ -801,6 +1138,50 @@ export const V2RayClientPage: React.FC = () => {
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleEditProfile = (profile: any) => {
+    setEditingProfile(profile);
+    setIsEditModalOpen(true);
+  };
+
+  const handleSaveEditedProfile = async (updatedProfile: any) => {
+    setIsLoading(true);
+    setMessage(null);
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch(`/api/v2ray/client/configs/${updatedProfile.ID}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: updatedProfile.name,
+          protocol: updatedProfile.protocol,
+          address: updatedProfile.address,
+          port: Number(updatedProfile.port),
+          uuid: updatedProfile.uuid,
+          network: updatedProfile.network,
+          tls_settings: updatedProfile.tls_settings,
+          mux_enabled: updatedProfile.mux_enabled,
+          priority: updatedProfile.priority,
+        }),
+      });
+      if (res.ok) {
+        setMessage({ type: 'success', text: `Configuration "${updatedProfile.name}" updated successfully!` });
+        setIsEditModalOpen(false);
+        setEditingProfile(null);
+        loadSettings();
+      } else {
+        const data = await res.json();
+        setMessage({ type: 'error', text: data.error || 'Failed to update configuration.' });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
     } finally {
       setIsLoading(false);
     }
@@ -934,8 +1315,22 @@ export const V2RayClientPage: React.FC = () => {
     }
   };
 
+  const testResults = Object.values(nodeTestStates).filter(s => s.status === 'done' && s.pingMs && s.pingMs > 0);
+  const totalTested = Object.values(nodeTestStates).filter(s => s.status === 'done' || s.status === 'error').length;
+  
+  const pings = testResults.map(s => s.pingMs as number);
+  const allProfilesWithLatency = profiles.filter(p => p.latency_ms && p.latency_ms > 0);
+  
+  const finalTested = totalTested > 0 ? totalTested : profiles.filter(p => p.latency_ms !== undefined && p.latency_ms !== 0).length;
+  const finalLive = totalTested > 0 ? testResults.length : allProfilesWithLatency.length;
+  
+  const activePings = totalTested > 0 ? pings : allProfilesWithLatency.map(p => p.latency_ms);
+  const finalAvgPing = activePings.length > 0 ? (activePings.reduce((a, b) => a + b, 0) / activePings.length).toFixed(0) + 'ms' : '-';
+  const finalMinPing = activePings.length > 0 ? Math.min(...activePings) + 'ms' : '-';
+  const finalMaxPing = activePings.length > 0 ? Math.max(...activePings) + 'ms' : '-';
+
   return (
-    <div>
+    <div className="page-container animate-fade-in">
       {/* Title */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <div>
@@ -967,6 +1362,34 @@ export const V2RayClientPage: React.FC = () => {
           {message.text}
         </div>
       )}
+
+      {/* Realtime Stats Bar */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 20 }}>
+        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #64748b' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>All Nodes</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--color-brand-heading)', marginTop: 2 }}>{totalProfiles}</div>
+        </div>
+        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #8b5cf6' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Tested</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--color-brand-heading)', marginTop: 2 }}>{finalTested}</div>
+        </div>
+        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #10b981' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Live Nodes</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#10b981', marginTop: 2 }}>{finalLive}</div>
+        </div>
+        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #3b82f6' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Avg Speed</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#3b82f6', marginTop: 2 }}>{finalAvgPing}</div>
+        </div>
+        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #059669' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Best Speed</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#059669', marginTop: 2 }}>{finalMinPing}</div>
+        </div>
+        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #f59e0b' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Worst Speed</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#f59e0b', marginTop: 2 }}>{finalMaxPing}</div>
+        </div>
+      </div>
 
       {/* Grid Layout */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 24, alignItems: 'start' }}>
@@ -1006,14 +1429,26 @@ export const V2RayClientPage: React.FC = () => {
               handleImportSub={handleImportSub}
               handleManualImport={handleManualImport}
               handleDeleteAllNodes={handleDeleteAllNodes}
+              handleDeleteFailedNodes={handleDeleteFailedNodes}
+              handleDeleteSelectedNodes={handleDeleteSelectedNodes}
+              onApplyFilters={applyFilters}
               handleQRImport={handleQRImport}
               qrFileInputRef={qrFileInputRef}
               fetchProfiles={fetchProfiles}
               pageOffset={pageOffset}
               handleSelectProfile={handleSelectProfile}
               handleDeleteProfile={handleDeleteProfile}
+              handleEditProfile={handleEditProfile}
               showHelp={showHelp}
               openClipboardModal={() => setIsClipboardModalOpen(true)}
+              testingStatus={testingStatus}
+              testingProgress={testingProgress}
+              nodeTestStates={nodeTestStates}
+              recentResults={recentResults}
+              startAdvancedTest={startAdvancedTest}
+              stopAdvancedTest={stopAdvancedTest}
+              testSingleProfileAdvanced={testSingleProfileAdvanced}
+              selectedCore={selectedCore}
             />
           </Suspense>
 
@@ -1063,6 +1498,10 @@ export const V2RayClientPage: React.FC = () => {
               setEvasionEchConfig={setEvasionEchConfig}
               evasionTcpBrutal={evasionTcpBrutal}
               setEvasionTcpBrutal={setEvasionTcpBrutal}
+              evasionMixedCase={evasionMixedCase}
+              setEvasionMixedCase={setEvasionMixedCase}
+              evasionPadding={evasionPadding}
+              setEvasionPadding={setEvasionPadding}
               muxEnabled={muxEnabled}
               setMuxEnabled={setMuxEnabled}
               handleSaveSettings={handleSaveSettings}
@@ -1142,8 +1581,14 @@ export const V2RayClientPage: React.FC = () => {
               setHotkeys={setHotkeys}
               systemTrayEnabled={systemTrayEnabled}
               setSystemTrayEnabled={setSystemTrayEnabled}
+              dpiBypassEnabled={dpiBypassEnabled}
+              setDpiBypassEnabled={setDpiBypassEnabled}
+              dpiBypassArgs={dpiBypassArgs}
+              setDpiBypassArgs={setDpiBypassArgs}
               setMessage={setMessage}
               showHelp={showHelp}
+              onSave={handleSaveSystemSettings}
+              selectedCore={selectedCore}
             />
           </Suspense>
         </div>
@@ -1152,6 +1597,21 @@ export const V2RayClientPage: React.FC = () => {
       {/* Help Modal Popup Dialog */}
       <Suspense fallback={null}>
         <HelpModal title={helpTitle} text={helpText} onClose={() => { setHelpTitle(null); setHelpText(null); }} />
+      </Suspense>
+
+      {/* Edit Config Profile Modal */}
+      <Suspense fallback={null}>
+        <EditConfigModal
+          isOpen={isEditModalOpen}
+          profile={editingProfile}
+          onClose={() => {
+            setIsEditModalOpen(false);
+            setEditingProfile(null);
+          }}
+          onSave={handleSaveEditedProfile}
+          isLoading={isLoading}
+          selectedCore={selectedCore}
+        />
       </Suspense>
 
       {/* Clipboard Mass Import Modal */}

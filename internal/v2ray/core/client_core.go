@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
 	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/v2ray/sysproxy"
+	"clever-connect/internal/v2ray/traffic/desync"
 )
 
 // ClientProxyMetrics reports real-time metrics to the UI layer
@@ -50,6 +50,8 @@ var (
 	totalBytesRx   int64 // download
 	proxyWG        sync.WaitGroup
 	proxyStopChan  chan struct{}
+	proxyMu        sync.Mutex
+	proxyRunning   bool
 
 	// Metrics channel
 	MetricsChan = make(chan ClientProxyMetrics, 100)
@@ -97,10 +99,17 @@ func CheckPortAvailable(port int) bool {
 	return false
 }
 
-// FindAvailablePort returns the requested port if available, or searches for the next free port
-func FindAvailablePort(startPort int) int {
+// FindAvailablePort returns the requested port if available, or searches for the next free port, avoiding excluded ports
+func FindAvailablePort(startPort int, excludePorts ...int) int {
 	for port := startPort; port < startPort+100; port++ {
-		if CheckPortAvailable(port) {
+		excluded := false
+		for _, ep := range excludePorts {
+			if port == ep {
+				excluded = true
+				break
+			}
+		}
+		if !excluded && CheckPortAvailable(port) {
 			return port
 		}
 	}
@@ -220,6 +229,9 @@ func clientSupervisor(ctx context.Context) {
 		clientMu.Unlock()
 		return
 	}
+	if abs, err := filepath.Abs(binPath); err == nil {
+		binPath = abs
+	}
 
 	for {
 		clientMu.Lock()
@@ -312,7 +324,14 @@ func clientSupervisor(ctx context.Context) {
 
 // StartLocalProxyEngine sets up local listeners to proxy connections to internal ports
 func StartLocalProxyEngine(socksPublic, socksInternal, httpPublic, httpInternal int) {
+	proxyMu.Lock()
+	if proxyRunning {
+		proxyMu.Unlock()
+		return
+	}
+	proxyRunning = true
 	proxyStopChan = make(chan struct{})
+	proxyMu.Unlock()
 
 	// Toggle OS system proxy if enabled in settings
 	sysProxyEnabled := false
@@ -373,19 +392,30 @@ func StartLocalProxyEngine(socksPublic, socksInternal, httpPublic, httpInternal 
 
 // StopLocalProxyEngine terminates listeners and waits for in-flight conns to complete (graceful shutdown)
 func StopLocalProxyEngine() {
+	proxyMu.Lock()
+	if !proxyRunning {
+		proxyMu.Unlock()
+		return
+	}
+	proxyRunning = false
+
 	// Always clear OS system proxy on stop
 	logger.Info("ClientProxy", "Clearing OS system proxy")
 	_ = sysproxy.ClearSystemProxy()
 
 	if socksListener != nil {
 		_ = socksListener.Close()
+		socksListener = nil
 	}
 	if httpListener != nil {
 		_ = httpListener.Close()
+		httpListener = nil
 	}
 	if proxyStopChan != nil {
 		close(proxyStopChan)
+		proxyStopChan = nil
 	}
+	proxyMu.Unlock()
 
 	// Wait for in-flight connections to complete (graceful shutdown)
 	done := make(chan struct{})
@@ -421,6 +451,18 @@ func handleProxyConn(src net.Conn, target string, isSocks bool) {
 
 	// Enforce Idle Timeout
 	_ = src.SetDeadline(time.Now().Add(idleTimeout))
+
+	if isSocks && desync.IsDesyncEnabled() {
+		// Use Desync SOCKS5 Handshake and Injection
+		v2rayPortStr := strings.Split(target, ":")[1]
+		v2rayPort, _ := strconv.Atoi(v2rayPortStr)
+		desync.HandleSOCKS5(src, v2rayPort, func(n int64) {
+			atomic.AddInt64(&totalBytesTx, n)
+		}, func(n int64) {
+			atomic.AddInt64(&totalBytesRx, n)
+		})
+		return
+	}
 
 	dst, err := net.DialTimeout("tcp", target, 4*time.Second)
 	if err != nil {

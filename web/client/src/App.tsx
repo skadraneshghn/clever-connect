@@ -20,6 +20,7 @@ const SpotifyPage = lazy(() => import('./pages/SpotifyPage').then(m => ({ defaul
 const JobSchedulerPage = lazy(() => import('./pages/JobSchedulerPage').then(m => ({ default: m.JobSchedulerPage })));
 const TelegramSettingsPage = lazy(() => import('./pages/TelegramSettingsPage').then(m => ({ default: m.TelegramSettingsPage })));
 const SoroushPage = lazy(() => import('./pages/SoroushPage').then(m => ({ default: m.SoroushPage })));
+const V2RayDashboardPage = lazy(() => import('./pages/V2RayDashboardPage').then(m => ({ default: m.V2RayDashboardPage })));
 const V2RayClientPage = lazy(() => import('./pages/V2RayClientPage').then(m => ({ default: m.V2RayClientPage })));
 const V2RayCorePage = lazy(() => import('./pages/V2RayCorePage').then(m => ({ default: m.V2RayCorePage })));
 const V2RayRoutingPage = lazy(() => import('./pages/V2RayRoutingPage').then(m => ({ default: m.V2RayRoutingPage })));
@@ -59,7 +60,8 @@ const ProtectedLayout: React.FC = () => {
     scheduler: ['System', 'Job Scheduler'],
     'telegram-settings': ['Settings', 'Telegram Bot'],
     'soroush-tunnel': ['Protocol', 'Soroush WebRTC Tunnel'],
-    'v2ray-dashboard': ['V2Ray', 'Dashboard & Nodes'],
+    'v2ray-dashboard': ['V2Ray', 'Realtime Dashboard'],
+    'v2ray-nodes': ['V2Ray', 'Nodes Manager'],
     'v2ray-core': ['V2Ray', 'Core Configuration'],
     'v2ray-routing': ['V2Ray', 'Routing Rules'],
   };
@@ -130,7 +132,8 @@ const router = createBrowserRouter([
       { path: 'scheduler', element: <JobSchedulerPage /> },
       { path: 'telegram-settings', element: <TelegramSettingsPage /> },
       { path: 'soroush-tunnel', element: <SoroushPage /> },
-      { path: 'v2ray-dashboard', element: <V2RayClientPage /> },
+      { path: 'v2ray-dashboard', element: <V2RayDashboardPage /> },
+      { path: 'v2ray-nodes', element: <V2RayClientPage /> },
       { path: 'v2ray-core', element: <V2RayCorePage /> },
       { path: 'v2ray-routing', element: <V2RayRoutingPage /> },
     ],

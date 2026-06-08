@@ -31,6 +31,10 @@ interface ConfigSettingsCardProps {
   setEvasionEchConfig: (config: string) => void;
   evasionTcpBrutal: boolean;
   setEvasionTcpBrutal: (brutal: boolean) => void;
+  evasionMixedCase: boolean;
+  setEvasionMixedCase: (mixed: boolean) => void;
+  evasionPadding: boolean;
+  setEvasionPadding: (padding: boolean) => void;
   muxEnabled: boolean;
   setMuxEnabled: (mux: boolean) => void;
   handleSaveSettings: (e: React.FormEvent) => void;
@@ -67,6 +71,10 @@ export const ConfigSettingsCard: React.FC<ConfigSettingsCardProps> = ({
   setEvasionEchConfig,
   evasionTcpBrutal,
   setEvasionTcpBrutal,
+  evasionMixedCase,
+  setEvasionMixedCase,
+  evasionPadding,
+  setEvasionPadding,
   muxEnabled,
   setMuxEnabled,
   handleSaveSettings,
@@ -314,7 +322,12 @@ export const ConfigSettingsCard: React.FC<ConfigSettingsCardProps> = ({
               <input
                 type="checkbox"
                 checked={evasionFragment}
-                onChange={(e) => setEvasionFragment(e.target.checked)}
+                onChange={(e) => {
+                  setEvasionFragment(e.target.checked);
+                  if (e.target.checked) {
+                    setEvasionPadding(false);
+                  }
+                }}
                 style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
               />
             </div>
@@ -444,6 +457,45 @@ export const ConfigSettingsCard: React.FC<ConfigSettingsCardProps> = ({
               type="checkbox"
               checked={evasionTcpBrutal}
               onChange={(e) => setEvasionTcpBrutal(e.target.checked)}
+              style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', margin: 0 }}>
+                TLS Mixed SNI Case (SNI Mutilation)
+              </label>
+              <span style={{ fontSize: 9, color: 'var(--color-brand-text)', display: 'block' }}>
+                Randomizes upper/lowercase spelling of the SNI domain to evade DPI matching (e.g. wWw.bBc.cOM). Requires client uTLS.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={evasionMixedCase}
+              onChange={(e) => setEvasionMixedCase(e.target.checked)}
+              style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', margin: 0 }}>
+                TLS Padding (Traffic Volume Obfuscation)
+              </label>
+              <span style={{ fontSize: 9, color: 'var(--color-brand-text)', display: 'block' }}>
+                Appends randomized dummy bytes to TLS requests to mutate traffic volume signatures. Mutually exclusive with TCP/TLS fragmentation.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={evasionPadding}
+              onChange={(e) => {
+                setEvasionPadding(e.target.checked);
+                if (e.target.checked) {
+                  setEvasionFragment(false);
+                }
+              }}
               style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-brand)' }}
             />
           </div>
