@@ -1927,3 +1927,65 @@ func (h *V2RayHandler) SaveCoreTemplate(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"status": "saved"})
 }
+
+// ListScannerSources handles GET /api/v2ray/scanner/sources
+func (h *V2RayHandler) ListScannerSources(c *gin.Context) {
+	var sources []models.ScannerSource
+	if err := db.DB.Find(&sources).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, sources)
+}
+
+// CreateScannerSource handles POST /api/v2ray/scanner/sources
+func (h *V2RayHandler) CreateScannerSource(c *gin.Context) {
+	var src models.ScannerSource
+	if err := c.ShouldBindJSON(&src); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := db.DB.Create(&src).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, src)
+}
+
+// UpdateScannerSource handles PUT /api/v2ray/scanner/sources/:id
+func (h *V2RayHandler) UpdateScannerSource(c *gin.Context) {
+	id := c.Param("id")
+	var src models.ScannerSource
+	if err := db.DB.First(&src, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Source not found"})
+		return
+	}
+
+	var req models.ScannerSource
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	src.Name = req.Name
+	src.URL = req.URL
+	src.Type = req.Type
+	src.IsEnabled = req.IsEnabled
+
+	if err := db.DB.Save(&src).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, src)
+}
+
+// DeleteScannerSource handles DELETE /api/v2ray/scanner/sources/:id
+func (h *V2RayHandler) DeleteScannerSource(c *gin.Context) {
+	id := c.Param("id")
+	if err := db.DB.Delete(&models.ScannerSource{}, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+

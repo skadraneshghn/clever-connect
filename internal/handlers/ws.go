@@ -13,6 +13,7 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/domainchecker"
 	"clever-connect/internal/downloader"
 	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
@@ -103,6 +104,28 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			scanner.GetEngine().CancelActiveScan()
 		}
 	}()
+
+	domainchecker.GetEngine().RegisterListener(clientID, func(result domainchecker.DomainResult) {
+		payload := gin.H{
+			"type": "DOMAIN_CHECK_RESULT",
+			"data": gin.H{
+				"id":              result.ID,
+				"domain_name":     result.DomainName,
+				"status":          result.Status,
+				"ip_addresses":    result.IPAddresses,
+				"http_status":     result.HTTPStatus,
+				"latency_ms":      result.LatencyMs,
+				"tls_status":      result.TLSStatus,
+				"tls_expiry_days": result.TLSExpiryDays,
+				"last_checked_at": result.LastCheckedAt,
+			},
+		}
+		select {
+		case telemetryChan <- payload:
+		default:
+		}
+	})
+	defer domainchecker.GetEngine().UnregisterListener(clientID)
 
 	// Read loop (to handle inbound actions like scanner:start, scanner:stop)
 	go func() {

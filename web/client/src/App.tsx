@@ -25,6 +25,7 @@ const V2RayClientPage = lazy(() => import('./pages/V2RayClientPage').then(m => (
 const V2RayCorePage = lazy(() => import('./pages/V2RayCorePage').then(m => ({ default: m.V2RayCorePage })));
 const V2RayRoutingPage = lazy(() => import('./pages/V2RayRoutingPage').then(m => ({ default: m.V2RayRoutingPage })));
 const NetworkToolsPage = lazy(() => import('./pages/NetworkToolsPage').then(m => ({ default: m.NetworkToolsPage })));
+const DomainCheckerPage = lazy(() => import('./pages/DomainCheckerPage').then(m => ({ default: m.DomainCheckerPage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -66,6 +67,7 @@ const ProtectedLayout: React.FC = () => {
     'v2ray-core': ['V2Ray', 'Core Configuration'],
     'v2ray-routing': ['V2Ray', 'Routing Rules'],
     'v2ray-scanner': ['Network Tools', 'Scanner Engine'],
+    'domain-checker': ['Network Tools', 'Domain Checker'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -139,6 +141,7 @@ const router = createBrowserRouter([
       { path: 'v2ray-core', element: <V2RayCorePage /> },
       { path: 'v2ray-routing', element: <V2RayRoutingPage /> },
       { path: 'v2ray-scanner', element: <NetworkToolsPage /> },
+      { path: 'domain-checker', element: <DomainCheckerPage /> },
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },

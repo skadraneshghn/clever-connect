@@ -28,6 +28,9 @@ export const NetworkToolsPage: React.FC = () => {
     healthy: 0,
     failed: 0,
     in_flight: 0,
+    total_targets: 0,
+    remaining_sec: 0,
+    phase: '',
   });
 
   // Candidates list
@@ -55,6 +58,17 @@ export const NetworkToolsPage: React.FC = () => {
   const [enableNeighbors, setEnableNeighbors] = useState(true);
   const [topLimit, setTopLimit] = useState(20);
   const [totalTargetCount, setTotalTargetCount] = useState(0);
+
+  // Scanner Ingestion Sources state
+  interface ScannerSource {
+    id: number;
+    name: string;
+    url: string;
+    type: 'cidr' | 'proxyip' | 'domain';
+    is_enabled: boolean;
+  }
+  const [showSourcesModal, setShowSourcesModal] = useState(false);
+  const [sources, setSources] = useState<ScannerSource[]>([]);
 
   // Drag and drop state
   const [isDragging, setIsDragging] = useState(false);
@@ -128,8 +142,15 @@ export const NetworkToolsPage: React.FC = () => {
               healthy: msg.stats.healthy || 0,
               failed: msg.stats.failed || 0,
               in_flight: msg.stats.in_flight || 0,
+              total_targets: msg.stats.total_targets || 0,
+              remaining_sec: msg.stats.remaining_sec || 0,
+              phase: msg.stats.phase || '',
             });
-            setIsScanning((msg.stats.in_flight || 0) > 0 || (msg.event === 'scanner.progress'));
+            setIsScanning(
+              (msg.stats.in_flight || 0) > 0 ||
+              msg.event === 'scanner.progress' ||
+              (msg.stats.phase && msg.stats.phase !== '' && msg.event !== 'scanner.finished')
+            );
           }
 
           if (msg.event === 'scanner.log' && msg.data) {
@@ -370,6 +391,83 @@ export const NetworkToolsPage: React.FC = () => {
     }
   };
 
+  const fetchSources = async () => {
+    try {
+      const res = await fetch('/api/v2ray/scanner/sources', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSources(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch scanner sources', err);
+    }
+  };
+
+  const handleToggleSource = async (src: ScannerSource) => {
+    try {
+      const res = await fetch(`/api/v2ray/scanner/sources/${src.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          ...src,
+          is_enabled: !src.is_enabled
+        })
+      });
+      if (res.ok) {
+        fetchSources();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAddSource = async (name: string, url: string, type: 'cidr' | 'proxyip' | 'domain') => {
+    try {
+      const res = await fetch('/api/v2ray/scanner/sources', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name,
+          url,
+          type,
+          is_enabled: true
+        })
+      });
+      if (res.ok) {
+        fetchSources();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteSource = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this source?')) return;
+    try {
+      const res = await fetch(`/api/v2ray/scanner/sources/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        fetchSources();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const handleStopScan = () => {
     if (!ws) return;
     ws.send(JSON.stringify({ type: 'scanner:stop', data: {} }));
@@ -442,6 +540,14 @@ export const NetworkToolsPage: React.FC = () => {
       return 0;
     });
 
+  const formatRemainingTime = (seconds: number) => {
+    if (seconds <= 0) return '0s';
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  };
+
   // Filtering logs
   const filteredLogs = scannerLogs.filter((log) => {
     return log.toLowerCase().includes(logsFilter.toLowerCase());
@@ -493,6 +599,48 @@ export const NetworkToolsPage: React.FC = () => {
         }}>
           {message.type === 'success' ? <FiCheckCircle size={16} /> : <FiAlertCircle size={16} />}
           <span>{message.text}</span>
+        </div>
+      )}
+
+      {/* Dynamic Scan Status Panel */}
+      {isScanning && (
+        <div className="g-card" style={{ padding: '16px 20px', marginBottom: 20, background: 'linear-gradient(135deg, rgba(255, 107, 44, 0.05), rgba(59, 130, 246, 0.03))', borderColor: 'rgba(255, 107, 44, 0.15)' }}>
+          <style>{`
+            @keyframes pulse-dot {
+              0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 107, 44, 0.6); }
+              70% { transform: scale(1.1); box-shadow: 0 0 0 8px rgba(255, 107, 44, 0); }
+              100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 107, 44, 0); }
+            }
+          `}</style>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--color-brand)', animation: 'pulse-dot 1.8s infinite ease-in-out' }}></span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                {stats.phase || 'Scanning Targets'}
+              </span>
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
+              {stats.tested} / {stats.total_targets} ({stats.total_targets > 0 ? Math.min(100, Math.round((stats.tested / stats.total_targets) * 100)) : 0}%)
+            </span>
+          </div>
+
+          {/* Progress Bar Container */}
+          <div style={{ width: '100%', height: 8, background: 'var(--color-brand-bg)', borderRadius: 4, overflow: 'hidden', marginBottom: 10, border: '1px solid var(--color-brand-border)' }}>
+            <div style={{
+              width: `${stats.total_targets > 0 ? Math.min(100, Math.round((stats.tested / stats.total_targets) * 100)) : 0}%`,
+              height: '100%',
+              background: 'linear-gradient(90deg, var(--color-brand) 0%, var(--color-brand-blue) 100%)',
+              transition: 'width 0.4s ease-out',
+              borderRadius: 4
+            }}></div>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--color-brand-text)', fontWeight: 500 }}>
+            <span>Active Worker Connections: <strong style={{ color: 'var(--color-brand-blue)' }}>{stats.in_flight}</strong></span>
+            {stats.remaining_sec > 0 && (
+              <span>Estimated Time Remaining (ETA): <strong style={{ color: 'var(--color-brand-heading)' }}>{formatRemainingTime(stats.remaining_sec)}</strong></span>
+            )}
+          </div>
         </div>
       )}
 
@@ -581,7 +729,16 @@ export const NetworkToolsPage: React.FC = () => {
 
               {/* CIDRs subnets textarea */}
               <div>
-                <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Target Subnet CIDRs</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', textTransform: 'uppercase', letterSpacing: '0.5px', margin: 0 }}>Target Subnet CIDRs</label>
+                  <button 
+                    type="button"
+                    onClick={() => { setShowSourcesModal(true); fetchSources(); }}
+                    style={{ fontSize: 10, padding: 0, height: 'auto', display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-brand)', background: 'none', border: 'none', cursor: 'pointer' }}
+                  >
+                    <FiSettings size={10} /> Manage Sources
+                  </button>
+                </div>
                 <textarea
                   value={targetCidrs}
                   onChange={(e) => setTargetCidrs(e.target.value)}
@@ -1040,6 +1197,157 @@ export const NetworkToolsPage: React.FC = () => {
 
       </div>
 
+      {showSourcesModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            background: 'rgba(0, 0, 0, 0.6)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+          }}
+          onClick={() => setShowSourcesModal(false)}
+        >
+          <div
+            style={{
+              background: 'var(--color-brand-card)',
+              padding: 24,
+              borderRadius: 12,
+              width: 580,
+              maxWidth: '95%',
+              maxHeight: '85vh',
+              overflowY: 'auto',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.15)',
+              border: '1px solid var(--color-brand-border)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
+                Scan Ingestion Sources
+              </h3>
+              <button
+                className="btn btn--sm btn--secondary"
+                onClick={() => setShowSourcesModal(false)}
+                style={{ padding: '4px 8px' }}
+              >
+                Close
+              </button>
+            </div>
+
+            {/* Sources List */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {sources.map((src) => (
+                <div key={src.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 8, background: 'var(--color-brand-bg)', border: '1px solid var(--color-brand-border)' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>{src.name}</span>
+                      <span style={{
+                        fontSize: 9,
+                        fontWeight: 700,
+                        padding: '2px 6px',
+                        borderRadius: 10,
+                        background: src.type === 'cidr' ? 'rgba(99, 102, 241, 0.1)' : src.type === 'proxyip' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(59, 130, 246, 0.1)',
+                        color: src.type === 'cidr' ? 'var(--color-brand-indigo)' : src.type === 'proxyip' ? 'var(--color-brand-green)' : 'var(--color-brand-blue)',
+                        textTransform: 'uppercase'
+                      }}>
+                        {src.type}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 10, color: 'var(--color-brand-muted)', wordBreak: 'break-all' }}>{src.url}</span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <input
+                      type="checkbox"
+                      checked={src.is_enabled}
+                      onChange={() => handleToggleSource(src)}
+                      style={{ width: 14, height: 14, accentColor: 'var(--color-brand)', cursor: 'pointer' }}
+                    />
+                    <button
+                      onClick={() => handleDeleteSource(src.id)}
+                      style={{ background: 'none', border: 'none', color: 'var(--color-brand-red)', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center' }}
+                      title="Delete source"
+                    >
+                      <FiTrash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Inline Add Form */}
+            <div style={{ marginTop: 8, paddingTop: 16, borderTop: '1px solid var(--color-brand-border)' }}>
+              <h4 style={{ margin: '0 0 10px', fontSize: 11, fontWeight: 700, color: 'var(--color-brand-text)', textTransform: 'uppercase' }}>
+                Add New IP Ingestion Source
+              </h4>
+              <AddSourceForm onAdd={handleAddSource} />
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
+
+const AddSourceForm: React.FC<{ onAdd: (name: string, url: string, type: 'cidr' | 'proxyip' | 'domain') => void }> = ({ onAdd }) => {
+  const [name, setName] = React.useState('');
+  const [url, setUrl] = React.useState('');
+  const [type, setType] = React.useState<'cidr' | 'proxyip' | 'domain'>('cidr');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name || !url) return;
+    onAdd(name, url, type);
+    setName('');
+    setUrl('');
+  };
+
+  return (
+    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <input
+          type="text"
+          placeholder="Source Name (e.g. Cloudflare Official)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+          required
+        />
+        <select
+          value={type}
+          onChange={(e: any) => setType(e.target.value)}
+          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+        >
+          <option value="cidr">CIDR IP Ranges</option>
+          <option value="proxyip">Proxy IP list</option>
+          <option value="domain">Domain hostname list</option>
+        </select>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input
+          type="url"
+          placeholder="https://example.com/ips.txt"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+          required
+        />
+        <button type="submit" className="btn btn--primary btn--sm" style={{ padding: '6px 14px' }}>
+          Add Source
+        </button>
+      </div>
+    </form>
+  );
+};
+

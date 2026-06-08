@@ -580,3 +580,43 @@ type V2RayScannerConfig struct {
 	TargetSNI        string       `json:"target_sni"`
 	MaxRateLimit     float64      `json:"max_rate_limit" gorm:"default:0"`
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Network Tools - Domain Checker Models
+// ──────────────────────────────────────────────────────────────────────────────
+
+type Domain struct {
+	ID            string    `gorm:"primaryKey" json:"id"` // UUID
+	DomainName    string    `gorm:"uniqueIndex;not null" json:"domain_name"`
+	Status        string    `json:"status" gorm:"index"` // pending, checking, online, offline, timeout, nxdomain
+	Category      string    `json:"category" gorm:"index;default:'ALL'"` // Category name, default 'ALL'
+	IPAddresses   string    `json:"ip_addresses"`
+	HTTPStatus    int       `json:"http_status"`
+	LatencyMs     int       `json:"latency_ms" gorm:"index"`
+	TLSStatus     bool      `json:"tls_status"`
+	TLSExpiryDays int       `json:"tls_expiry_days"`
+	LastCheckedAt time.Time `json:"last_checked_at" gorm:"index"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type ScannerSource struct {
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	Name        string     `json:"name"`
+	URL         string     `json:"url"`
+	Type        string     `json:"type"` // Enum: cidr, proxyip, domain
+	IsEnabled   bool       `json:"is_enabled" gorm:"default:true"`
+	LastFetched *time.Time `json:"last_fetched"`
+}
+
+type ScannerConfig struct {
+	ID                  uint      `gorm:"primaryKey" json:"id"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+	DeepTestEnabled     bool      `json:"deep_test_enabled" gorm:"default:true"`
+	TargetSNI           string    `json:"target_sni"`
+	AttemptCount        int       `json:"attempt_count" gorm:"default:3"`
+	MinSuccessThreshold int       `json:"min_success_threshold" gorm:"default:2"`
+}

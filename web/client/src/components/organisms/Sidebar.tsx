@@ -29,7 +29,8 @@ const navItems = [
   {
     id: 'network-tools-section', label: 'Network Tools', icon: FiZap,
     children: [
-      { id: 'v2ray-scanner', label: 'Scanner Engine' }
+      { id: 'v2ray-scanner', label: 'Scanner Engine' },
+      { id: 'domain-checker', label: 'Domain Checker' }
     ]
   },
   {
