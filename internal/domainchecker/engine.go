@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,11 +28,17 @@ type DomainResult struct {
 	LastCheckedAt time.Time
 }
 
+type CheckJob struct {
+	ID         string
+	DomainName string
+	Category   string
+}
+
 type ResultListener func(result DomainResult)
 
 type Engine struct {
 	mu           sync.RWMutex
-	jobQueue     chan string
+	jobQueue     chan CheckJob
 	workerCount  int
 	isChecking   bool
 	cancelFunc   context.CancelFunc
@@ -45,7 +52,7 @@ var once sync.Once
 func GetEngine() *Engine {
 	once.Do(func() {
 		instance = &Engine{
-			workerCount: 50, // max concurrent checks
+			workerCount: 50, // default concurrent checks
 			listeners:   make(map[string]ResultListener),
 		}
 	})
@@ -72,20 +79,40 @@ func (e *Engine) broadcast(result DomainResult) {
 	}
 }
 
-func (e *Engine) CheckBulk(domains []string) {
+func (e *Engine) BroadcastChecking(id, domainName string) {
+	e.broadcast(DomainResult{
+		ID:         id,
+		DomainName: domainName,
+		Status:     "checking",
+	})
+}
+
+func (e *Engine) CheckBulk(domains []models.Domain, threads int, timeoutSec int) {
 	e.mu.Lock()
 	if e.isChecking {
-		// Stop previous run if necessary or just append?
-		// For simplicity, let's just create a new context
 		if e.cancelFunc != nil {
 			e.cancelFunc()
 		}
 	}
 	e.isChecking = true
 	e.ctx, e.cancelFunc = context.WithCancel(context.Background())
-	e.jobQueue = make(chan string, len(domains))
+	
+	if threads <= 0 {
+		threads = 50
+	}
+	e.workerCount = threads
+
+	if timeoutSec <= 0 {
+		timeoutSec = 3
+	}
+
+	e.jobQueue = make(chan CheckJob, len(domains))
 	for _, d := range domains {
-		e.jobQueue <- d
+		e.jobQueue <- CheckJob{
+			ID:         d.ID,
+			DomainName: d.DomainName,
+			Category:   d.Category,
+		}
 	}
 	close(e.jobQueue)
 	e.mu.Unlock()
@@ -93,7 +120,7 @@ func (e *Engine) CheckBulk(domains []string) {
 	var wg sync.WaitGroup
 	for i := 0; i < e.workerCount; i++ {
 		wg.Add(1)
-		go e.worker(e.ctx, &wg)
+		go e.worker(e.ctx, &wg, timeoutSec)
 	}
 
 	go func() {
@@ -105,39 +132,46 @@ func (e *Engine) CheckBulk(domains []string) {
 	}()
 }
 
-func (e *Engine) CheckSingle(domainName string) {
+func (e *Engine) CheckSingle(d *models.Domain) {
+	job := CheckJob{
+		ID:         d.ID,
+		DomainName: d.DomainName,
+		Category:   d.Category,
+	}
 	go func() {
-		// Just run synchronously in this goroutine
-		res := e.evaluateDomain(domainName)
-		e.saveAndBroadcast(res)
+		res := e.evaluateDomain(job, 3)
+		e.saveAndBroadcast(res, job.Category)
 	}()
 }
 
-func (e *Engine) worker(ctx context.Context, wg *sync.WaitGroup) {
+func (e *Engine) worker(ctx context.Context, wg *sync.WaitGroup, timeoutSec int) {
 	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case domain, ok := <-e.jobQueue:
+		case job, ok := <-e.jobQueue:
 			if !ok {
 				return // Queue closed
 			}
-			res := e.evaluateDomain(domain)
-			e.saveAndBroadcast(res)
+			res := e.evaluateDomain(job, timeoutSec)
+			e.saveAndBroadcast(res, job.Category)
 		}
 	}
 }
 
-func (e *Engine) evaluateDomain(domain string) DomainResult {
+func (e *Engine) evaluateDomain(job CheckJob, timeoutSec int) DomainResult {
 	result := DomainResult{
-		DomainName:    domain,
+		ID:            job.ID,
+		DomainName:    job.DomainName,
 		Status:        "pending",
 		LastCheckedAt: time.Now(),
 	}
 	
+	timeout := time.Duration(timeoutSec) * time.Second
+
 	// Step 1: DNS Resolution
-	ips, err := net.LookupIP(domain)
+	ips, err := net.LookupIP(job.DomainName)
 	if err != nil {
 		result.Status = "nxdomain"
 		return result
@@ -153,66 +187,77 @@ func (e *Engine) evaluateDomain(domain string) DomainResult {
 
 	// Step 2: TCP Ping
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(domain, "443"), 3*time.Second)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(job.DomainName, "443"), timeout)
 	if err != nil {
 		// Try 80 if 443 fails
-		conn, err = net.DialTimeout("tcp", net.JoinHostPort(domain, "80"), 3*time.Second)
+		conn, err = net.DialTimeout("tcp", net.JoinHostPort(job.DomainName, "80"), timeout)
 		if err != nil {
 			result.Status = "timeout"
 			return result
 		}
-	} else {
-		defer conn.Close()
 	}
+	defer conn.Close()
+
 	latency := time.Since(start).Milliseconds()
 	result.LatencyMs = int(latency)
 	result.Status = "online"
 
-	// Step 3: TLS Handshake (if 443)
-	if conn != nil && conn.RemoteAddr().(*net.TCPAddr).Port == 443 {
-		tlsConfig := &tls.Config{InsecureSkipVerify: true, ServerName: domain}
-		tlsConn := tls.Client(conn, tlsConfig)
-		err = tlsConn.Handshake()
-		if err == nil {
-			certs := tlsConn.ConnectionState().PeerCertificates
-			if len(certs) > 0 {
-				cert := certs[0]
-				// Basic validity check
-				if time.Now().Before(cert.NotAfter) && time.Now().After(cert.NotBefore) {
-					result.TLSStatus = true
+	// Step 3: TLS Handshake (if port is 443)
+	if conn != nil {
+		tcpConn, ok := conn.(*net.TCPConn)
+		if ok && tcpConn != nil {
+			// Set timeout deadline for handshakes
+			conn.SetDeadline(time.Now().Add(timeout))
+		}
+		
+		addr := conn.RemoteAddr().String()
+		if strings.HasSuffix(addr, ":443") {
+			tlsConfig := &tls.Config{InsecureSkipVerify: true, ServerName: job.DomainName}
+			tlsConn := tls.Client(conn, tlsConfig)
+			err = tlsConn.Handshake()
+			if err == nil {
+				certs := tlsConn.ConnectionState().PeerCertificates
+				if len(certs) > 0 {
+					cert := certs[0]
+					if time.Now().Before(cert.NotAfter) && time.Now().After(cert.NotBefore) {
+						result.TLSStatus = true
+					}
+					days := int(cert.NotAfter.Sub(time.Now()).Hours() / 24)
+					result.TLSExpiryDays = days
 				}
-				days := int(cert.NotAfter.Sub(time.Now()).Hours() / 24)
-				result.TLSExpiryDays = days
 			}
 		}
 	}
 
 	// Step 4: HTTP Head/Get
-	client := http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Head("https://" + domain)
+	client := http.Client{Timeout: timeout}
+	resp, err := client.Head("https://" + job.DomainName)
 	if err != nil {
-		resp, err = client.Head("http://" + domain)
+		resp, err = client.Head("http://" + job.DomainName)
 	}
 	if err == nil && resp != nil {
 		result.HTTPStatus = resp.StatusCode
-	}
-
-	if result.Status == "online" && result.LatencyMs > 500 {
-		// still online, UI will handle yellow color
+		resp.Body.Close()
 	}
 
 	return result
 }
 
-func (e *Engine) saveAndBroadcast(res DomainResult) {
-	existing, err := pebble.GetDomainByName(res.DomainName)
+func (e *Engine) saveAndBroadcast(res DomainResult, category string) {
+	existing, err := pebble.GetDomain(res.ID)
 	var dbModel *models.Domain
 
 	if err != nil || existing == nil {
-		// Create
+		// Fallback lookup
+		existing, err = pebble.GetDomainByNameAndCategory(res.DomainName, category)
+	}
+
+	if err != nil || existing == nil {
+		// Create new if truly not exists
 		dbModel = &models.Domain{
-			ID:            uuid.New().String(),
+			ID:            res.ID,
 			DomainName:    res.DomainName,
+			Category:      category,
 			Status:        res.Status,
 			IPAddresses:   res.IPAddresses,
 			HTTPStatus:    res.HTTPStatus,
@@ -223,8 +268,11 @@ func (e *Engine) saveAndBroadcast(res DomainResult) {
 			CreatedAt:     time.Now(),
 			UpdatedAt:     time.Now(),
 		}
+		if dbModel.ID == "" {
+			dbModel.ID = uuid.New().String()
+		}
 	} else {
-		// Update
+		// Update existing
 		dbModel = existing
 		dbModel.Status = res.Status
 		dbModel.IPAddresses = res.IPAddresses

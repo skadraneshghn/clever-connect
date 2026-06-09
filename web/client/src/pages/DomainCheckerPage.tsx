@@ -78,7 +78,20 @@ const DomainRow = React.memo(({
         />
       </td>
       <td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>
-        {domain.domain_name}
+        <span
+          onClick={(e) => {
+            if (e.ctrlKey) {
+              e.preventDefault();
+              const url = domain.domain_name.startsWith('http') ? domain.domain_name : `https://${domain.domain_name}`;
+              window.open(url, '_blank', 'noopener,noreferrer');
+            }
+          }}
+          style={{ cursor: 'pointer' }}
+          className="hover:underline"
+          title="Ctrl+Click to open in new tab"
+        >
+          {domain.domain_name}
+        </span>
       </td>
       <td style={{ padding: '10px 12px' }}>
         <StatusBadge status={domain.status} />
@@ -166,9 +179,31 @@ export const DomainCheckerPage: React.FC = () => {
   const [customImportCat, setCustomImportCat] = useState('');
   const [fileDomains, setFileDomains] = useState<string[]>([]);
   const [fileParsedCount, setFileParsedCount] = useState(0);
+  const [isImporting, setIsImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Runner Options States
+  const [runnerThreads, setRunnerThreads] = useState(50);
+  const [runnerTimeout, setRunnerTimeout] = useState(3);
+
+  // Bulk Progress Tracking States
+  const [isCheckingAll, setIsCheckingAll] = useState(false);
+  const [checkedAllCount, setCheckedAllCount] = useState(0);
+  const [totalAllToCheck, setTotalAllToCheck] = useState(0);
+
   const parentRef = useRef<HTMLDivElement>(null);
+
+  // Real database-wide category stats
+  const [dbStats, setDbStats] = useState({
+    total: 0,
+    online: 0,
+    offline: 0,
+    checking: 0,
+    ssl_valid: 0
+  });
+
+  const isChecking = dbStats.checking > 0;
+
 
   const fetchCategories = async () => {
     try {
@@ -222,6 +257,10 @@ export const DomainCheckerPage: React.FC = () => {
         }
         setHasMore(incoming.length === limit);
         setPage(pageNum);
+        
+        if (data.stats) {
+          setDbStats(data.stats);
+        }
       }
     } catch (e) {
       console.error('Failed to fetch domains', e);
@@ -248,7 +287,34 @@ export const DomainCheckerPage: React.FC = () => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'DOMAIN_CHECK_RESULT' && msg.data) {
+          const oldDomain = useDomainStore.getState().domains[msg.data.id];
           updateDomain(msg.data);
+          
+          if (msg.data.status !== 'checking' && msg.data.status !== 'pending') {
+            setCheckedAllCount(prev => prev + 1);
+          }
+
+          setDbStats(prev => {
+            const next = { ...prev };
+            if (oldDomain) {
+              if (oldDomain.status === 'online') next.online = Math.max(0, next.online - 1);
+              else if (['offline', 'timeout', 'nxdomain'].includes(oldDomain.status)) next.offline = Math.max(0, next.offline - 1);
+              else if (oldDomain.status === 'checking') next.checking = Math.max(0, next.checking - 1);
+              
+              if (oldDomain.tls_status) next.ssl_valid = Math.max(0, next.ssl_valid - 1);
+            } else {
+              // fallback: if not in memory (paginated out), it was probably "checking"
+              next.checking = Math.max(0, next.checking - 1);
+            }
+
+            if (msg.data.status === 'online') next.online++;
+            else if (['offline', 'timeout', 'nxdomain'].includes(msg.data.status)) next.offline++;
+            else if (msg.data.status === 'checking') next.checking++;
+
+            if (msg.data.tls_status) next.ssl_valid++;
+
+            return next;
+          });
         }
       } catch (err) {
         // ignore
@@ -259,6 +325,18 @@ export const DomainCheckerPage: React.FC = () => {
     
     return () => socket.close();
   }, [token]);
+
+  useEffect(() => {
+    if (isCheckingAll && totalAllToCheck > 0 && checkedAllCount >= totalAllToCheck) {
+      const timer = setTimeout(() => {
+        setIsCheckingAll(false);
+        setCheckedAllCount(0);
+        setTotalAllToCheck(0);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [checkedAllCount, totalAllToCheck, isCheckingAll]);
+
 
   const virtualizer = useVirtualizer({
     count: domainIds.length,
@@ -343,27 +421,34 @@ export const DomainCheckerPage: React.FC = () => {
     const targetCategory = isCreatingNewCatInImport ? customImportCat.trim() : importCategory;
     if (!targetCategory) return;
     
-    const activeToken = token || localStorage.getItem('cc_client_token') || '';
-    const res = await fetch('/api/domains', {
-      method: 'POST',
-      headers: { 
-        'Authorization': `Bearer ${activeToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ 
-        domains: list,
-        category: targetCategory 
-      })
-    });
-    if (res.ok) {
-      setRawTextImport('');
-      setFileDomains([]);
-      setFileParsedCount(0);
-      setIsAddModalOpen(false);
-      setIsCreatingNewCatInImport(false);
-      setCustomImportCat('');
-      fetchCategories();
-      fetchDomains(0, true);
+    setIsImporting(true);
+    try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/domains', {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${activeToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          domains: list,
+          category: targetCategory 
+        })
+      });
+      if (res.ok) {
+        setRawTextImport('');
+        setFileDomains([]);
+        setFileParsedCount(0);
+        setIsAddModalOpen(false);
+        setIsCreatingNewCatInImport(false);
+        setCustomImportCat('');
+        fetchCategories();
+        fetchDomains(0, true);
+      }
+    } catch (err) {
+      console.error('Domain import error:', err);
+    } finally {
+      setIsImporting(false);
     }
   };
 
@@ -383,26 +468,12 @@ export const DomainCheckerPage: React.FC = () => {
     if (selectedIds.size === 0) return;
     const activeToken = token || localStorage.getItem('cc_client_token') || '';
     
-    Array.from(selectedIds).forEach(id => {
-      updateDomain({ ...domains[id], status: 'checking' });
-    });
+    const idsArray = Array.from(selectedIds);
+    setCheckedAllCount(0);
+    setTotalAllToCheck(idsArray.length);
+    setIsCheckingAll(true);
 
-    await fetch('/api/domains/check/bulk', {
-      method: 'POST',
-      headers: { 
-        'Authorization': `Bearer ${activeToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ ids: Array.from(selectedIds) })
-    });
-    
-    setSelectedIds(new Set());
-  };
-
-  const handleCheckCategory = async () => {
-    const activeToken = token || localStorage.getItem('cc_client_token') || '';
-    
-    domainIds.forEach(id => {
+    idsArray.forEach(id => {
       updateDomain({ ...domains[id], status: 'checking' });
     });
 
@@ -413,11 +484,53 @@ export const DomainCheckerPage: React.FC = () => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ 
-        ids: [],
-        category: selectedCategory 
+        ids: idsArray,
+        threads: runnerThreads,
+        timeout: runnerTimeout
       })
     });
+    
+    setSelectedIds(new Set());
   };
+
+  const handleCheckCategory = async () => {
+    const activeToken = token || localStorage.getItem('cc_client_token') || '';
+    
+    setCheckedAllCount(0);
+    setTotalAllToCheck(0);
+    setIsCheckingAll(true);
+
+    // Visually set stats to checking state instantly
+    setDbStats(prev => ({
+      total: prev.total,
+      online: 0,
+      offline: 0,
+      checking: prev.total,
+      ssl_valid: 0
+    }));
+
+    const res = await fetch('/api/domains/check/bulk', {
+      method: 'POST',
+      headers: { 
+        'Authorization': `Bearer ${activeToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ 
+        ids: [],
+        category: selectedCategory,
+        threads: runnerThreads,
+        timeout: runnerTimeout
+      })
+    });
+    
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.count) {
+        setTotalAllToCheck(data.count);
+      }
+    }
+  };
+
 
   const handleDeleteSingle = useCallback(async (id: string) => {
     if (!window.confirm("Are you sure you want to delete this domain?")) return;
@@ -561,6 +674,20 @@ export const DomainCheckerPage: React.FC = () => {
         @keyframes shine {
           to { background-position: 200% center; }
         }
+        @keyframes radar-sweep {
+          from {
+            transform: rotate(0deg);
+          }
+          to {
+            transform: rotate(360deg);
+          }
+        }
+        .animate-radar-sweep {
+          animation: radar-sweep 2.5s linear infinite;
+        }
+        .clip-radar {
+          clip-path: polygon(0 100%, 100% 100%, 100% 0);
+        }
       `}</style>
 
       {/* LEFT SIDEBAR: Categories list */}
@@ -626,6 +753,56 @@ export const DomainCheckerPage: React.FC = () => {
           </div>
           
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {/* Runner Config panel */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--color-brand-card)', border: '1px solid var(--color-brand-border)', padding: '5px 10px', borderRadius: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-text)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Runner Options</span>
+              
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, borderLeft: '1px solid var(--color-brand-border)', paddingLeft: 8 }}>
+                <span style={{ fontSize: 10, color: 'var(--color-brand-muted)', fontWeight: 600 }}>THREADS:</span>
+                <input 
+                  type="number"
+                  min="1"
+                  max="1000"
+                  value={runnerThreads}
+                  onChange={(e) => setRunnerThreads(Math.max(1, parseInt(e.target.value) || 50))}
+                  style={{
+                    width: 50,
+                    padding: '2px 4px',
+                    borderRadius: 4,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-bg)',
+                    color: 'var(--color-brand-heading)',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    textAlign: 'center'
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, borderLeft: '1px solid var(--color-brand-border)', paddingLeft: 8 }}>
+                <span style={{ fontSize: 10, color: 'var(--color-brand-muted)', fontWeight: 600 }}>TIMEOUT:</span>
+                <select
+                  value={runnerTimeout}
+                  onChange={(e) => setRunnerTimeout(parseInt(e.target.value) || 3)}
+                  style={{
+                    padding: '2px 4px',
+                    borderRadius: 4,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-bg)',
+                    color: 'var(--color-brand-heading)',
+                    fontSize: 11,
+                    fontWeight: 700
+                  }}
+                >
+                  <option value="1">1s</option>
+                  <option value="2">2s</option>
+                  <option value="3">3s</option>
+                  <option value="5">5s</option>
+                  <option value="10">10s</option>
+                </select>
+              </div>
+            </div>
+
             <button 
               className="btn btn--secondary btn--sm" 
               onClick={() => setIsAddModalOpen(true)}
@@ -641,6 +818,7 @@ export const DomainCheckerPage: React.FC = () => {
             >
               <FiPlay /> Test Category ({selectedCategory})
             </button>
+
             
             <div style={{ position: 'relative', display: 'inline-block' }}>
               <button 
@@ -690,6 +868,101 @@ export const DomainCheckerPage: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* Telemetry Card */}
+        <div className="g-card" style={{ padding: 20 }}>
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+            
+            <div style={{ display: 'flex', width: '100%', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-around', gap: 20 }}>
+              {/* Sonar Radar Graphic */}
+              <div style={{ position: 'relative', width: 100, height: 100, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.25)', background: 'radial-gradient(circle, rgba(255, 107, 44, 0.05) 0%, rgba(0,0,0,0) 70%)', overflow: 'hidden', flexShrink: 0 }}>
+                <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.15)', transform: 'scale(0.66)' }} />
+                <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.1)', transform: 'scale(0.33)' }} />
+                <div style={{ position: 'absolute', width: '100%', height: '1px', background: 'rgba(255, 107, 44, 0.12)', top: '50%', left: 0 }} />
+                <div style={{ position: 'absolute', height: '100%', width: '1px', background: 'rgba(255, 107, 44, 0.12)', left: '50%', top: 0 }} />
+                
+                {/* Blinking center spot */}
+                <div style={{ position: 'absolute', width: 6, height: 6, borderRadius: '50%', background: 'var(--color-brand)', boxShadow: '0 0 10px var(--color-brand)', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 5 }} />
+                
+                {/* Sweep ray */}
+                <div 
+                  className={`clip-radar ${isChecking ? 'animate-radar-sweep' : 'opacity-20'}`}
+                  style={{
+                    position: 'absolute',
+                    width: '50%',
+                    height: '50%',
+                    top: 0,
+                    left: '50%',
+                    transformOrigin: 'bottom left',
+                    background: 'linear-gradient(to right, rgba(255, 107, 44, 0.4) 0%, rgba(255, 107, 44, 0) 100%)',
+                    clipPath: 'polygon(0 100%, 100% 100%, 100% 0)'
+                  }}
+                />
+              </div>
+
+              {/* Metrics */}
+              <div style={{ flex: 1, minWidth: 160 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 10 }}>
+                  {isChecking ? 'DOMAIN PROBING IN PROGRESS...' : 'TELEMETRY SCAN IDLE'}
+                </div>
+                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 16 }}>
+                  <div>
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-text)', fontWeight: 600, textTransform: 'uppercase' }}>Total</span>
+                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
+                      {dbStats.total}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-green)', fontWeight: 600, textTransform: 'uppercase' }}>Online</span>
+                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-green)' }}>
+                      {dbStats.online}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-red)', fontWeight: 600, textTransform: 'uppercase' }}>Offline</span>
+                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-red)' }}>
+                      {dbStats.offline}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-blue)', fontWeight: 600, textTransform: 'uppercase' }}>Checking</span>
+                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-blue)' }}>
+                      {dbStats.checking}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-indigo)', fontWeight: 600, textTransform: 'uppercase' }}>SSL Valid</span>
+                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-indigo)' }}>
+                      {dbStats.ssl_valid}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {isCheckingAll && (
+              <div style={{ width: '100%', marginTop: 16, borderTop: '1px dashed var(--color-brand-border)', paddingTop: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: 'var(--color-brand-text)', marginBottom: 6 }}>
+                  <span style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="shimmer-text" style={{ color: 'var(--color-brand)' }}>●</span> Bulk Probing: {checkedAllCount} / {totalAllToCheck} Domains Checked
+                  </span>
+                  <span style={{ fontWeight: 700, color: 'var(--color-brand)' }}>{Math.round((checkedAllCount / (totalAllToCheck || 1)) * 100)}%</span>
+                </div>
+                <div style={{ width: '100%', height: 6, background: 'var(--color-brand-bg)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{
+                    width: `${Math.min(100, Math.round((checkedAllCount / (totalAllToCheck || 1)) * 100))}%`,
+                    height: '100%',
+                    background: 'linear-gradient(to right, var(--color-brand-light), var(--color-brand))',
+                    borderRadius: 3,
+                    transition: 'width 0.3s ease-out'
+                  }} />
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+
 
         {/* Filter bar card */}
         <div className="g-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -951,7 +1224,7 @@ export const DomainCheckerPage: React.FC = () => {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             zIndex: 999,
           }}
-          onClick={() => setIsAddModalOpen(false)}
+          onClick={() => !isImporting && setIsAddModalOpen(false)}
         >
           <div
             style={{
@@ -971,132 +1244,172 @@ export const DomainCheckerPage: React.FC = () => {
               Bulk Domain Importer
             </h3>
 
-            {/* Category Select / Creation */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-text)' }}>Target Category</label>
-              
-              {!isCreatingNewCatInImport ? (
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <select
-                    value={importCategory}
-                    onChange={(e) => setImportCategory(e.target.value)}
+            {isImporting ? (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '40px 20px',
+                gap: 14,
+                background: 'var(--color-brand-bg)',
+                border: '1px solid var(--color-brand-border)',
+                borderRadius: 8,
+                margin: '10px 0'
+              }}>
+                <div style={{
+                  width: 32,
+                  height: 32,
+                  border: '3px solid var(--color-brand-border)',
+                  borderTop: '3px solid var(--color-brand)',
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite',
+                }} />
+                <style>{`
+                  @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                  }
+                `}</style>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: 13, color: 'var(--color-brand-heading)', fontWeight: 600 }}>
+                    Importing {addMethod === 'text' ? rawTextImport.split('\n').map(s => s.trim()).filter(Boolean).length : fileDomains.length} domains...
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--color-brand-muted)' }}>
+                    Writing to Pebble database & updating categories
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Category Select / Creation */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-text)' }}>Target Category</label>
+                  
+                  {!isCreatingNewCatInImport ? (
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <select
+                        value={importCategory}
+                        onChange={(e) => setImportCategory(e.target.value)}
+                        style={{
+                          flex: 1,
+                          padding: '8px 10px',
+                          borderRadius: 8,
+                          border: '1px solid var(--color-brand-border)',
+                          background: 'var(--color-brand-bg)',
+                          fontSize: 13,
+                          color: 'var(--color-brand-heading)'
+                        }}
+                      >
+                        {categories.map(cat => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                      <button 
+                        type="button" 
+                        className="btn btn--secondary" 
+                        onClick={() => setIsCreatingNewCatInImport(true)}
+                      >
+                        New
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <input
+                        type="text"
+                        placeholder="Enter category name..."
+                        value={customImportCat}
+                        onChange={(e) => setCustomImportCat(e.target.value)}
+                        style={{
+                          flex: 1,
+                          padding: '8px 10px',
+                          borderRadius: 8,
+                          border: '1px solid var(--color-brand-border)',
+                          background: 'var(--color-brand-bg)',
+                          fontSize: 13,
+                          color: 'var(--color-brand-heading)'
+                        }}
+                      />
+                      <button 
+                        type="button" 
+                        className="btn btn--secondary" 
+                        onClick={() => setIsCreatingNewCatInImport(false)}
+                      >
+                        Select Existing
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Selector: Text or File */}
+                <div style={{ display: 'flex', borderBottom: '1px solid var(--color-brand-border)' }}>
+                  <button
+                    onClick={() => setAddMethod('text')}
                     style={{
-                      flex: 1,
-                      padding: '8px 10px',
-                      borderRadius: 8,
-                      border: '1px solid var(--color-brand-border)',
-                      background: 'var(--color-brand-bg)',
-                      fontSize: 13,
-                      color: 'var(--color-brand-heading)'
+                      flex: 1, padding: '8px 0', border: 'none', background: 'none',
+                      fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      borderBottom: addMethod === 'text' ? '2px solid var(--color-brand)' : 'none',
+                      color: addMethod === 'text' ? 'var(--color-brand)' : 'var(--color-brand-text)'
                     }}
                   >
-                    {categories.map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
-                  <button 
-                    type="button" 
-                    className="btn btn--secondary" 
-                    onClick={() => setIsCreatingNewCatInImport(true)}
+                    Raw Text List
+                  </button>
+                  <button
+                    onClick={() => setAddMethod('file')}
+                    style={{
+                      flex: 1, padding: '8px 0', border: 'none', background: 'none',
+                      fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      borderBottom: addMethod === 'file' ? '2px solid var(--color-brand)' : 'none',
+                      color: addMethod === 'file' ? 'var(--color-brand)' : 'var(--color-brand-text)'
+                    }}
                   >
-                    New
+                    Upload TXT / CSV File
                   </button>
                 </div>
-              ) : (
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <input
-                    type="text"
-                    placeholder="Enter category name..."
-                    value={customImportCat}
-                    onChange={(e) => setCustomImportCat(e.target.value)}
+
+                {/* Input area */}
+                {addMethod === 'text' ? (
+                  <textarea
+                    value={rawTextImport}
+                    onChange={(e) => setRawTextImport(e.target.value)}
+                    placeholder="Paste domains (one per line, e.g. google.com)..."
                     style={{
-                      flex: 1,
-                      padding: '8px 10px',
-                      borderRadius: 8,
+                      width: '100%', height: 180, padding: 12, borderRadius: 8,
                       border: '1px solid var(--color-brand-border)',
                       background: 'var(--color-brand-bg)',
-                      fontSize: 13,
-                      color: 'var(--color-brand-heading)'
+                      fontSize: 13, color: 'var(--color-brand-heading)',
+                      resize: 'none', outline: 'none'
                     }}
                   />
-                  <button 
-                    type="button" 
-                    className="btn btn--secondary" 
-                    onClick={() => setIsCreatingNewCatInImport(false)}
+                ) : (
+                  <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{
+                      height: 180, border: '2px dashed var(--color-brand-border)',
+                      borderRadius: 8, display: 'flex', flexDirection: 'column',
+                      alignItems: 'center', justifyContent: 'center', gap: 10,
+                      cursor: 'pointer', background: 'var(--color-brand-bg)'
+                    }}
                   >
-                    Select Existing
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Selector: Text or File */}
-            <div style={{ display: 'flex', borderBottom: '1px solid var(--color-brand-border)' }}>
-              <button
-                onClick={() => setAddMethod('text')}
-                style={{
-                  flex: 1, padding: '8px 0', border: 'none', background: 'none',
-                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                  borderBottom: addMethod === 'text' ? '2px solid var(--color-brand)' : 'none',
-                  color: addMethod === 'text' ? 'var(--color-brand)' : 'var(--color-brand-text)'
-                }}
-              >
-                Raw Text List
-              </button>
-              <button
-                onClick={() => setAddMethod('file')}
-                style={{
-                  flex: 1, padding: '8px 0', border: 'none', background: 'none',
-                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                  borderBottom: addMethod === 'file' ? '2px solid var(--color-brand)' : 'none',
-                  color: addMethod === 'file' ? 'var(--color-brand)' : 'var(--color-brand-text)'
-                }}
-              >
-                Upload TXT / CSV File
-              </button>
-            </div>
-
-            {/* Input area */}
-            {addMethod === 'text' ? (
-              <textarea
-                value={rawTextImport}
-                onChange={(e) => setRawTextImport(e.target.value)}
-                placeholder="Paste domains (one per line, e.g. google.com)..."
-                style={{
-                  width: '100%', height: 180, padding: 12, borderRadius: 8,
-                  border: '1px solid var(--color-brand-border)',
-                  background: 'var(--color-brand-bg)',
-                  fontSize: 13, color: 'var(--color-brand-heading)',
-                  resize: 'none', outline: 'none'
-                }}
-              />
-            ) : (
-              <div 
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  height: 180, border: '2px dashed var(--color-brand-border)',
-                  borderRadius: 8, display: 'flex', flexDirection: 'column',
-                  alignItems: 'center', justifyContent: 'center', gap: 10,
-                  cursor: 'pointer', background: 'var(--color-brand-bg)'
-                }}
-              >
-                <FiUploadCloud size={32} style={{ color: 'var(--color-brand)' }} />
-                <span style={{ fontSize: 12, color: 'var(--color-brand-text)', fontWeight: 500 }}>
-                  Click to select TXT or CSV domain list file
-                </span>
-                {fileParsedCount > 0 && (
-                  <span style={{ fontSize: 11, color: 'var(--color-brand-green)', fontWeight: 700 }}>
-                    Successfully parsed {fileParsedCount} domains!
-                  </span>
+                    <FiUploadCloud size={32} style={{ color: 'var(--color-brand)' }} />
+                    <span style={{ fontSize: 12, color: 'var(--color-brand-text)', fontWeight: 500 }}>
+                      Click to select TXT or CSV domain list file
+                    </span>
+                    {fileParsedCount > 0 && (
+                      <span style={{ fontSize: 11, color: 'var(--color-brand-green)', fontWeight: 700 }}>
+                        Successfully parsed {fileParsedCount} domains!
+                      </span>
+                    )}
+                    <input
+                      type="file"
+                      accept=".txt,.csv"
+                      ref={fileInputRef}
+                      onChange={handleFileChange}
+                      style={{ display: 'none' }}
+                    />
+                  </div>
                 )}
-                <input
-                  type="file"
-                  accept=".txt,.csv"
-                  ref={fileInputRef}
-                  onChange={handleFileChange}
-                  style={{ display: 'none' }}
-                />
-              </div>
+              </>
             )}
 
             {/* Actions */}
@@ -1104,7 +1417,9 @@ export const DomainCheckerPage: React.FC = () => {
               <button 
                 type="button" 
                 className="btn btn--secondary btn--sm" 
-                onClick={() => setIsAddModalOpen(false)}
+                onClick={() => !isImporting && setIsAddModalOpen(false)}
+                disabled={isImporting}
+                style={{ opacity: isImporting ? 0.6 : 1, cursor: isImporting ? 'not-allowed' : 'pointer' }}
               >
                 Cancel
               </button>
@@ -1112,8 +1427,10 @@ export const DomainCheckerPage: React.FC = () => {
                 type="button" 
                 className="btn btn--primary btn--sm" 
                 onClick={handleImportSubmit}
+                disabled={isImporting}
+                style={{ opacity: isImporting ? 0.6 : 1, cursor: isImporting ? 'not-allowed' : 'pointer' }}
               >
-                Import Domains
+                {isImporting ? 'Importing...' : 'Import Domains'}
               </button>
             </div>
           </div>

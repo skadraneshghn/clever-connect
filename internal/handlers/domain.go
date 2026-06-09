@@ -52,11 +52,12 @@ func (h *DomainHandler) List(c *gin.Context) {
 		}
 	}
 	
-	domains, total := pebble.ListDomains(category, search, status, tlsFilter, httpStatus, limit, offset, sortBy, sortOrder)
+	domains, total, stats := pebble.ListDomains(category, search, status, tlsFilter, httpStatus, limit, offset, sortBy, sortOrder)
 	
 	c.JSON(http.StatusOK, gin.H{
 		"domains": domains,
 		"total":   total,
+		"stats":   stats,
 	})
 }
 
@@ -131,7 +132,7 @@ func (h *DomainHandler) CheckSingle(c *gin.Context) {
 	domain.Status = "checking"
 	pebble.SaveDomain(domain)
 
-	domainchecker.GetEngine().CheckSingle(domain.DomainName)
+	domainchecker.GetEngine().CheckSingle(domain)
 	
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Check queued",
@@ -143,6 +144,8 @@ func (h *DomainHandler) CheckBulk(c *gin.Context) {
 	var req struct {
 		IDs      []string `json:"ids"`
 		Category string   `json:"category"`
+		Threads  int      `json:"threads"`
+		Timeout  int      `json:"timeout"`
 	}
 	
 	var domains []models.Domain
@@ -154,14 +157,14 @@ func (h *DomainHandler) CheckBulk(c *gin.Context) {
 				}
 			}
 		} else if req.Category != "" {
-			domains, _ = pebble.ListDomains(req.Category, "", "", "", 0, 0, 0, "created_at", "desc")
+			domains, _, _ = pebble.ListDomains(req.Category, "", "", "", 0, 0, 0, "created_at", "desc")
 		} else {
 			// check all
-			domains, _ = pebble.ListDomains("ALL", "", "", "", 0, 0, 0, "created_at", "desc")
+			domains, _, _ = pebble.ListDomains("ALL", "", "", "", 0, 0, 0, "created_at", "desc")
 		}
 	} else {
 		// check all
-		domains, _ = pebble.ListDomains("ALL", "", "", "", 0, 0, 0, "created_at", "desc")
+		domains, _, _ = pebble.ListDomains("ALL", "", "", "", 0, 0, 0, "created_at", "desc")
 	}
 
 	if len(domains) == 0 {
@@ -169,18 +172,17 @@ func (h *DomainHandler) CheckBulk(c *gin.Context) {
 		return
 	}
 
-	var targetDomains []string
-	for _, d := range domains {
-		d.Status = "checking"
-		pebble.SaveDomain(&d)
-		targetDomains = append(targetDomains, d.DomainName)
+	for i := range domains {
+		domains[i].Status = "checking"
+		pebble.SaveDomain(&domains[i])
+		domainchecker.GetEngine().BroadcastChecking(domains[i].ID, domains[i].DomainName)
 	}
 
-	domainchecker.GetEngine().CheckBulk(targetDomains)
+	domainchecker.GetEngine().CheckBulk(domains, req.Threads, req.Timeout)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Bulk check queued",
-		"count": len(targetDomains),
+		"count": len(domains),
 	})
 }
 

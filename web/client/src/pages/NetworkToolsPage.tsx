@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   FiRefreshCw, FiPlay, FiSquare, FiDownload, FiUpload, FiSettings, 
   FiSearch, FiClipboard, FiAlertCircle, FiCheckCircle, FiFileText, FiList,
-  FiTerminal, FiTrash2
+  FiTerminal, FiTrash2, FiGlobe, FiSliders, FiActivity, FiPlus, FiChevronDown, FiChevronUp,
+  FiPlusCircle, FiXCircle
 } from 'react-icons/fi';
 import { useAuthStore } from '../store/authStore';
 
@@ -15,6 +16,47 @@ interface ScannedCandidate {
   status: 'healthy' | 'failed' | 'in_flight';
   time: string;
 }
+
+interface ScannerSource {
+  id: number;
+  name: string;
+  url: string;
+  type: 'cidr' | 'proxyip' | 'domain';
+  is_enabled: boolean;
+}
+
+const COMMON_PORTS = [
+  { value: 443, label: '443 (HTTPS)' },
+  { value: 2053, label: '2053' },
+  { value: 2083, label: '2083' },
+  { value: 2087, label: '2087' },
+  { value: 2096, label: '2096' },
+  { value: 8443, label: '8443' },
+  { value: 80, label: '80 (HTTP)' },
+  { value: 2052, label: '2052' },
+  { value: 2082, label: '2082' },
+  { value: 2086, label: '2086' },
+  { value: 2095, label: '2095' },
+  { value: 8080, label: '8080' }
+];
+
+const ToggleSwitch: React.FC<{ checked: boolean; onChange: () => void }> = ({ checked, onChange }) => {
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+        checked ? 'bg-[var(--color-brand)]' : 'bg-zinc-700'
+      }`}
+    >
+      <span
+        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+          checked ? 'translate-x-4' : 'translate-x-0'
+        }`}
+      />
+    </button>
+  );
+};
 
 export const NetworkToolsPage: React.FC = () => {
   const { token } = useAuthStore();
@@ -42,10 +84,13 @@ export const NetworkToolsPage: React.FC = () => {
   const [scannerLogs, setScannerLogs] = useState<string[]>([]);
   const [logsFilter, setLogsFilter] = useState('');
 
-  // Input states (ScanConfig alignment)
+  // Port Selection state
+  const [selectedPortsList, setSelectedPortsList] = useState<number[]>([443, 2053, 2083, 2087, 2096, 8443]);
+  const [customPorts, setCustomPorts] = useState('');
+
+  // Advanced Input states
   const [rawConfigLink, setRawConfigLink] = useState('');
   const [targetCidrs, setTargetCidrs] = useState('108.162.192.0/18\n103.21.244.0/22');
-  const [selectedPorts, setSelectedPorts] = useState('443, 80, 8443');
   const [concurrencyLimit, setConcurrencyLimit] = useState(100);
   const [maxRateLimit, setMaxRateLimit] = useState(0);
   const [networkTimeoutMs, setNetworkTimeoutMs] = useState(3000);
@@ -59,16 +104,15 @@ export const NetworkToolsPage: React.FC = () => {
   const [topLimit, setTopLimit] = useState(20);
   const [totalTargetCount, setTotalTargetCount] = useState(0);
 
-  // Scanner Ingestion Sources state
-  interface ScannerSource {
-    id: number;
-    name: string;
-    url: string;
-    type: 'cidr' | 'proxyip' | 'domain';
-    is_enabled: boolean;
-  }
-  const [showSourcesModal, setShowSourcesModal] = useState(false);
+  // Sources state
   const [sources, setSources] = useState<ScannerSource[]>([]);
+  const [showAddSourceInline, setShowAddSourceInline] = useState(false);
+  const [newSourceName, setNewSourceName] = useState('');
+  const [newSourceUrl, setNewSourceUrl] = useState('');
+  const [newSourceType, setNewSourceType] = useState<'cidr' | 'proxyip' | 'domain'>('cidr');
+
+  // Collapsible configuration panels
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
 
   // Drag and drop state
   const [isDragging, setIsDragging] = useState(false);
@@ -128,7 +172,6 @@ export const NetworkToolsPage: React.FC = () => {
 
     socket.onopen = () => {
       setWsConnected(true);
-      // Fetch initial scanner telemetry state
       socket.send(JSON.stringify({ type: 'scanner:telemetry', data: {} }));
     };
 
@@ -165,7 +208,6 @@ export const NetworkToolsPage: React.FC = () => {
           if (msg.event === 'scanner.candidate' && msg.data) {
             const c = msg.data;
             setCandidates((prev) => {
-              // Deduplicate
               const filtered = prev.filter((item) => item.ip !== c.ip || item.port !== c.port);
               return [
                 {
@@ -280,9 +322,142 @@ export const NetworkToolsPage: React.FC = () => {
     setMessage({ type: 'success', text: 'Downloaded healthy_ips.csv successfully.' });
   };
 
-  useEffect(() => {
-    fetchSavedConfigs();
-  }, []);
+  // Fetch Sources
+  const fetchSources = async () => {
+    try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/scanner/sources', {
+        headers: {
+          'Authorization': `Bearer ${activeToken}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSources(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch scanner sources', err);
+    }
+  };
+
+  const handleToggleSource = async (src: ScannerSource) => {
+    try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
+      const res = await fetch(`/api/v2ray/scanner/sources/${src.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${activeToken}`
+        },
+        body: JSON.stringify({
+          ...src,
+          is_enabled: !src.is_enabled
+        })
+      });
+      if (res.ok) {
+        fetchSources();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAddSource = async (name: string, url: string, type: 'cidr' | 'proxyip' | 'domain') => {
+    try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/scanner/sources', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${activeToken}`
+        },
+        body: JSON.stringify({
+          name,
+          url,
+          type,
+          is_enabled: true
+        })
+      });
+      if (res.ok) {
+        fetchSources();
+        setMessage({ type: 'success', text: `Added new source: ${name}` });
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteSource = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this source?')) return;
+    try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
+      const res = await fetch(`/api/v2ray/scanner/sources/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${activeToken}`
+        }
+      });
+      if (res.ok) {
+        fetchSources();
+        setMessage({ type: 'success', text: 'Source deleted.' });
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleResetSources = async () => {
+    try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
+      await Promise.all(
+        sources.map((src) => {
+          const shouldBeEnabled = src.name === 'Cloudflare Official';
+          if (src.is_enabled !== shouldBeEnabled) {
+            return fetch(`/api/v2ray/scanner/sources/${src.id}`, {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${activeToken}`
+              },
+              body: JSON.stringify({
+                ...src,
+                is_enabled: shouldBeEnabled
+              })
+            });
+          }
+          return Promise.resolve();
+        })
+      );
+      fetchSources();
+      setMessage({ type: 'success', text: 'Reset IP sources default selection.' });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleTogglePort = (port: number) => {
+    if (selectedPortsList.includes(port)) {
+      setSelectedPortsList(selectedPortsList.filter((p) => p !== port));
+    } else {
+      setSelectedPortsList([...selectedPortsList, port]);
+    }
+  };
+
+  const handleSelectAllPorts = () => {
+    setSelectedPortsList(COMMON_PORTS.map((p) => p.value));
+  };
+
+  const handleClearPorts = () => {
+    setSelectedPortsList([]);
+  };
+
+  const getSelectedPorts = () => {
+    const custom = customPorts
+      .split(',')
+      .map((p) => parseInt(p.trim()))
+      .filter((p) => !isNaN(p));
+    return Array.from(new Set([...selectedPortsList, ...custom]));
+  };
 
   // Keyboard shortcut listener (c key to copy results)
   useEffect(() => {
@@ -330,12 +505,9 @@ export const NetworkToolsPage: React.FC = () => {
     setMessage({ type: 'info', text: msg });
     setIsScanning(true);
     setCandidates([]);
-    setScannerLogs([]); // Clear logs for the new sweep session
+    setScannerLogs([]); // Clear logs
     
-    const ports = selectedPorts
-      .split(',')
-      .map((p) => parseInt(p.trim()))
-      .filter((p) => !isNaN(p));
+    const ports = getSelectedPorts();
 
     const cidrs = targetCidrs
       .split('\n')
@@ -372,10 +544,11 @@ export const NetworkToolsPage: React.FC = () => {
       return;
     }
     try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
       const res = await fetch('/api/v2ray/client/configs/failed', {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${activeToken}`
         }
       });
       if (res.ok) {
@@ -388,83 +561,6 @@ export const NetworkToolsPage: React.FC = () => {
     } catch (err) {
       console.error(err);
       setMessage({ type: 'error', text: 'Network error during cleanup.' });
-    }
-  };
-
-  const fetchSources = async () => {
-    try {
-      const res = await fetch('/api/v2ray/scanner/sources', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSources(data);
-      }
-    } catch (err) {
-      console.error('Failed to fetch scanner sources', err);
-    }
-  };
-
-  const handleToggleSource = async (src: ScannerSource) => {
-    try {
-      const res = await fetch(`/api/v2ray/scanner/sources/${src.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          ...src,
-          is_enabled: !src.is_enabled
-        })
-      });
-      if (res.ok) {
-        fetchSources();
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleAddSource = async (name: string, url: string, type: 'cidr' | 'proxyip' | 'domain') => {
-    try {
-      const res = await fetch('/api/v2ray/scanner/sources', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          name,
-          url,
-          type,
-          is_enabled: true
-        })
-      });
-      if (res.ok) {
-        fetchSources();
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleDeleteSource = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this source?')) return;
-    try {
-      const res = await fetch(`/api/v2ray/scanner/sources/${id}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (res.ok) {
-        fetchSources();
-      }
-    } catch (err) {
-      console.error(err);
     }
   };
 
@@ -525,6 +621,21 @@ export const NetworkToolsPage: React.FC = () => {
     }
   };
 
+  // Load resources on mount
+  useEffect(() => {
+    fetchSavedConfigs();
+    fetchSources();
+  }, []);
+
+  const handleAddSourceSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSourceName || !newSourceUrl) return;
+    handleAddSource(newSourceName, newSourceUrl, newSourceType);
+    setNewSourceName('');
+    setNewSourceUrl('');
+    setShowAddSourceInline(false);
+  };
+
   // Filtering and sorting logic for candidates
   const filteredCandidates = candidates
     .filter((c) => {
@@ -548,14 +659,49 @@ export const NetworkToolsPage: React.FC = () => {
     return `${s}s`;
   };
 
+  const formatCount = (count: number) => {
+    if (count >= 1000) {
+      return `${(count / 1000).toFixed(1)}K`;
+    }
+    return count.toString();
+  };
+
   // Filtering logs
   const filteredLogs = scannerLogs.filter((log) => {
     return log.toLowerCase().includes(logsFilter.toLowerCase());
   });
 
+  const enabledSourcesCount = sources.filter((s) => s.is_enabled).length;
+
   return (
     <div className="page-container animate-fade-in" style={{ padding: '4px 0', fontFamily: 'var(--font-sans)' }}>
       
+      {/* Styles for premium visuals & animations */}
+      <style>{`
+        @keyframes radar-sweep {
+          from {
+            transform: rotate(0deg);
+          }
+          to {
+            transform: rotate(360deg);
+          }
+        }
+        .animate-radar-sweep {
+          animation: radar-sweep 2.5s linear infinite;
+        }
+        .clip-radar {
+          clip-path: polygon(0 100%, 100% 100%, 100% 0);
+        }
+        @keyframes pulse-dot {
+          0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 107, 44, 0.6); }
+          70% { transform: scale(1.1); box-shadow: 0 0 0 8px rgba(255, 107, 44, 0); }
+          100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 107, 44, 0); }
+        }
+        .animate-pulse-dot {
+          animation: pulse-dot 1.8s infinite ease-in-out;
+        }
+      `}</style>
+
       {/* Header section */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
@@ -602,19 +748,12 @@ export const NetworkToolsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Dynamic Scan Status Panel */}
+      {/* Dynamic Scan Status Bar */}
       {isScanning && (
         <div className="g-card" style={{ padding: '16px 20px', marginBottom: 20, background: 'linear-gradient(135deg, rgba(255, 107, 44, 0.05), rgba(59, 130, 246, 0.03))', borderColor: 'rgba(255, 107, 44, 0.15)' }}>
-          <style>{`
-            @keyframes pulse-dot {
-              0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 107, 44, 0.6); }
-              70% { transform: scale(1.1); box-shadow: 0 0 0 8px rgba(255, 107, 44, 0); }
-              100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(255, 107, 44, 0); }
-            }
-          `}</style>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--color-brand)', animation: 'pulse-dot 1.8s infinite ease-in-out' }}></span>
+              <span className="animate-pulse-dot" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--color-brand)' }}></span>
               <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 {stats.phase || 'Scanning Targets'}
               </span>
@@ -624,7 +763,6 @@ export const NetworkToolsPage: React.FC = () => {
             </span>
           </div>
 
-          {/* Progress Bar Container */}
           <div style={{ width: '100%', height: 8, background: 'var(--color-brand-bg)', borderRadius: 4, overflow: 'hidden', marginBottom: 10, border: '1px solid var(--color-brand-border)' }}>
             <div style={{
               width: `${stats.total_targets > 0 ? Math.min(100, Math.round((stats.tested / stats.total_targets) * 100)) : 0}%`,
@@ -644,322 +782,560 @@ export const NetworkToolsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Summary Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 20 }}>
-        <div className="g-card" style={{ padding: '14px 20px', borderLeft: '3px solid var(--color-brand-text)' }}>
-          <div style={{ fontSize: 11, color: 'var(--color-brand-text)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Tested Targets</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-brand-heading)', marginTop: 4 }}>{stats.tested}</div>
-        </div>
-        <div className="g-card" style={{ padding: '14px 20px', borderLeft: '3px solid var(--color-brand-green)' }}>
-          <div style={{ fontSize: 11, color: 'var(--color-brand-green)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Healthy Nodes</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-brand-green)', marginTop: 4 }}>{stats.healthy}</div>
-        </div>
-        <div className="g-card" style={{ padding: '14px 20px', borderLeft: '3px solid var(--color-brand-red)' }}>
-          <div style={{ fontSize: 11, color: 'var(--color-brand-red)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Failed Nodes</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-brand-red)', marginTop: 4 }}>{stats.failed}</div>
-        </div>
-        <div className="g-card" style={{ padding: '14px 20px', borderLeft: '3px solid var(--color-brand-blue)' }}>
-          <div style={{ fontSize: 11, color: 'var(--color-brand-blue)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Active Workers</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-brand-blue)', marginTop: 4 }}>{stats.in_flight}</div>
-        </div>
-      </div>
-
       {/* Main Grid Layout */}
-      <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gap: '20px' }}>
         
-        {/* Left Column: Tuner Configuration Controls */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Left Column: Config Panel (span 5) */}
+        <div className="col-span-12 lg:col-span-5" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           
-          {/* Card 1: Connection Link Parser */}
-          <div className="g-card" style={{ padding: 16 }}>
-            <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', margin: '0 0 12px' }}>Connection Link Parser</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Card 1: Port Configuration */}
+          <div className="g-card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <h3 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', margin: 0 }}>
+                PORT CONFIGURATION
+              </h3>
+              <div style={{ display: 'flex', gap: 10, fontSize: 11 }}>
+                <button onClick={handleSelectAllPorts} style={{ background: 'none', border: 'none', color: 'var(--color-brand)', fontWeight: 600, cursor: 'pointer' }}>
+                  All
+                </button>
+                <span style={{ color: 'var(--color-brand-border)' }}>|</span>
+                <button onClick={handleClearPorts} style={{ background: 'none', border: 'none', color: 'var(--color-brand-text)', fontWeight: 500, cursor: 'pointer' }}>
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            {/* Ports Grid layout */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginBottom: 12 }}>
+              {COMMON_PORTS.map((port) => {
+                const isChecked = selectedPortsList.includes(port.value);
+                return (
+                  <label
+                    key={port.value}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      border: isChecked ? '1px solid var(--color-brand)' : '1px solid var(--color-brand-border)',
+                      background: isChecked ? 'var(--color-brand-light)' : 'var(--color-brand-card)',
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => handleTogglePort(port.value)}
+                      style={{
+                        accentColor: 'var(--color-brand)',
+                        cursor: 'pointer'
+                      }}
+                    />
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                      {port.label}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            {/* Custom additional ports */}
+            <div>
+              <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>
+                Additional Ports (comma-separated)
+              </label>
               <input
                 type="text"
-                value={rawConfigLink}
-                onChange={(e) => setRawConfigLink(e.target.value)}
-                placeholder="Paste vless:// or trojan:// outbound URL..."
+                value={customPorts}
+                onChange={(e) => setCustomPorts(e.target.value)}
+                placeholder="e.g. 8880, 2082"
                 style={{
                   width: '100%',
-                  padding: '8px 12px',
+                  padding: '7px 10px',
                   borderRadius: 6,
                   border: '1px solid var(--color-brand-border)',
                   background: 'var(--color-brand-bg)',
                   color: 'var(--color-brand-heading)',
-                  fontSize: 12,
+                  fontSize: 11,
                   outline: 'none'
                 }}
               />
-              <button className="btn btn--primary btn--sm" onClick={handleParseLink} style={{ justifyContent: 'center' }}>
-                Parse URI Link
-              </button>
             </div>
           </div>
 
-          {/* Card 2: Sweep Parameters Tuning */}
-          <div className="g-card" style={{ padding: 16 }}>
-            <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', margin: '0 0 16px' }}>Scan Settings Center</h3>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              
-              {/* Drag and Drop Zone */}
-              <div 
-                onDragEnter={handleDragEnter}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                style={{
-                  border: isDragging ? '2px dashed var(--color-brand)' : '1px dashed var(--color-brand-border)',
-                  background: isDragging ? 'var(--color-brand-light)' : 'rgba(255,255,255,0.01)',
-                  borderRadius: 8,
-                  padding: 14,
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease'
-                }}
-              >
-                <FiUpload size={18} style={{ color: 'var(--color-brand-muted)', marginBottom: 6 }} />
-                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
-                  Drag & Drop CIDR Subnets File
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', marginTop: 2 }}>
-                  Accepts standard text (.txt) files
-                </div>
+          {/* Card 2: IP Sources Panel */}
+          <div className="g-card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <h3 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', margin: 0 }}>
+                IP SOURCES ({enabledSourcesCount} ENABLED)
+              </h3>
+              <div style={{ display: 'flex', gap: 10, fontSize: 11 }}>
+                <button
+                  onClick={() => setShowAddSourceInline(!showAddSourceInline)}
+                  style={{ background: 'none', border: 'none', color: 'var(--color-brand)', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}
+                >
+                  <FiPlus size={12} /> Add Source
+                </button>
+                <span style={{ color: 'var(--color-brand-border)' }}>|</span>
+                <button onClick={handleResetSources} style={{ background: 'none', border: 'none', color: 'var(--color-brand-text)', fontWeight: 500, cursor: 'pointer' }}>
+                  Reset
+                </button>
               </div>
+            </div>
 
-              {/* CIDRs subnets textarea */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', textTransform: 'uppercase', letterSpacing: '0.5px', margin: 0 }}>Target Subnet CIDRs</label>
-                  <button 
-                    type="button"
-                    onClick={() => { setShowSourcesModal(true); fetchSources(); }}
-                    style={{ fontSize: 10, padding: 0, height: 'auto', display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-brand)', background: 'none', border: 'none', cursor: 'pointer' }}
-                  >
-                    <FiSettings size={10} /> Manage Sources
-                  </button>
-                </div>
-                <textarea
-                  value={targetCidrs}
-                  onChange={(e) => setTargetCidrs(e.target.value)}
-                  rows={3}
-                  style={{
-                    width: '100%',
-                    padding: '8px 10px',
-                    borderRadius: 6,
-                    border: '1px solid var(--color-brand-border)',
-                    background: 'var(--color-brand-bg)',
-                    fontSize: 11,
-                    color: 'var(--color-brand-heading)',
-                    resize: 'none',
-                    outline: 'none'
-                  }}
-                  placeholder="One subnet per line (e.g. 1.1.1.0/24)"
-                />
-              </div>
-
-              {/* Ports and Concurrency */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Ports</label>
+            {/* Inline Add Source Form */}
+            {showAddSourceInline && (
+              <form onSubmit={handleAddSourceSubmit} style={{ marginBottom: 14, padding: 12, borderRadius: 8, background: 'var(--color-brand-bg)', border: '1px solid var(--color-brand-border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                   <input
                     type="text"
-                    value={selectedPorts}
-                    onChange={(e) => setSelectedPorts(e.target.value)}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                    placeholder="Source Name"
+                    value={newSourceName}
+                    onChange={(e) => setNewSourceName(e.target.value)}
+                    style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                    required
                   />
+                  <select
+                    value={newSourceType}
+                    onChange={(e: any) => setNewSourceType(e.target.value)}
+                    style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                  >
+                    <option value="cidr">CIDR Ranges</option>
+                    <option value="proxyip">Proxy IP list</option>
+                    <option value="domain">Domain list</option>
+                  </select>
                 </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Concurrency</label>
-                  <input
-                    type="number"
-                    value={concurrencyLimit}
-                    onChange={(e) => setConcurrencyLimit(Number(e.target.value))}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-                  />
-                </div>
-              </div>
-
-              {/* Timeout and Max Rate */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Timeout (ms)</label>
-                  <input
-                    type="number"
-                    value={networkTimeoutMs}
-                    onChange={(e) => setNetworkTimeoutMs(Number(e.target.value))}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Max Rate Limit</label>
-                  <input
-                    type="number"
-                    value={maxRateLimit}
-                    onChange={(e) => setMaxRateLimit(Number(e.target.value))}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-                  />
-                </div>
-              </div>
-
-              {/* Attempts and Top Limit */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Probe Attempts</label>
-                  <input
-                    type="number"
-                    value={probeAttempts}
-                    onChange={(e) => setProbeAttempts(Number(e.target.value))}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Top Save Limit</label>
-                  <input
-                    type="number"
-                    value={topLimit}
-                    onChange={(e) => setTopLimit(Number(e.target.value))}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-                  />
-                </div>
-              </div>
-
-              {/* Total Target Count */}
-              <div>
-                <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Total Targets Cap (0 = Unlimited)</label>
                 <input
-                  type="number"
-                  value={totalTargetCount}
-                  onChange={(e) => setTotalTargetCount(Number(e.target.value))}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                  type="url"
+                  placeholder="https://example.com/ips.txt"
+                  value={newSourceUrl}
+                  onChange={(e) => setNewSourceUrl(e.target.value)}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                  required
                 />
-              </div>
-
-              {/* Target Mode */}
-              <div>
-                <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Target Mode</label>
-                <select
-                  value={targetMode}
-                  onChange={(e: any) => setTargetMode(e.target.value)}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-                >
-                  <option value="ws">WebSocket (WS)</option>
-                  <option value="tls">Direct TLS</option>
-                  <option value="http">HTTP Direct</option>
-                </select>
-              </div>
-
-              {/* Target SNI */}
-              <div>
-                <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Target SNI Fingerprint</label>
-                <input
-                  type="text"
-                  value={targetSni}
-                  onChange={(e) => setTargetSni(e.target.value)}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-                />
-              </div>
-
-              {/* Conditionally reveal WebSocket Host and Path settings */}
-              {targetMode === 'ws' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, borderLeft: '2px solid var(--color-brand)', paddingLeft: 10 }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>WS Host Header</label>
-                    <input
-                      type="text"
-                      value={websocketHost}
-                      onChange={(e) => setWebsocketHost(e.target.value)}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>WS Query Path</label>
-                    <input
-                      type="text"
-                      value={websocketPath}
-                      onChange={(e) => setWebsocketPath(e.target.value)}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Checkboxes parameters */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Require WS Nodes</span>
-                    <p style={{ margin: 0, fontSize: 9, color: 'var(--color-brand-muted)' }}>Scan WebSocket-compatible ports only.</p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={requireWs}
-                    onChange={(e) => setRequireWs(e.target.checked)}
-                    style={{ width: 14, height: 14, accentColor: 'var(--color-brand)' }}
-                  />
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Auto-Discover Neighbors</span>
-                    <p style={{ margin: 0, fontSize: 9, color: 'var(--color-brand-muted)' }}>Probes adjacent subnets of healthy IPs.</p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={enableNeighbors}
-                    onChange={(e) => setEnableNeighbors(e.target.checked)}
-                    style={{ width: 14, height: 14, accentColor: 'var(--color-brand)' }}
-                  />
-                </div>
-              </div>
-
-              {/* Action sweeps control buttons */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-                {isScanning ? (
-                  <button className="btn" onClick={handleStopScan} style={{ flex: 1, justifyContent: 'center', background: 'var(--color-brand-red)', borderColor: 'var(--color-brand-red)', color: '#fff' }}>
-                    <FiSquare style={{ marginRight: 6 }} /> Stop Sweep
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button type="button" onClick={() => setShowAddSourceInline(false)} className="btn btn--sm btn--secondary" style={{ padding: '4px 10px' }}>
+                    Cancel
                   </button>
-                ) : (
-                  <>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 1, justifyContent: 'center' }}>
-                        <FiPlay style={{ marginRight: 4 }} /> Start Sweep
-                      </button>
-                      <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Reload and rerun historical settings from Pebble DB cache">
-                        Retry Last
-                      </button>
-                    </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button 
-                        className="btn btn--secondary" 
-                        onClick={() => handleStartScan(false, true)} 
-                        style={{ flex: 1, justifyContent: 'center' }}
-                        title="Scan only previously saved discovered nodes to verify if they are still healthy"
-                      >
-                        <FiRefreshCw style={{ marginRight: 4 }} /> Rescan Healthy
-                      </button>
-                      <button 
-                        className="btn btn--secondary" 
-                        onClick={handleCleanupDiscovered} 
-                        style={{ flex: 1, justifyContent: 'center', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.2)' }}
-                        title="Delete failed discovered nodes from database"
-                      >
-                        <FiTrash2 style={{ marginRight: 4 }} /> Cleanup Failed
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
+                  <button type="submit" className="btn btn--sm btn--primary" style={{ padding: '4px 10px' }}>
+                    Add
+                  </button>
+                </div>
+              </form>
+            )}
 
+            {/* Sources List */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 280, overflowY: 'auto', paddingRight: 4 }}>
+              {sources.length === 0 ? (
+                <div style={{ padding: '20px 0', textAlign: 'center', color: 'var(--color-brand-muted)', fontSize: 11 }}>
+                  No scanner sources seeded.
+                </div>
+              ) : (
+                sources.map((src) => {
+                  const isCidr = src.type === 'cidr';
+                  const isProxy = src.type === 'proxyip';
+                  
+                  return (
+                    <div
+                      key={src.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '10px 12px',
+                        borderRadius: 8,
+                        background: 'var(--color-brand-card)',
+                        border: '1px solid var(--color-brand-border)',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 6, background: 'var(--color-brand-bg)', border: '1px solid var(--color-brand-border)', flexShrink: 0 }}>
+                          <FiGlobe size={13} style={{ color: isCidr ? 'var(--color-brand-indigo)' : isProxy ? 'var(--color-brand-green)' : 'var(--color-brand-blue)' }} />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{
+                              fontSize: 8,
+                              fontWeight: 700,
+                              padding: '1px 4px',
+                              borderRadius: 4,
+                              background: isCidr ? 'rgba(99, 102, 241, 0.08)' : isProxy ? 'rgba(34, 197, 94, 0.08)' : 'rgba(59, 130, 246, 0.08)',
+                              color: isCidr ? 'var(--color-brand-indigo)' : isProxy ? 'var(--color-brand-green)' : 'var(--color-brand-blue)',
+                              textTransform: 'uppercase',
+                              border: '1px solid transparent'
+                            }}>
+                              {src.type}
+                            </span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {src.name}
+                            </span>
+                          </div>
+                          <span style={{ fontSize: 10, color: 'var(--color-brand-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>
+                            {src.url}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 10 }}>
+                        <ToggleSwitch
+                          checked={src.is_enabled}
+                          onChange={() => handleToggleSource(src)}
+                        />
+                        <button
+                          onClick={() => handleDeleteSource(src.id)}
+                          style={{ background: 'none', border: 'none', color: 'var(--color-brand-red)', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center' }}
+                          title="Delete source"
+                        >
+                          <FiTrash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Card 3: Advanced tuning & controls wrapper */}
+          <div className="g-card" style={{ padding: 20 }}>
+            <button
+              onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
+              style={{
+                display: 'flex',
+                width: '100%',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                padding: 0,
+                outline: 'none'
+              }}
+            >
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                Advanced Sweep Parameters
+              </span>
+              {showAdvancedSettings ? <FiChevronUp size={16} /> : <FiChevronDown size={16} />}
+            </button>
+
+            {showAdvancedSettings && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 14 }}>
+                
+                {/* Drag and Drop Zone */}
+                <div 
+                  onDragEnter={handleDragEnter}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  style={{
+                    border: isDragging ? '2px dashed var(--color-brand)' : '1px dashed var(--color-brand-border)',
+                    background: isDragging ? 'var(--color-brand-light)' : 'rgba(255,255,255,0.01)',
+                    borderRadius: 8,
+                    padding: 12,
+                    textAlign: 'center',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <FiUpload size={16} style={{ color: 'var(--color-brand-muted)', marginBottom: 4 }} />
+                  <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                    Drag & Drop Custom CIDR Text File
+                  </div>
+                </div>
+
+                {/* Connection Parser input */}
+                <div>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>
+                    Emulation Link Parser
+                  </label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      type="text"
+                      value={rawConfigLink}
+                      onChange={(e) => setRawConfigLink(e.target.value)}
+                      placeholder="Paste vless:// or trojan:// outbound link..."
+                      style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                    />
+                    <button type="button" className="btn btn--primary btn--sm" onClick={handleParseLink}>
+                      Parse
+                    </button>
+                  </div>
+                </div>
+
+                {/* CIDRs textarea backup */}
+                <div>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>
+                    Custom CIDRs (Fallback if DB empty)
+                  </label>
+                  <textarea
+                    value={targetCidrs}
+                    onChange={(e) => setTargetCidrs(e.target.value)}
+                    rows={2}
+                    style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', fontSize: 11, color: 'var(--color-brand-heading)', resize: 'none', outline: 'none' }}
+                  />
+                </div>
+
+                {/* Settings Grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Concurrency</label>
+                    <input
+                      type="number"
+                      value={concurrencyLimit}
+                      onChange={(e) => setConcurrencyLimit(Number(e.target.value))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Timeout (ms)</label>
+                    <input
+                      type="number"
+                      value={networkTimeoutMs}
+                      onChange={(e) => setNetworkTimeoutMs(Number(e.target.value))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Attempts</label>
+                    <input
+                      type="number"
+                      value={probeAttempts}
+                      onChange={(e) => setProbeAttempts(Number(e.target.value))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Top Save Limit</label>
+                    <input
+                      type="number"
+                      value={topLimit}
+                      onChange={(e) => setTopLimit(Number(e.target.value))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Target Mode</label>
+                  <select
+                    value={targetMode}
+                    onChange={(e: any) => setTargetMode(e.target.value)}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                  >
+                    <option value="ws">WebSocket (WS)</option>
+                    <option value="tls">Direct TLS</option>
+                    <option value="http">HTTP Direct</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>SNI Hostname Fingerprint</label>
+                  <input
+                    type="text"
+                    value={targetSni}
+                    onChange={(e) => setTargetSni(e.target.value)}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                  />
+                </div>
+
+                {targetMode === 'ws' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, borderLeft: '2px solid var(--color-brand)', paddingLeft: 10 }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>WS Host Header</label>
+                      <input
+                        type="text"
+                        value={websocketHost}
+                        onChange={(e) => setWebsocketHost(e.target.value)}
+                        style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>WS Query Path</label>
+                      <input
+                        type="text"
+                        value={websocketPath}
+                        onChange={(e) => setWebsocketPath(e.target.value)}
+                        style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Require WS Compatibility</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={requireWs}
+                      onChange={(e) => setRequireWs(e.target.checked)}
+                      style={{ width: 14, height: 14, accentColor: 'var(--color-brand)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Auto-Discover Subnet Neighbors</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={enableNeighbors}
+                      onChange={(e) => setEnableNeighbors(e.target.checked)}
+                      style={{ width: 14, height: 14, accentColor: 'var(--color-brand)' }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Targets Cap</label>
+                    <input
+                      type="number"
+                      value={totalTargetCount}
+                      onChange={(e) => setTotalTargetCount(Number(e.target.value))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: 'var(--color-brand-text)', marginBottom: 4, textTransform: 'uppercase' }}>Rate Limit (0=No)</label>
+                    <input
+                      type="number"
+                      value={maxRateLimit}
+                      onChange={(e) => setMaxRateLimit(Number(e.target.value))}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
+                    />
+                  </div>
+                </div>
+
+              </div>
+            )}
+          </div>
+
+          {/* Card 4: Action sweeps control buttons */}
+          <div className="g-card" style={{ padding: 20 }}>
+            <h3 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 12, marginTop: 0 }}>
+              SCAN CONTROL CENTER
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {isScanning ? (
+                <button className="btn" onClick={handleStopScan} style={{ width: '100%', justifyContent: 'center', background: 'var(--color-brand-red)', borderColor: 'var(--color-brand-red)', color: '#fff', padding: '10px' }}>
+                  <FiSquare style={{ marginRight: 6 }} /> Stop Sweep Operations
+                </button>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 1, justifyContent: 'center', padding: '10px' }}>
+                      <FiPlay style={{ marginRight: 6 }} /> Start Sweep
+                    </button>
+                    <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Rerun last configuration scan parameters" style={{ padding: '10px' }}>
+                      Retry Last
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button 
+                      className="btn btn--secondary" 
+                      onClick={() => handleStartScan(false, true)} 
+                      style={{ flex: 1, justifyContent: 'center' }}
+                      title="Rescan previously verified healthy nodes"
+                    >
+                      <FiRefreshCw style={{ marginRight: 6 }} /> Rescan Healthy
+                    </button>
+                    <button 
+                      className="btn btn--secondary" 
+                      onClick={handleCleanupDiscovered} 
+                      style={{ flex: 1, justifyContent: 'center', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                      title="Delete all failed nodes from database"
+                    >
+                      <FiTrash2 style={{ marginRight: 6 }} /> Clean Failed
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Right Column: Split panel (Top: Candidates list table, Bottom: Live logs terminal) */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        {/* Right Column: Visual Telemetry + Output Table + Logs (span 7) */}
+        <div className="col-span-12 lg:col-span-7" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           
-          {/* Top card: Discovered Candidates table */}
+          {/* Card 1: Radar status & metrics */}
+          <div className="g-card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+              
+              <div style={{ display: 'flex', width: '100%', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-around', gap: 20 }}>
+                {/* Sonar Radar Graphic */}
+                <div style={{ position: 'relative', width: 120, height: 120, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.25)', background: 'radial-gradient(circle, rgba(255, 107, 44, 0.05) 0%, rgba(0,0,0,0) 70%)', overflow: 'hidden', flexShrink: 0 }}>
+                  <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.15)', transform: 'scale(0.66)' }} />
+                  <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.1)', transform: 'scale(0.33)' }} />
+                  <div style={{ position: 'absolute', width: '100%', height: '1px', background: 'rgba(255, 107, 44, 0.12)', top: '50%', left: 0 }} />
+                  <div style={{ position: 'absolute', height: '100%', width: '1px', background: 'rgba(255, 107, 44, 0.12)', left: '50%', top: 0 }} />
+                  
+                  {/* Blinking center spot */}
+                  <div style={{ position: 'absolute', width: 6, height: 6, borderRadius: '50%', background: 'var(--color-brand)', boxShadow: '0 0 10px var(--color-brand)', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 5 }} />
+                  
+                  {/* Sweep ray */}
+                  <div 
+                    className={`clip-radar ${isScanning ? 'animate-radar-sweep' : 'opacity-20'}`}
+                    style={{
+                      position: 'absolute',
+                      width: '50%',
+                      height: '50%',
+                      top: 0,
+                      left: '50%',
+                      transformOrigin: 'bottom left',
+                      background: 'linear-gradient(to right, rgba(255, 107, 44, 0.4) 0%, rgba(255, 107, 44, 0) 100%)',
+                      clipPath: 'polygon(0 100%, 100% 100%, 100% 0)'
+                    }}
+                  />
+                </div>
+
+                {/* Metrics */}
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 10 }}>
+                    {isScanning ? `${stats.phase || 'SCANNING IN PROGRESS...'}` : 'SCAN COMPLETE'}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                    <div>
+                      <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-text)', fontWeight: 600, textTransform: 'uppercase' }}>Scanned</span>
+                      <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
+                        {formatCount(stats.tested)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-green)', fontWeight: 600, textTransform: 'uppercase' }}>Alive</span>
+                      <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-green)' }}>
+                        {formatCount(stats.healthy)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-red)', fontWeight: 600, textTransform: 'uppercase' }}>Dead</span>
+                      <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-red)' }}>
+                        {formatCount(stats.failed)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-blue)', fontWeight: 600, textTransform: 'uppercase' }}>Verifying</span>
+                      <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-blue)' }}>
+                        {stats.in_flight}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          {/* Card 2: Discovered Candidates Table */}
           <div className="g-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', minHeight: 320, maxHeight: 420 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <FiList style={{ color: 'var(--color-brand)', fontSize: 16 }} />
                 <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
@@ -967,14 +1343,14 @@ export const NetworkToolsPage: React.FC = () => {
                 </span>
               </div>
               
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{ position: 'relative', width: 180 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', width: 140 }}>
                   <FiSearch style={{ position: 'absolute', left: 8, top: 8, color: 'var(--color-brand-muted)', fontSize: 12 }} />
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search candidates..."
+                    placeholder="Search..."
                     style={{
                       width: '100%',
                       padding: '5px 10px 5px 26px',
@@ -1022,7 +1398,7 @@ export const NetworkToolsPage: React.FC = () => {
                   }}
                   title="Copy verified hosts (shortcut: C)"
                 >
-                  <FiClipboard /> Copy All
+                  <FiClipboard /> Copy
                 </button>
 
                 <button 
@@ -1043,7 +1419,7 @@ export const NetworkToolsPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Candidates Table List */}
+            {/* Candidates Table */}
             <div style={{ flex: 1, overflowY: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, textAlign: 'left' }}>
                 <thead>
@@ -1061,7 +1437,7 @@ export const NetworkToolsPage: React.FC = () => {
                   {filteredCandidates.length === 0 ? (
                     <tr>
                       <td colSpan={7} style={{ padding: 30, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
-                        <FiFileText size={20} style={{ marginBottom: 8, opacity: 0.3 }} />
+                        <FiFileText size={20} style={{ marginBottom: 8, opacity: 0.3, display: 'inline-block' }} />
                         <div>No candidates found.</div>
                       </td>
                     </tr>
@@ -1113,7 +1489,7 @@ export const NetworkToolsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Bottom card: Live Monospace Scanner Logs Terminal */}
+          {/* Card 3: Monospace Diagnostic Logs */}
           <div className="g-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', height: 280 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1129,7 +1505,7 @@ export const NetworkToolsPage: React.FC = () => {
                   value={logsFilter}
                   onChange={(e) => setLogsFilter(e.target.value)}
                   style={{
-                    width: 140,
+                    width: 120,
                     padding: '4px 8px',
                     borderRadius: 6,
                     border: '1px solid var(--color-brand-border)',
@@ -1142,7 +1518,7 @@ export const NetworkToolsPage: React.FC = () => {
                 <button 
                   className="btn btn--sm btn--secondary" 
                   onClick={() => setScannerLogs([])}
-                  title="Clear scanner logs"
+                  title="Clear logs"
                   style={{ display: 'flex', alignItems: 'center', gap: 4 }}
                 >
                   <FiTrash2 size={12} /> Clear
@@ -1150,7 +1526,7 @@ export const NetworkToolsPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Terminal logs content */}
+            {/* Monospace terminal body */}
             <div
               ref={logsContainerRef}
               style={{
@@ -1170,14 +1546,14 @@ export const NetworkToolsPage: React.FC = () => {
             >
               {filteredLogs.length === 0 ? (
                 <div style={{ color: 'var(--color-brand-muted)', textAlign: 'center', marginTop: 70 }}>
-                  No diagnostic scanner logs available. Click "Start Sweep" to stream.
+                  No diagnostic logs. Click "Start Sweep" to stream live.
                 </div>
               ) : (
                 filteredLogs.map((log, idx) => {
                   let color = 'var(--color-brand-text)';
                   if (log.includes('[ERROR]') || log.includes('Critical:') || log.includes('Failed candidate:')) {
                     color = 'var(--color-brand-red)';
-                  } else if (log.includes('Healthy candidate:') || log.includes('Success')) {
+                  } else if (log.includes('Healthy candidate:') || log.includes('Success') || log.includes('clean node')) {
                     color = 'var(--color-brand-green)';
                   } else if (log.includes('Initiating') || log.includes('Parameters:')) {
                     color = 'var(--color-brand)';
@@ -1197,157 +1573,6 @@ export const NetworkToolsPage: React.FC = () => {
 
       </div>
 
-      {showSourcesModal && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            background: 'rgba(0, 0, 0, 0.6)',
-            backdropFilter: 'blur(4px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-          }}
-          onClick={() => setShowSourcesModal(false)}
-        >
-          <div
-            style={{
-              background: 'var(--color-brand-card)',
-              padding: 24,
-              borderRadius: 12,
-              width: 580,
-              maxWidth: '95%',
-              maxHeight: '85vh',
-              overflowY: 'auto',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.15)',
-              border: '1px solid var(--color-brand-border)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 16
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
-                Scan Ingestion Sources
-              </h3>
-              <button
-                className="btn btn--sm btn--secondary"
-                onClick={() => setShowSourcesModal(false)}
-                style={{ padding: '4px 8px' }}
-              >
-                Close
-              </button>
-            </div>
-
-            {/* Sources List */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {sources.map((src) => (
-                <div key={src.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 8, background: 'var(--color-brand-bg)', border: '1px solid var(--color-brand-border)' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>{src.name}</span>
-                      <span style={{
-                        fontSize: 9,
-                        fontWeight: 700,
-                        padding: '2px 6px',
-                        borderRadius: 10,
-                        background: src.type === 'cidr' ? 'rgba(99, 102, 241, 0.1)' : src.type === 'proxyip' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(59, 130, 246, 0.1)',
-                        color: src.type === 'cidr' ? 'var(--color-brand-indigo)' : src.type === 'proxyip' ? 'var(--color-brand-green)' : 'var(--color-brand-blue)',
-                        textTransform: 'uppercase'
-                      }}>
-                        {src.type}
-                      </span>
-                    </div>
-                    <span style={{ fontSize: 10, color: 'var(--color-brand-muted)', wordBreak: 'break-all' }}>{src.url}</span>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <input
-                      type="checkbox"
-                      checked={src.is_enabled}
-                      onChange={() => handleToggleSource(src)}
-                      style={{ width: 14, height: 14, accentColor: 'var(--color-brand)', cursor: 'pointer' }}
-                    />
-                    <button
-                      onClick={() => handleDeleteSource(src.id)}
-                      style={{ background: 'none', border: 'none', color: 'var(--color-brand-red)', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center' }}
-                      title="Delete source"
-                    >
-                      <FiTrash2 size={13} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Inline Add Form */}
-            <div style={{ marginTop: 8, paddingTop: 16, borderTop: '1px solid var(--color-brand-border)' }}>
-              <h4 style={{ margin: '0 0 10px', fontSize: 11, fontWeight: 700, color: 'var(--color-brand-text)', textTransform: 'uppercase' }}>
-                Add New IP Ingestion Source
-              </h4>
-              <AddSourceForm onAdd={handleAddSource} />
-            </div>
-          </div>
-        </div>
-      )}
-
     </div>
   );
 };
-
-const AddSourceForm: React.FC<{ onAdd: (name: string, url: string, type: 'cidr' | 'proxyip' | 'domain') => void }> = ({ onAdd }) => {
-  const [name, setName] = React.useState('');
-  const [url, setUrl] = React.useState('');
-  const [type, setType] = React.useState<'cidr' | 'proxyip' | 'domain'>('cidr');
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name || !url) return;
-    onAdd(name, url, type);
-    setName('');
-    setUrl('');
-  };
-
-  return (
-    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-        <input
-          type="text"
-          placeholder="Source Name (e.g. Cloudflare Official)"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-          required
-        />
-        <select
-          value={type}
-          onChange={(e: any) => setType(e.target.value)}
-          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-        >
-          <option value="cidr">CIDR IP Ranges</option>
-          <option value="proxyip">Proxy IP list</option>
-          <option value="domain">Domain hostname list</option>
-        </select>
-      </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <input
-          type="url"
-          placeholder="https://example.com/ips.txt"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 11, outline: 'none' }}
-          required
-        />
-        <button type="submit" className="btn btn--primary btn--sm" style={{ padding: '6px 14px' }}>
-          Add Source
-        </button>
-      </div>
-    </form>
-  );
-};
-

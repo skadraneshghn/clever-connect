@@ -2,6 +2,7 @@ package pebble
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -11,6 +12,9 @@ import (
 )
 
 func SaveDomain(domain *models.Domain) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
 	if domain.Category == "" {
 		domain.Category = "ALL"
 	}
@@ -23,6 +27,9 @@ func SaveDomain(domain *models.Domain) error {
 }
 
 func SaveDomainsBulk(domains []models.Domain) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
 	if len(domains) == 0 {
 		return nil
 	}
@@ -41,6 +48,9 @@ func SaveDomainsBulk(domains []models.Domain) error {
 }
 
 func GetDomain(id string) (*models.Domain, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("pebble database is not initialized")
+	}
 	key := []byte("domain_" + id)
 	val, closer, err := DB.Get(key)
 	if err != nil {
@@ -58,6 +68,9 @@ func GetDomain(id string) (*models.Domain, error) {
 }
 
 func GetDomainByNameAndCategory(name, category string) (*models.Domain, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("pebble database is not initialized")
+	}
 	if category == "" {
 		category = "ALL"
 	}
@@ -87,6 +100,9 @@ func GetDomainByName(name string) (*models.Domain, error) {
 }
 
 func ListCategories() []string {
+	if DB == nil {
+		return []string{"ALL"}
+	}
 	categoriesMap := make(map[string]bool)
 	categoriesMap["ALL"] = true
 
@@ -114,12 +130,24 @@ func ListCategories() []string {
 	return list
 }
 
-func ListDomains(category, search, status, tlsFilter string, httpStatus int, limit, offset int, sortBy, sortOrder string) ([]models.Domain, int) {
+type DomainStats struct {
+	Total    int `json:"total"`
+	Online   int `json:"online"`
+	Offline  int `json:"offline"`
+	Checking int `json:"checking"`
+	SSLValid int `json:"ssl_valid"`
+}
+
+func ListDomains(category, search, status, tlsFilter string, httpStatus int, limit, offset int, sortBy, sortOrder string) ([]models.Domain, int, DomainStats) {
+	var stats DomainStats
+	if DB == nil {
+		return []models.Domain{}, 0, stats
+	}
 	var all []models.Domain
 	
 	iter, err := DB.NewIter(nil)
 	if err != nil {
-		return all, 0
+		return all, 0, stats
 	}
 	defer iter.Close()
 
@@ -129,6 +157,21 @@ func ListDomains(category, search, status, tlsFilter string, httpStatus int, lim
 		if err := json.Unmarshal(iter.Value(), &d); err == nil {
 			if d.Category == "" {
 				d.Category = "ALL"
+			}
+
+			// Compute stats for all domains matching the category (ignoring search filters and pagination)
+			if category == "" || category == "ALL" || d.Category == category {
+				stats.Total++
+				if d.Status == "online" {
+					stats.Online++
+				} else if d.Status == "offline" || d.Status == "timeout" || d.Status == "nxdomain" {
+					stats.Offline++
+				} else if d.Status == "checking" {
+					stats.Checking++
+				}
+				if d.TLSStatus {
+					stats.SSLValid++
+				}
 			}
 
 			// Filter: Category
@@ -158,7 +201,6 @@ func ListDomains(category, search, status, tlsFilter string, httpStatus int, lim
 					continue
 				}
 				if tlsFilter == "expired" && (!d.TLSStatus || d.TLSExpiryDays > 0) {
-					// expired tls is invalid or has 0/negative expiry days
 					continue
 				}
 			}
@@ -197,23 +239,29 @@ func ListDomains(category, search, status, tlsFilter string, httpStatus int, lim
 	total := len(all)
 	if limit > 0 {
 		if offset >= total {
-			return []models.Domain{}, total
+			return []models.Domain{}, total, stats
 		}
 		end := offset + limit
 		if end > total {
 			end = total
 		}
-		return all[offset:end], total
+		return all[offset:end], total, stats
 	}
-	return all, total
+	return all, total, stats
 }
 
 func DeleteDomain(id string) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
 	key := []byte("domain_" + id)
 	return DB.Delete(key, pebble.Sync)
 }
 
 func DeleteDomainsBulk(ids []string) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
 	if len(ids) == 0 {
 		return nil
 	}
@@ -228,6 +276,9 @@ func DeleteDomainsBulk(ids []string) error {
 }
 
 func DeleteAllDomains(category string) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
 	iter, err := DB.NewIter(nil)
 	if err != nil {
 		return err
