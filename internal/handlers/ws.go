@@ -13,6 +13,7 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/domainchecker"
 	"clever-connect/internal/downloader"
 	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
@@ -67,13 +68,32 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	telemetryChan := make(chan gin.H, 200)
 
 	scanner.GetEngine().RegisterListener(clientID, func(stats scanner.JobStats, event string, details interface{}) {
-		select {
-		case telemetryChan <- gin.H{
+		payload := gin.H{
 			"type":  "scanner:telemetry",
 			"event": event,
 			"stats": stats,
-			"data":  details,
-		}:
+		}
+
+		if details != nil {
+			if detailMap, ok := details.(gin.H); ok {
+				if dataField, exists := detailMap["data"]; exists {
+					payload["data"] = dataField
+				} else {
+					payload["data"] = details
+				}
+			} else if dataMap, ok := details.(map[string]interface{}); ok {
+				if dataField, exists := dataMap["data"]; exists {
+					payload["data"] = dataField
+				} else {
+					payload["data"] = details
+				}
+			} else {
+				payload["data"] = details
+			}
+		}
+
+		select {
+		case telemetryChan <- payload:
 		default:
 		}
 	})
@@ -84,6 +104,28 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			scanner.GetEngine().CancelActiveScan()
 		}
 	}()
+
+	domainchecker.GetEngine().RegisterListener(clientID, func(result domainchecker.DomainResult) {
+		payload := gin.H{
+			"type": "DOMAIN_CHECK_RESULT",
+			"data": gin.H{
+				"id":              result.ID,
+				"domain_name":     result.DomainName,
+				"status":          result.Status,
+				"ip_addresses":    result.IPAddresses,
+				"http_status":     result.HTTPStatus,
+				"latency_ms":      result.LatencyMs,
+				"tls_status":      result.TLSStatus,
+				"tls_expiry_days": result.TLSExpiryDays,
+				"last_checked_at": result.LastCheckedAt,
+			},
+		}
+		select {
+		case telemetryChan <- payload:
+		default:
+		}
+	})
+	defer domainchecker.GetEngine().UnregisterListener(clientID)
 
 	// Read loop (to handle inbound actions like scanner:start, scanner:stop)
 	go func() {
@@ -105,21 +147,22 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			switch incoming.Type {
 			case "scanner:start":
 				var req struct {
-					TargetCIDRs      []string `json:"target_cidrs"`
-					SelectedPorts    []int    `json:"selected_ports"`
-					ConcurrencyLimit int      `json:"concurrency_limit"`
-					MaxRateLimit     float64  `json:"max_rate_limit"`
-					NetworkTimeoutMs int      `json:"network_timeout_ms"`
-					ProbeAttempts    int      `json:"probe_attempts"`
-					TargetMode       string   `json:"target_mode"`
-					TargetSNI        string   `json:"target_sni"`
-					WebSocketHost    string   `json:"websocket_host"`
-					WebSocketPath    string   `json:"websocket_path"`
-					RequireWS        bool     `json:"require_ws"`
-					EnableNeighbors  bool     `json:"enable_neighbors"`
-					TopLimit         int      `json:"top_limit"`
-					TotalTargetCount int      `json:"total_target_count"`
-					Retry            bool     `json:"retry"`
+					TargetCIDRs        []string `json:"target_cidrs"`
+					SelectedPorts      []int    `json:"selected_ports"`
+					ConcurrencyLimit   int      `json:"concurrency_limit"`
+					MaxRateLimit       float64  `json:"max_rate_limit"`
+					NetworkTimeoutMs   int      `json:"network_timeout_ms"`
+					ProbeAttempts      int      `json:"probe_attempts"`
+					TargetMode         string   `json:"target_mode"`
+					TargetSNI          string   `json:"target_sni"`
+					WebSocketHost      string   `json:"websocket_host"`
+					WebSocketPath      string   `json:"websocket_path"`
+					RequireWS          bool     `json:"require_ws"`
+					EnableNeighbors    bool     `json:"enable_neighbors"`
+					TopLimit           int      `json:"top_limit"`
+					TotalTargetCount   int      `json:"total_target_count"`
+					Retry              bool     `json:"retry"`
+					ScanDiscoveredOnly bool     `json:"scan_discovered_only"`
 				}
 				if err := json.Unmarshal(incoming.Data, &req); err == nil {
 					var scanCfg scanner.ScanConfig
@@ -166,27 +209,28 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 						}
 
 						scanCfg = scanner.ScanConfig{
-							TargetCIDRs:      req.TargetCIDRs,
-							SelectedPorts:    req.SelectedPorts,
-							ConcurrencyLimit: req.ConcurrencyLimit,
-							MaxRateLimit:     req.MaxRateLimit,
-							NetworkTimeout:   time.Duration(req.NetworkTimeoutMs) * time.Millisecond,
-							ProbeAttempts:    req.ProbeAttempts,
-							TargetMode:       req.TargetMode,
-							TargetSNI:        req.TargetSNI,
-							WebSocketHost:    req.WebSocketHost,
-							WebSocketPath:    req.WebSocketPath,
-							RequireWS:        req.RequireWS,
-							EnableNeighbors:  req.EnableNeighbors,
-							TopLimit:         req.TopLimit,
-							TotalTargetCount: req.TotalTargetCount,
+							TargetCIDRs:        req.TargetCIDRs,
+							SelectedPorts:      req.SelectedPorts,
+							ConcurrencyLimit:   req.ConcurrencyLimit,
+							MaxRateLimit:       req.MaxRateLimit,
+							NetworkTimeout:     time.Duration(req.NetworkTimeoutMs) * time.Millisecond,
+							ProbeAttempts:      req.ProbeAttempts,
+							TargetMode:         req.TargetMode,
+							TargetSNI:          req.TargetSNI,
+							WebSocketHost:      req.WebSocketHost,
+							WebSocketPath:      req.WebSocketPath,
+							RequireWS:          req.RequireWS,
+							EnableNeighbors:    req.EnableNeighbors,
+							TopLimit:           req.TopLimit,
+							TotalTargetCount:   req.TotalTargetCount,
+							ScanDiscoveredOnly: req.ScanDiscoveredOnly,
 						}
 					}
 
 					if scanCfg.NetworkTimeout <= 0 {
 						scanCfg.NetworkTimeout = 5 * time.Second
 					}
-					_ = scanner.GetEngine().StartScan(c.Request.Context(), &scanCfg)
+					_ = scanner.GetEngine().StartScan(c.Request.Context(), &scanCfg, req.Retry)
 				}
 			case "scanner:stop":
 				scanner.GetEngine().CancelActiveScan()
@@ -209,26 +253,13 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	totalDownload := 8120.0
 	totalUpload := 2450.0
 
-	// 250ms Rate-Limited Dispatcher for high-frequency updates
-	rateTicker := time.NewTicker(250 * time.Millisecond)
-	defer rateTicker.Stop()
-
-	var pendingTelemetry gin.H
-	var lastSentTelemetry time.Time
-
 	for {
 		select {
 		case <-doneChan:
 			return
 		case msg := <-telemetryChan:
-			pendingTelemetry = msg
-		case <-rateTicker.C:
-			if pendingTelemetry != nil && time.Since(lastSentTelemetry) >= 250*time.Millisecond {
-				if err := conn.WriteJSON(pendingTelemetry); err != nil {
-					return
-				}
-				pendingTelemetry = nil
-				lastSentTelemetry = time.Now()
+			if err := conn.WriteJSON(msg); err != nil {
+				return
 			}
 		case <-ticker.C:
 			var msg interface{}

@@ -119,6 +119,9 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&models.V2RayClientFrontingMap{},
 		&models.V2RayClientSetting{},
 		&models.V2RayClientSubscription{},
+		&models.Domain{},
+		&models.ScannerSource{},
+		&models.ScannerConfig{},
 	); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
@@ -225,6 +228,38 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			EngineMode:          "swarm",
 			MaxWorkers:          5,
 			LoadBalanceAlgo:     "least-latency",
+		})
+	}
+
+	// Seed default ScannerSource
+	var sourceCount int64
+	if DB.Model(&models.ScannerSource{}).Count(&sourceCount); sourceCount == 0 {
+		logger.Info("DB", "Seeding default scanner sources")
+		defaultSources := []models.ScannerSource{
+			{Name: "Cloudflare Official", URL: "https://www.cloudflare.com/ips-v4/", Type: "cidr", IsEnabled: true},
+			{Name: "CM List", URL: "https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt", Type: "cidr", IsEnabled: false},
+			{Name: "AS13335 (Cloudflare)", URL: "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/13335/ipv4-aggregated.txt", Type: "cidr", IsEnabled: false},
+			{Name: "AS209242 (Cloudflare)", URL: "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/209242/ipv4-aggregated.txt", Type: "cidr", IsEnabled: false},
+			{Name: "AS24429 (Alibaba)", URL: "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/24429/ipv4-aggregated.txt", Type: "cidr", IsEnabled: false},
+			{Name: "AS199524 (G-Core)", URL: "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/199524/ipv4-aggregated.txt", Type: "cidr", IsEnabled: false},
+			{Name: "Reverse Proxy IPs", URL: "https://raw.githubusercontent.com/cmliu/ACL4SSR/main/baipiao.txt", Type: "proxyip", IsEnabled: false},
+			{Name: "Foreign Domains", URL: "https://raw.githubusercontent.com/Blacknuno/Nova-Proxy/refs/heads/main/dominos.text", Type: "domain", IsEnabled: false},
+			{Name: "Iranian Domains", URL: "https://raw.githubusercontent.com/Blacknuno/Nova-Proxy/refs/heads/main/IRdominos.text", Type: "domain", IsEnabled: false},
+		}
+		for _, s := range defaultSources {
+			DB.Create(&s)
+		}
+	}
+
+	// Seed default ScannerConfig
+	var configCount int64
+	if DB.Model(&models.ScannerConfig{}).Count(&configCount); configCount == 0 {
+		logger.Info("DB", "Seeding default scanner config")
+		DB.Create(&models.ScannerConfig{
+			DeepTestEnabled:     true,
+			TargetSNI:           "nova2.altramax083.workers.dev",
+			AttemptCount:        3,
+			MinSuccessThreshold: 2,
 		})
 	}
 

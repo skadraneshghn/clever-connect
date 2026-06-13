@@ -110,6 +110,9 @@ func MigrateFromSQLite(sqliteDB *gorm.DB) error {
 
 // SaveClientConfig saves a config. If ID is 0, it creates a new one.
 func SaveClientConfig(cfg *models.V2RayClientConfig) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
 	mu.Lock()
 	if cfg.ID == 0 {
 		cfg.ID = nextID
@@ -130,6 +133,9 @@ func SaveClientConfig(cfg *models.V2RayClientConfig) error {
 
 // SaveClientConfigsBulk saves multiple configs atomically.
 func SaveClientConfigsBulk(configs []models.V2RayClientConfig) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
 	if len(configs) == 0 {
 		return nil
 	}
@@ -158,6 +164,9 @@ func SaveClientConfigsBulk(configs []models.V2RayClientConfig) error {
 
 // GetClientConfig retrieves a config by ID.
 func GetClientConfig(id uint) (*models.V2RayClientConfig, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("pebble database is not initialized")
+	}
 	key := []byte(fmt.Sprintf("%d", id))
 	val, closer, err := DB.Get(key)
 	if err != nil {
@@ -175,12 +184,18 @@ func GetClientConfig(id uint) (*models.V2RayClientConfig, error) {
 
 // DeleteClientConfig removes a config by ID.
 func DeleteClientConfig(id uint) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
 	key := []byte(fmt.Sprintf("%d", id))
 	return DB.Delete(key, pebble.Sync)
 }
 
 // DeleteAllClientConfigs removes all configs.
 func DeleteAllClientConfigs() error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
 	iter, err := DB.NewIter(nil)
 	if err != nil {
 		return err
@@ -216,6 +231,9 @@ type ConfigFilter struct {
 // ListClientConfigs returns configs with advanced filtering and pagination.
 func ListClientConfigs(filter ConfigFilter, offset, limit int) ([]models.V2RayClientConfig, int) {
 	var all []models.V2RayClientConfig
+	if DB == nil {
+		return all, 0
+	}
 	
 	iter, err := DB.NewIter(nil)
 	if err != nil {
@@ -316,6 +334,9 @@ func ListClientConfigs(filter ConfigFilter, offset, limit int) ([]models.V2RayCl
 
 // DeleteFailedClientConfigs deletes all configs with latency_ms < 0 (i.e. -1 for failed)
 func DeleteFailedClientConfigs() (int, error) {
+	if DB == nil {
+		return 0, fmt.Errorf("pebble database is not initialized")
+	}
 	configs, _ := ListClientConfigs(ConfigFilter{}, 0, 0)
 	count := 0
 	batch := DB.NewBatch()

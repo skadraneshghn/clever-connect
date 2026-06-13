@@ -3,7 +3,6 @@ package scanner
 import (
 	"context"
 	crand "crypto/rand"
-	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -11,31 +10,30 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"net/netip"
-	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
+	"clever-connect/internal/config"
+	"clever-connect/internal/db"
 	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/models"
 	"clever-connect/internal/v2ray/compiler"
 	"clever-connect/internal/v2ray/core"
-	"clever-connect/internal/v2ray/speed"
-	"clever-connect/internal/v2ray/sub"
+	"clever-connect/internal/v2ray/traffic"
+
+	rawpebble "github.com/cockroachdb/pebble"
 
 	"github.com/gin-gonic/gin"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/include"
 	boxOption "github.com/sagernet/sing-box/option"
-	utls "github.com/refraction-networking/utls"
+	"crypto/tls"
 	"golang.org/x/time/rate"
 )
 
@@ -60,628 +58,6 @@ func init() {
 }
 
 // CDNConfigRow represents a tested IP with diagnostics info
-type CDNConfigRow struct {
-	IP         string  `json:"ip"`
-	Port       int     `json:"port"`
-	OK         bool    `json:"ok"`
-	PingMs     int     `json:"ping_ms"`     // TLS handshake duration
-	RelayMs    int     `json:"relay_ms"`    // HTTP probe response time
-	DownKbps   int     `json:"down_kbps"`   // download speed
-	UpKbps     int     `json:"up_kbps"`     // upload speed
-	HTTPStatus int     `json:"http_status"`
-	Colo       string  `json:"colo"`        // Cloudflare location code
-	Score      float64 `json:"score"`
-	Status     string  `json:"status"`      // "GOOD", "DL-only", etc.
-	URI        string  `json:"uri"`         // rewritten URI
-	Error      string  `json:"error"`
-}
-
-// CDNScanState holds the live status of an in-progress scan
-type CDNScanState struct {
-	mu         sync.Mutex
-	Phase      int            `json:"phase"` // 0: idle, 1: ping, 2: speed, 3: finished
-	PingTotal  int            `json:"ping_total"`
-	PingDone   int            `json:"ping_done"`
-	SpeedTotal int            `json:"speed_total"`
-	SpeedDone  int            `json:"speed_done"`
-	Rows       []CDNConfigRow `json:"rows"`
-	Saved      []string       `json:"saved"`
-	Best       string         `json:"best"`
-	Finished   bool           `json:"finished"`
-	Cancelled  bool           `json:"cancelled"`
-	Paused     bool           `json:"paused"`
-	Err        string         `json:"err"`
-	StartedAt  time.Time      `json:"started_at"`
-	cancelFunc context.CancelFunc
-}
-
-var (
-	activeScan *CDNScanState
-	scanMu     sync.Mutex
-)
-
-// GetActiveScan returns the current scanning state
-func GetActiveScan() *CDNScanState {
-	scanMu.Lock()
-	defer scanMu.Unlock()
-	return activeScan
-}
-
-// CancelActiveScan stops any currently running scan
-func CancelActiveScan() {
-	scanMu.Lock()
-	defer scanMu.Unlock()
-	if activeScan != nil && activeScan.cancelFunc != nil {
-		activeScan.cancelFunc()
-		activeScan.Cancelled = true
-		activeScan.Finished = true
-		activeScan.Phase = 3
-	}
-}
-
-// Snapshot returns a copy of the scan state
-func (s *CDNScanState) Snapshot() map[string]interface{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rows := make([]CDNConfigRow, len(s.Rows))
-	copy(rows, s.Rows)
-	sort.SliceStable(rows, func(a, b int) bool {
-		if rows[a].OK != rows[b].OK {
-			return rows[a].OK
-		}
-		return rows[a].Score > rows[b].Score
-	})
-	elapsed := 0
-	if !s.StartedAt.IsZero() {
-		elapsed = int(time.Since(s.StartedAt).Milliseconds())
-	}
-	return map[string]interface{}{
-		"phase":       s.Phase,
-		"ping_total":  s.PingTotal,
-		"ping_done":   s.PingDone,
-		"speed_total": s.SpeedTotal,
-		"speed_done":  s.SpeedDone,
-		"rows":        rows,
-		"saved":       s.Saved,
-		"best":        s.Best,
-		"finished":    s.Finished,
-		"cancelled":   s.Cancelled,
-		"paused":      s.Paused,
-		"err":         s.Err,
-		"elapsed_ms":  elapsed,
-	}
-}
-
-// FrontResult is the TLS ping report
-type FrontResult struct {
-	IP         string
-	OK         bool
-	TCPms      int
-	TLSms      int
-	PingMs     int
-	HTTPStatus int
-	Error      string
-}
-
-// ExpandCIDR returns all IP addresses in a CIDR block up to maxIPs
-func ExpandCIDR(cidr string, maxIPs int) []string {
-	p, err := netip.ParsePrefix(cidr)
-	if err != nil {
-		return nil
-	}
-	p = p.Masked()
-	var ips []string
-	addr := p.Addr()
-	for i := 0; i < maxIPs; i++ {
-		addr = addr.Next()
-		if !p.Contains(addr) {
-			break
-		}
-		ips = append(ips, addr.String())
-	}
-	return ips
-}
-
-// FrontTest performs domain fronting TCP+TLS ping against an IP
-func FrontTest(ip string, port int, frontSNI, realHost string, timeout time.Duration) FrontResult {
-	res := FrontResult{IP: ip, TCPms: -1, TLSms: -1, PingMs: -1}
-	host := realHost
-	if host == "" {
-		host = frontSNI
-	}
-	if host == "" {
-		host = ip
-	}
-
-	t0 := time.Now()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), timeout)
-	if err != nil {
-		res.Error = err.Error()
-		return res
-	}
-	defer conn.Close()
-	res.TCPms = int(time.Since(t0).Milliseconds())
-
-	tc := tls.Client(conn, &tls.Config{ServerName: frontSNI, InsecureSkipVerify: true})
-	_ = tc.SetDeadline(time.Now().Add(timeout))
-	t1 := time.Now()
-	if err := tc.Handshake(); err != nil {
-		res.Error = err.Error()
-		return res
-	}
-	res.TLSms = int(time.Since(t1).Milliseconds())
-	res.OK = true
-	res.PingMs = res.TLSms
-
-	// Send HTTP HEAD request to verify endpoint
-	_ = tc.SetDeadline(time.Now().Add(1500 * time.Millisecond))
-	req := "HEAD / HTTP/1.1\r\nHost: " + host + "\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n"
-	t2 := time.Now()
-	if _, err := tc.Write([]byte(req)); err != nil {
-		return res
-	}
-	buf := make([]byte, 256)
-	n, _ := tc.Read(buf)
-	if n > 0 {
-		res.PingMs = int(time.Since(t2).Milliseconds())
-		res.HTTPStatus = parseHTTPStatus(string(buf[:n]))
-	}
-	return res
-}
-
-func parseHTTPStatus(line string) int {
-	if i := strings.IndexByte(line, '\n'); i >= 0 {
-		line = line[:i]
-	}
-	f := strings.Fields(line)
-	if len(f) >= 2 {
-		if code, err := strconv.Atoi(f[1]); err == nil {
-			return code
-		}
-	}
-	return 0
-}
-
-// CDNConfigsOptions represents scanner settings
-type CDNConfigsOptions struct {
-	URI             string   `json:"uri"`
-	Ranges          []string `json:"ranges"`
-	PerRangeLimit   int      `json:"per_range_limit"`
-	MaxScanCap      int      `json:"max_scan_cap"`
-	Ports           []int    `json:"ports"`
-	TopForSpeed     int      `json:"top_for_speed"`
-	FinalCount      int      `json:"final_count"`
-	DownloadBytes   int      `json:"download_bytes"`
-	UploadBytes     int      `json:"upload_bytes"`
-	PingTimeoutSec  int      `json:"ping_timeout_sec"`
-	SpeedTimeoutSec int      `json:"speed_timeout_sec"`
-	PingConcurrency int      `json:"ping_concurrency"`
-	SpeedConc       int      `json:"speed_conc"`
-	BasePort        int      `json:"base_port"`
-}
-
-// StartScan runs the CDN scan in the background (legacy)
-func StartScan(opts CDNConfigsOptions) (*CDNScanState, error) {
-	scanMu.Lock()
-	defer scanMu.Unlock()
-
-	if activeScan != nil && !activeScan.Finished {
-		return nil, fmt.Errorf("a scan is already running")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	state := &CDNScanState{
-		StartedAt:  time.Now(),
-		Phase:      1,
-		cancelFunc: cancel,
-	}
-	activeScan = state
-
-	go func() {
-		defer cancel()
-		err := runCDNScan(ctx, state, opts)
-		state.mu.Lock()
-		state.Finished = true
-		state.Phase = 3
-		if err != nil {
-			state.Err = err.Error()
-		}
-		state.mu.Unlock()
-	}()
-
-	return state, nil
-}
-
-func runCDNScan(ctx context.Context, state *CDNScanState, opts CDNConfigsOptions) error {
-	bin := core.GetXrayBinPath()
-	if _, err := os.Stat(bin); err != nil {
-		coreName := core.GetSelectedCoreName()
-		if path, err := exec.LookPath(coreName); err == nil {
-			bin = path
-		} else {
-			return fmt.Errorf("%s binary not found", coreName)
-		}
-	}
-
-	clientCfg, err := sub.ParseProxyLink(opts.URI)
-	if err != nil {
-		return fmt.Errorf("invalid template URI: %w", err)
-	}
-
-	if opts.PerRangeLimit <= 0 {
-		opts.PerRangeLimit = 200
-	}
-	if opts.MaxScanCap <= 0 {
-		opts.MaxScanCap = 50000
-	}
-	if len(opts.Ports) == 0 {
-		opts.Ports = []int{443}
-	}
-	if opts.TopForSpeed <= 0 {
-		opts.TopForSpeed = 20
-	}
-	if opts.FinalCount <= 0 {
-		opts.FinalCount = 5
-	}
-	if opts.DownloadBytes <= 0 {
-		opts.DownloadBytes = 1_000_000
-	}
-	if opts.UploadBytes <= 0 {
-		opts.UploadBytes = 500_000
-	}
-	if opts.PingTimeoutSec <= 0 {
-		opts.PingTimeoutSec = 3
-	}
-	if opts.SpeedTimeoutSec <= 0 {
-		opts.SpeedTimeoutSec = 10
-	}
-	if opts.PingConcurrency <= 0 {
-		opts.PingConcurrency = 64
-	}
-	if opts.SpeedConc <= 0 {
-		opts.SpeedConc = 3
-	}
-	if opts.BasePort <= 0 {
-		opts.BasePort = 25000
-	}
-
-	ranges := opts.Ranges
-	if len(ranges) == 0 {
-		ranges = DefaultCloudflareRanges
-	}
-
-	var ips []string
-	for _, r := range ranges {
-		if !strings.Contains(r, "/") {
-			ips = append(ips, r)
-			continue
-		}
-		ips = append(ips, ExpandCIDR(r, opts.PerRangeLimit)...)
-	}
-
-	if len(ips) > opts.MaxScanCap {
-		ips = ips[:opts.MaxScanCap]
-	}
-	if len(ips) == 0 {
-		return fmt.Errorf("no target IPs resolved")
-	}
-
-	type target struct {
-		IP   string
-		Port int
-	}
-	var targets []target
-	for _, ip := range ips {
-		for _, port := range opts.Ports {
-			targets = append(targets, target{IP: ip, Port: port})
-		}
-	}
-
-	// Extract SNI from template client config
-	frontSNI := clientCfg.Address
-	var tlsS map[string]interface{}
-	if clientCfg.TLSSettings != "" {
-		_ = json.Unmarshal([]byte(clientCfg.TLSSettings), &tlsS)
-		if sniVal, ok := tlsS["sni"].(string); ok && sniVal != "" {
-			frontSNI = sniVal
-		}
-	}
-
-	state.mu.Lock()
-	state.PingTotal = len(targets)
-	state.mu.Unlock()
-
-	type pingRow struct {
-		IP   string
-		Port int
-		Ms   int
-		OK   bool
-	}
-
-	pingRows := make([]pingRow, len(targets))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, opts.PingConcurrency)
-
-	for i, tg := range targets {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, t target) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			res := FrontTest(t.IP, t.Port, frontSNI, clientCfg.Address, time.Duration(opts.PingTimeoutSec)*time.Second)
-			pingRows[idx] = pingRow{IP: t.IP, Port: t.Port, Ms: res.PingMs, OK: res.OK}
-
-			state.mu.Lock()
-			state.PingDone++
-			state.mu.Unlock()
-		}(i, tg)
-	}
-	wg.Wait()
-
-	sort.SliceStable(pingRows, func(a, b int) bool {
-		if pingRows[a].OK != pingRows[b].OK {
-			return pingRows[a].OK
-		}
-		ma, mb := pingRows[a].Ms, pingRows[b].Ms
-		if ma < 0 {
-			ma = 1 << 30
-		}
-		if mb < 0 {
-			mb = 1 << 30
-		}
-		return ma < mb
-	})
-
-	var candidates []pingRow
-	for _, r := range pingRows {
-		if r.OK {
-			candidates = append(candidates, r)
-		}
-		if len(candidates) >= opts.TopForSpeed {
-			break
-		}
-	}
-
-	if len(candidates) == 0 {
-		return fmt.Errorf("no reachable Cloudflare CDN IPs found")
-	}
-
-	state.mu.Lock()
-	state.Phase = 2
-	state.SpeedTotal = len(candidates)
-	state.mu.Unlock()
-
-	var portSeq int64 = int64(opts.BasePort) - 1
-	var wg2 sync.WaitGroup
-	sem2 := make(chan struct{}, opts.SpeedConc)
-
-	for _, c := range candidates {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		wg2.Add(1)
-		sem2 <- struct{}{}
-		go func(cand pingRow) {
-			defer wg2.Done()
-			defer func() { <-sem2 }()
-
-			socksPort := int(atomic.AddInt64(&portSeq, 2))
-			httpPort := socksPort + 1
-
-			row := cdnSpeedOne(ctx, bin, clientCfg, cand.IP, cand.Port, socksPort, httpPort, opts)
-			row.PingMs = cand.Ms
-			classify(&row)
-
-			// Build rewritten URI
-			row.URI = rewriteURI(opts.URI, cand.IP, cand.Port, row.Colo, row.PingMs)
-
-			state.mu.Lock()
-			state.Rows = append(state.Rows, row)
-			state.SpeedDone++
-			state.mu.Unlock()
-		}(c)
-	}
-	wg2.Wait()
-
-	// Build the Saved box
-	state.mu.Lock()
-	rowsCopy := make([]CDNConfigRow, len(state.Rows))
-	copy(rowsCopy, state.Rows)
-	sort.SliceStable(rowsCopy, func(a, b int) bool {
-		if rowsCopy[a].OK != rowsCopy[b].OK {
-			return rowsCopy[a].OK
-		}
-		return rowsCopy[a].Score > rowsCopy[b].Score
-	})
-
-	finalCount := opts.FinalCount
-	if finalCount > len(rowsCopy) {
-		finalCount = len(rowsCopy)
-	}
-
-	for i := 0; i < finalCount; i++ {
-		if rowsCopy[i].OK && rowsCopy[i].URI != "" {
-			state.Saved = append(state.Saved, rowsCopy[i].URI)
-		}
-	}
-	if len(state.Saved) > 0 {
-		state.Best = state.Saved[0]
-	}
-	state.mu.Unlock()
-
-	return nil
-}
-
-func cdnSpeedOne(ctx context.Context, bin string, templateCfg models.V2RayClientConfig, ip string, port int, socksPort, httpPort int, opts CDNConfigsOptions) CDNConfigRow {
-	row := CDNConfigRow{IP: ip, Port: port, RelayMs: -1, DownKbps: -1, UpKbps: -1, PingMs: -1}
-
-	// Compile config replacing template's IP address with the specific Cloudflare IP
-	cfgCopy := templateCfg
-	cfgCopy.Address = ip
-	cfgCopy.Port = port
-
-	configBytes, err := compiler.CompileClientConfig(cfgCopy, socksPort, httpPort, true, "")
-	if err != nil {
-		row.Error = "compile: " + err.Error()
-		return row
-	}
-
-	tempPath := filepath.Join(os.TempDir(), fmt.Sprintf("cdn_scan_%d.json", socksPort))
-	_ = os.WriteFile(tempPath, configBytes, 0644)
-	defer os.Remove(tempPath)
-
-	runCtx, runCancel := context.WithTimeout(ctx, time.Duration(opts.SpeedTimeoutSec+8)*time.Second)
-	defer runCancel()
-
-	if abs, err := filepath.Abs(bin); err == nil {
-		bin = abs
-	}
-
-	cmd := exec.CommandContext(runCtx, bin, "run", "-c", tempPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	absBinDir, err := filepath.Abs(filepath.Dir(bin))
-	if err == nil {
-		cmd.Dir = absBinDir
-	}
-
-	if err := cmd.Start(); err != nil {
-		row.Error = "start: " + err.Error()
-		return row
-	}
-	defer func() {
-		pgid, err := syscall.Getpgid(cmd.Process.Pid)
-		if err == nil {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		} else {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
-	}()
-
-	socksAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort))
-	ready := false
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if c, e := net.DialTimeout("tcp", socksAddr, 200*time.Millisecond); e == nil {
-			c.Close()
-			ready = true
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if !ready {
-		row.Error = "SOCKS timeout"
-		return row
-	}
-
-	time.Sleep(100 * time.Millisecond)
-	spTimeout := time.Duration(opts.SpeedTimeoutSec) * time.Second
-
-	t0 := time.Now()
-	status, _, err := fetchThroughSocks("127.0.0.1", socksPort, "https://speed.cloudflare.com/", spTimeout)
-	row.RelayMs = int(time.Since(t0).Milliseconds())
-	row.HTTPStatus = status
-	if err != nil {
-		row.Error = "probe: " + err.Error()
-		return row
-	}
-
-	row.Colo = speed.DetectColo("127.0.0.1", socksPort, 3*time.Second)
-
-	down, err := speed.MeasureDownload("127.0.0.1", socksPort, opts.DownloadBytes, spTimeout)
-	if err == nil {
-		row.DownKbps = down
-	}
-	up, err := speed.MeasureUpload("127.0.0.1", socksPort, opts.UploadBytes, spTimeout)
-	if err == nil {
-		row.UpKbps = up
-	}
-
-	row.OK = down > 0
-	return row
-}
-
-func fetchThroughSocks(socksHost string, socksPort int, url string, timeout time.Duration) (int, int, error) {
-	dial := func(_ context.Context, _, addr string) (net.Conn, error) {
-		return net.DialTimeout("tcp", net.JoinHostPort(socksHost, strconv.Itoa(socksPort)), timeout)
-	}
-	tr := &http.Transport{DialContext: dial, DisableKeepAlives: true}
-	client := &http.Client{Transport: tr, Timeout: timeout}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return 0, 0, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	return resp.StatusCode, len(body), nil
-}
-
-func classify(r *CDNConfigRow) {
-	dl := float64(r.DownKbps) / 1000.0
-	ul := float64(r.UpKbps) / 1000.0
-	if r.PingMs < 0 {
-		return
-	}
-	r.Score = dl*0.75 + ul*0.25 - float64(r.PingMs)/50.0
-	const dlMin, ulMin = 2.0, 1.0
-	switch {
-	case dl >= dlMin && ul >= ulMin:
-		r.Status = "GOOD"
-	case dl >= dlMin:
-		r.Status = "DL-only"
-	case ul >= ulMin:
-		r.Status = "UL-only"
-	default:
-		r.Status = "Below"
-	}
-}
-
-func rewriteURI(origURI string, ip string, port int, colo string, ping int) string {
-	u, err := url.Parse(origURI)
-	if err != nil {
-		return ""
-	}
-
-	name := u.Fragment
-	if name == "" {
-		name = "Cloudflare IP"
-	} else {
-		if decoded, err := url.PathUnescape(name); err == nil {
-			name = decoded
-		}
-	}
-
-	// Format name: "OriginalName | COLO | Pingms | @CleverConnect"
-	var parts []string
-	parts = append(parts, name)
-	if colo != "" {
-		parts = append(parts, colo)
-	}
-	if ping >= 0 {
-		parts = append(parts, strconv.Itoa(ping)+"ms")
-	}
-	parts = append(parts, "@CleverConnect")
-	newName := strings.Join(parts, " | ")
-
-	u.Host = net.JoinHostPort(ip, strconv.Itoa(port))
-	u.Fragment = url.PathEscape(newName)
-	return u.String()
-}
 
 // PortProbeResult holds the outcome of a single port probe
 type PortProbeResult struct {
@@ -884,28 +260,32 @@ func DiscoverDevices(timeout time.Duration) ([]DiscoveredDevice, error) {
 
 // JobStats represents the live stats of the network scanner sweep
 type JobStats struct {
-	Tested   int64 `json:"tested"`
-	Healthy  int64 `json:"healthy"`
-	Failed   int64 `json:"failed"`
-	InFlight int64 `json:"in_flight"`
+	Tested       int64  `json:"tested"`
+	Healthy      int64  `json:"healthy"`
+	Failed       int64  `json:"failed"`
+	InFlight     int64  `json:"in_flight"`
+	TotalTargets int64  `json:"total_targets"`
+	RemainingSec int64  `json:"remaining_sec"`
+	Phase        string `json:"phase"`
 }
 
 // ScanConfig defines the operational bounds for a live network verification sweep
 type ScanConfig struct {
-	TargetCIDRs      []string      `json:"target_cidrs"`
-	SelectedPorts    []int         `json:"selected_ports"`
-	ConcurrencyLimit int           `json:"concurrency_limit"`
-	MaxRateLimit     float64       `json:"max_rate_limit"`
-	NetworkTimeout   time.Duration `json:"network_timeout"`
-	ProbeAttempts    int           `json:"probe_attempts"`
-	TargetMode       string        `json:"target_mode"`
-	TargetSNI        string        `json:"target_sni"`
-	WebSocketHost    string        `json:"websocket_host"`
-	WebSocketPath    string        `json:"websocket_path"`
-	RequireWS        bool          `json:"require_ws"`
-	EnableNeighbors  bool          `json:"enable_neighbors"`
-	TopLimit         int           `json:"top_limit"`
-	TotalTargetCount int           `json:"total_target_count"`
+	TargetCIDRs        []string      `json:"target_cidrs"`
+	SelectedPorts      []int         `json:"selected_ports"`
+	ConcurrencyLimit   int           `json:"concurrency_limit"`
+	MaxRateLimit       float64       `json:"max_rate_limit"`
+	NetworkTimeout     time.Duration `json:"network_timeout"`
+	ProbeAttempts      int           `json:"probe_attempts"`
+	TargetMode         string        `json:"target_mode"`
+	TargetSNI          string        `json:"target_sni"`
+	WebSocketHost      string        `json:"websocket_host"`
+	WebSocketPath      string        `json:"websocket_path"`
+	RequireWS          bool          `json:"require_ws"`
+	EnableNeighbors    bool          `json:"enable_neighbors"`
+	TopLimit           int           `json:"top_limit"`
+	TotalTargetCount   int           `json:"total_target_count"`
+	ScanDiscoveredOnly bool          `json:"scan_discovered_only"`
 }
 
 type ScannerListener func(stats JobStats, event string, details interface{})
@@ -969,11 +349,16 @@ func (s *ScannerEngine) IsRunning() bool {
 
 // GetLiveStats returns a copy of the current statistics
 func (s *ScannerEngine) GetLiveStats() JobStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return JobStats{
-		Tested:   atomic.LoadInt64(&s.stats.Tested),
-		Healthy:  atomic.LoadInt64(&s.stats.Healthy),
-		Failed:   atomic.LoadInt64(&s.stats.Failed),
-		InFlight: atomic.LoadInt64(&s.stats.InFlight),
+		Tested:       atomic.LoadInt64(&s.stats.Tested),
+		Healthy:      atomic.LoadInt64(&s.stats.Healthy),
+		Failed:       atomic.LoadInt64(&s.stats.Failed),
+		InFlight:     atomic.LoadInt64(&s.stats.InFlight),
+		TotalTargets: atomic.LoadInt64(&s.stats.TotalTargets),
+		RemainingSec: atomic.LoadInt64(&s.stats.RemainingSec),
+		Phase:        s.stats.Phase,
 	}
 }
 
@@ -1004,11 +389,23 @@ func (s *ScannerEngine) CancelActiveScan() {
 }
 
 // StartScan triggers the network scan sweep in a background goroutine
-func (s *ScannerEngine) StartScan(parentCtx context.Context, cfg *ScanConfig) error {
+func (s *ScannerEngine) StartScan(parentCtx context.Context, cfg *ScanConfig, isRetry bool) error {
 	s.mu.Lock()
 	if s.isRunning {
 		s.mu.Unlock()
 		return fmt.Errorf("a scan sweep is already running")
+	}
+
+	if isRetry {
+		cachedCfg, err := s.LoadLastSettings()
+		if err == nil && cachedCfg != nil {
+			cfg = cachedCfg
+		} else {
+			s.mu.Unlock()
+			return fmt.Errorf("failed to load historical scan settings from cache keys: %v", err)
+		}
+	} else {
+		s.SaveLastSettings(cfg)
 	}
 
 	if !acquireLock() {
@@ -1062,132 +459,130 @@ func shuffleStrings(slice []string) {
 }
 
 func (s *ScannerEngine) runScanLoop(ctx context.Context, cfg *ScanConfig) {
-	// Parse Target CIDRs/Subnets for Neighborhood check
-	var targetNets []*net.IPNet
-	var sourceBuilder strings.Builder
-	rangesToParse := cfg.TargetCIDRs
-	if len(rangesToParse) == 0 {
-		rangesToParse = DefaultCloudflareRanges
-	}
-	for i, c := range rangesToParse {
-		if i > 0 {
-			sourceBuilder.WriteString(",")
-		}
-		sourceBuilder.WriteString(c)
-
-		if _, ipnet, err := net.ParseCIDR(c); err == nil {
-			targetNets = append(targetNets, ipnet)
-		} else {
-			if parsedIP := net.ParseIP(c); parsedIP != nil {
-				targetNets = append(targetNets, &net.IPNet{IP: parsedIP, Mask: net.CIDRMask(32, 32)})
-			}
-		}
-	}
+	s.broadcast("scanner.log", fmt.Sprintf("Initiating scanner engine sweep. Target Mode: %s | Probe Ports: %v", cfg.TargetMode, cfg.SelectedPorts))
+	s.broadcast("scanner.log", fmt.Sprintf("Parameters: Concurrency=%d | RateLimit=%.1f/s | Timeout=%v | Neighbors=%v", cfg.ConcurrencyLimit, cfg.MaxRateLimit, cfg.NetworkTimeout, cfg.EnableNeighbors))
 
 	// Fetch base template client configuration from DB
 	baseConfig, baseErr := getBaseClientConfig()
 	if baseErr != nil {
 		s.broadcast("scanner.error", baseErr.Error())
+		s.broadcast("scanner.log", fmt.Sprintf("Warning: Failed to fetch base client template configuration: %v. Throughput test will be skipped.", baseErr))
+	} else {
+		s.broadcast("scanner.log", fmt.Sprintf("Loaded base client template config: '%s' (Protocol: %s)", baseConfig.Name, baseConfig.Protocol))
 	}
 
-	// Stream IPs dynamically
-	addrChan, err := StreamAddresses(ctx, sourceBuilder.String(), false)
-	if err != nil {
-		s.broadcast("scanner.error", err.Error())
-		return
-	}
+	var cidrs []string
+	var directIPs []string
+	var err error
 
-	concurrency := cfg.ConcurrencyLimit
-	if concurrency <= 0 {
-		concurrency = 100
-	}
+	if cfg.ScanDiscoveredOnly {
+		configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+		for _, c := range configs {
+			if strings.HasPrefix(c.Name, "Discovered-") && c.LatencyMs > 0 {
+				directIPs = append(directIPs, fmt.Sprintf("%s:%d", c.Address, c.Port))
+			}
+		}
+		if len(directIPs) == 0 {
+			s.broadcast("scanner.log", "No previously discovered nodes found in Pebble DB to rescan.")
+			s.broadcast("scanner.finished", gin.H{
+				"stats": s.GetLiveStats(),
+				"event": "scanner.finished",
+			})
+			return
+		}
+		s.broadcast("scanner.log", fmt.Sprintf("Found %d saved discovered nodes to rescan.", len(directIPs)))
+	} else {
+		s.mu.Lock()
+		s.stats.Phase = "Ingestion & Cache-DNS Lookup"
+		s.mu.Unlock()
+		s.broadcast("scanner.phase", s.stats.Phase)
 
-	jobs := make(chan configProbeJob, concurrency*2)
-	type probeResult struct {
-		ip      net.IP
-		port    int
-		ok      bool
-		latency int
-		speed   float64
-	}
-	results := make(chan probeResult, concurrency)
-
-	var seenMu sync.Mutex
-	seen := make(map[string]struct{})
-
-	var pending int64
-	mainDone := make(chan struct{})
-	submitChan := make(chan configProbeJob, 100000)
-
-	submitJob := func(ip net.IP, port int) {
-		atomic.AddInt64(&pending, 1)
-		select {
-		case <-ctx.Done():
-			atomic.AddInt64(&pending, -1)
-		case submitChan <- configProbeJob{ip: ip, port: port}:
+		s.broadcast("scanner.log", "Ingesting scan sources...")
+		cidrs, directIPs, err = FetchEnabledSourcesConcurrently(ctx)
+		if err != nil {
+			s.broadcast("scanner.log", fmt.Sprintf("Warning: Source ingestion failed: %v. Using defaults.", err))
+			cidrs = cfg.TargetCIDRs
+			if len(cidrs) == 0 {
+				cidrs = DefaultCloudflareRanges
+			}
+		} else {
+			s.broadcast("scanner.log", fmt.Sprintf("Ingested %d subnets and %d direct endpoints.", len(cidrs), len(directIPs)))
 		}
 	}
 
-	// Start main producer
+	// Calculate total targets
+	var totalTargets int64 = int64(len(directIPs))
+	if !cfg.ScanDiscoveredOnly {
+		for _, c := range cidrs {
+			if start, end, err := parseCIDR(c); err == nil && end >= start {
+				totalTargets += int64(end-start+1) * int64(len(cfg.SelectedPorts))
+			}
+		}
+	}
+	if cfg.TotalTargetCount > 0 && totalTargets > int64(cfg.TotalTargetCount) {
+		totalTargets = int64(cfg.TotalTargetCount)
+	}
+	atomic.StoreInt64(&s.stats.TotalTargets, totalTargets)
+
+	// Concurrency settings
+	phase1Concurrency := cfg.ConcurrencyLimit
+	if phase1Concurrency <= 0 {
+		phase1Concurrency = 500
+	}
+	phase2Concurrency := 100
+
+	phase1Chan := make(chan configProbeJob, phase1Concurrency*2)
+	phase2Chan := make(chan configProbeJob, 1000)
+
+	// Start generator
 	go func() {
-		defer close(mainDone)
-		count := 0
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ipStr, ok := <-addrChan:
-				if !ok {
-					return
+		defer close(phase1Chan)
+		if cfg.ScanDiscoveredOnly {
+			for _, addr := range directIPs {
+				host, portStr, err := net.SplitHostPort(addr)
+				if err != nil {
+					continue
 				}
+				port, _ := strconv.Atoi(portStr)
+				ip := net.ParseIP(host)
+				if ip == nil {
+					continue
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case phase1Chan <- configProbeJob{ip: ip, port: port}:
+				}
+			}
+		} else {
+			// Submit direct IPs (from domains/proxy IPs)
+			for _, ipStr := range directIPs {
 				ip := net.ParseIP(ipStr)
 				if ip == nil {
 					continue
 				}
 				for _, port := range cfg.SelectedPorts {
-					submitJob(ip, port)
-				}
-				count++
-				if cfg.TotalTargetCount > 0 && count >= cfg.TotalTargetCount {
-					return
+					select {
+					case <-ctx.Done():
+						return
+					case phase1Chan <- configProbeJob{ip: ip, port: port}:
+					}
 				}
 			}
-		}
-	}()
-
-	// Start coordinator
-	go func() {
-		defer close(jobs)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case job := <-submitChan:
-				key := fmt.Sprintf("%s:%d", job.ip.String(), job.port)
-				seenMu.Lock()
-				if _, exists := seen[key]; exists {
-					seenMu.Unlock()
-					atomic.AddInt64(&pending, -1)
+			// Submit streamed IPs from CIDRs
+			streamChan := StreamRandomIPs(ctx, cidrs, cfg.TotalTargetCount)
+			for ipStr := range streamChan {
+				ip := net.ParseIP(ipStr)
+				if ip == nil {
 					continue
 				}
-				seen[key] = struct{}{}
-				seenMu.Unlock()
-
-				select {
-				case <-ctx.Done():
-					return
-				case jobs <- job:
-				}
-			default:
-				// If submitChan is empty, check if we are done
-				select {
-				case <-mainDone:
-					if atomic.LoadInt64(&pending) == 0 {
+				for _, port := range cfg.SelectedPorts {
+					select {
+					case <-ctx.Done():
 						return
+					case phase1Chan <- configProbeJob{ip: ip, port: port}:
 					}
-				default:
 				}
-				time.Sleep(5 * time.Millisecond)
 			}
 		}
 	}()
@@ -1197,19 +592,97 @@ func (s *ScannerEngine) runScanLoop(ctx context.Context, cfg *ScanConfig) {
 		limiter = rate.NewLimiter(rate.Limit(cfg.MaxRateLimit), int(cfg.MaxRateLimit)+1)
 	}
 
-	var wg sync.WaitGroup
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				if ctx.Err() != nil {
-					atomic.AddInt64(&pending, -1)
-					continue
+	// Start live telemetry/ETA reporter background goroutine
+	startTime := time.Now()
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				tested := atomic.LoadInt64(&s.stats.Tested)
+				if tested > 0 {
+					elapsed := time.Since(startTime).Seconds()
+					avgSec := elapsed / float64(tested)
+					remaining := totalTargets - tested
+					if remaining > 0 {
+						atomic.StoreInt64(&s.stats.RemainingSec, int64(float64(remaining)*avgSec))
+					} else {
+						atomic.StoreInt64(&s.stats.RemainingSec, 0)
+					}
 				}
+				s.broadcast("scanner.telemetry", s.GetLiveStats())
+			}
+		}
+	}()
 
+	// Phase 1: High-Speed TCP Sweep
+	s.mu.Lock()
+	s.stats.Phase = "Phase 1: High-Speed Port Sweep"
+	s.mu.Unlock()
+	s.broadcast("scanner.phase", s.stats.Phase)
+
+	var phase1WG sync.WaitGroup
+	for i := 0; i < phase1Concurrency; i++ {
+		phase1WG.Add(1)
+		go func() {
+			defer phase1WG.Done()
+			for job := range phase1Chan {
+				if ctx.Err() != nil {
+					return
+				}
 				if limiter != nil {
 					_ = limiter.Wait(ctx)
+				}
+
+				// Introduce microsecond jitter if in server mode
+				if appCfg := config.LoadConfig(); appCfg != nil && appCfg.AppMode == "server" {
+					jitter := time.Duration(cryptoRandIntn(200)+50) * time.Microsecond
+					time.Sleep(jitter)
+				}
+
+				atomic.AddInt64(&s.stats.InFlight, 1)
+				_, err := probeTCP(ctx, job.ip, job.port, 2*time.Second)
+				atomic.AddInt64(&s.stats.InFlight, -1)
+
+				if err == nil {
+					select {
+					case <-ctx.Done():
+						return
+					case phase2Chan <- job:
+					}
+				} else {
+					atomic.AddInt64(&s.stats.Tested, 1)
+					atomic.AddInt64(&s.stats.Failed, 1)
+				}
+			}
+		}()
+	}
+
+	go func() {
+		phase1WG.Wait()
+		close(phase2Chan)
+	}()
+
+	// Phase 2: Cryptographic Deep Test
+	s.mu.Lock()
+	s.stats.Phase = "Phase 2: Cryptographic Deep Test"
+	s.mu.Unlock()
+	s.broadcast("scanner.phase", s.stats.Phase)
+
+	var phase2WG sync.WaitGroup
+	discoveredConfigs := make([]models.V2RayClientConfig, 0)
+	var discoveredMu sync.Mutex
+
+	for i := 0; i < phase2Concurrency; i++ {
+		phase2WG.Add(1)
+		go func() {
+			defer phase2WG.Done()
+			for job := range phase2Chan {
+				if ctx.Err() != nil {
+					return
 				}
 
 				atomic.AddInt64(&s.stats.InFlight, 1)
@@ -1219,113 +692,168 @@ func (s *ScannerEngine) runScanLoop(ctx context.Context, cfg *ScanConfig) {
 					sni = selectRandomSNI(defaultEdgeSNIs)
 				}
 
-				var ok bool
-				var probeErr error
-				var probeLatency time.Duration
+				// 1. 3-Strike TLS handshake verification
+				tlsLatency, tlsErr := probeTLS3Strike(ctx, job.ip, job.port, sni, cfg.NetworkTimeout)
+				ok := tlsErr == nil
+				var finalLatency time.Duration = tlsLatency
 
-				if cfg.TargetMode == "tcp" {
-					probeLatency, probeErr = probeTCP(ctx, job.ip, job.port, cfg.NetworkTimeout)
-					ok = probeErr == nil
-				} else if cfg.TargetMode == "tls" {
-					probeLatency, probeErr = probeTLS(ctx, job.ip, job.port, sni, cfg.NetworkTimeout)
-					ok = probeErr == nil
-				} else { // http / default
-					var wsOk bool
-					probeLatency, _, wsOk, probeErr = probeHTTP(ctx, job.ip, job.port, sni, cfg.NetworkTimeout, cfg.RequireWS, cfg.WebSocketHost, cfg.WebSocketPath)
-					ok = probeErr == nil
-					if cfg.RequireWS && !wsOk {
+				// 2. HTTP 1-byte read test to bypass TCP blackholes
+				if ok {
+					httpLatency, httpErr := probeHTTP1Byte(ctx, job.ip, job.port, sni, cfg.NetworkTimeout, cfg.WebSocketPath)
+					if httpErr != nil {
 						ok = false
+					} else {
+						finalLatency = httpLatency
 					}
 				}
 
 				atomic.AddInt64(&s.stats.InFlight, -1)
+				atomic.AddInt64(&s.stats.Tested, 1)
 
-				latency := int(probeLatency.Milliseconds())
+				latencyMs := int(finalLatency.Milliseconds())
 				var speed float64
 
-				// In-Memory proxy validation (Phase 5)
-				if ok && baseConfig != nil {
-					l, sp, errProxy := testProxyThroughput(ctx, *baseConfig, job.ip.String(), job.port)
-					if errProxy == nil {
-						latency = l
-						speed = sp
-					} else {
-						// If in-memory proxy test fails, we classify it as failed proxy
-						ok = false
+				if ok {
+					if baseConfig != nil {
+						l, sp, errProxy := testProxyThroughput(ctx, *baseConfig, job.ip.String(), job.port)
+						if errProxy == nil {
+							latencyMs = l
+							speed = sp
+						} else {
+							s.broadcast("scanner.log", fmt.Sprintf("Proxy validation failed for %s:%d: %v. Raw latency used.", job.ip.String(), job.port, errProxy))
+						}
 					}
-				}
 
-				select {
-				case results <- probeResult{ip: job.ip, port: job.port, ok: ok, latency: latency, speed: speed}:
-				case <-ctx.Done():
-					atomic.AddInt64(&pending, -1)
-					return
+					atomic.AddInt64(&s.stats.Healthy, 1)
+
+					if baseConfig != nil {
+						newCfg := *baseConfig
+						newCfg.ID = 0
+						newCfg.Address = job.ip.String()
+						newCfg.Port = job.port
+						newCfg.LatencyMs = latencyMs
+						newCfg.Name = fmt.Sprintf("Discovered-Edge-%s:%d", job.ip.String(), job.port)
+						newCfg.IsActive = false
+						newCfg.Priority = 100
+
+						if err := pebble.SaveClientConfig(&newCfg); err != nil {
+							s.broadcast("scanner.log", fmt.Sprintf("Failed to save clean node %s:%d: %v", job.ip.String(), job.port, err))
+						} else {
+							s.broadcast("scanner.log", fmt.Sprintf("Auto-provisioned clean node: %s:%d (Latency: %d ms | Throughput: %.2f Mbps)", job.ip.String(), job.port, latencyMs, speed))
+							
+							// Trigger Hot-Reload of Core
+							appCfg := config.LoadConfig()
+							if appCfg != nil {
+								if appCfg.AppMode == "server" {
+									_ = traffic.ReloadCoreConfig()
+								} else if appCfg.AppMode == "client" {
+									_ = reloadClientCore()
+								}
+							}
+						}
+
+						discoveredMu.Lock()
+						discoveredConfigs = append(discoveredConfigs, newCfg)
+						discoveredMu.Unlock()
+					}
+
+					s.broadcast("scanner.candidate", gin.H{
+						"stats": s.GetLiveStats(),
+						"event": "scanner.candidate",
+						"data": gin.H{
+							"ip":         job.ip.String(),
+							"port":       job.port,
+							"protocol":   cfg.TargetMode,
+							"latency_ms": latencyMs,
+							"speed_mbps": speed,
+						},
+					})
+				} else {
+					atomic.AddInt64(&s.stats.Failed, 1)
+					s.broadcast("scanner.candidate", gin.H{
+						"stats": s.GetLiveStats(),
+						"event": "scanner.candidate",
+						"data": gin.H{
+							"ip":         job.ip.String(),
+							"port":       job.port,
+							"protocol":   cfg.TargetMode,
+							"latency_ms": 0,
+							"speed_mbps": 0.0,
+						},
+					})
 				}
 			}
 		}()
 	}
 
-	var neighborsQueued int64
-	maxNeighbors := int64(400)
+	phase2WG.Wait()
 
-	// Result processor loop
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case r, ok := <-results:
-				if !ok {
-					return
+	// Rescan cleanup mode: delete failed saved discovered nodes
+	if cfg.ScanDiscoveredOnly && len(directIPs) > 0 {
+		configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+		verifiedMap := make(map[string]bool)
+		discoveredMu.Lock()
+		for _, c := range discoveredConfigs {
+			verifiedMap[fmt.Sprintf("%s:%d", c.Address, c.Port)] = true
+		}
+		discoveredMu.Unlock()
+
+		var toDelete []uint
+		for _, c := range configs {
+			if strings.HasPrefix(c.Name, "Discovered-") {
+				key := fmt.Sprintf("%s:%d", c.Address, c.Port)
+				wasInTargets := false
+				for _, t := range directIPs {
+					if t == key {
+						wasInTargets = true
+						break
+					}
 				}
-				atomic.AddInt64(&s.stats.Tested, 1)
-
-				if r.ok {
-					atomic.AddInt64(&s.stats.Healthy, 1)
-
-					// 1. Save immediately to DB
-					if baseConfig != nil {
-						saveDiscoveredEndpoint(baseConfig, r.ip.String(), r.port, r.latency, r.speed)
-					}
-
-					// 2. Queue neighbors
-					if cfg.EnableNeighbors && atomic.LoadInt64(&neighborsQueued) < maxNeighbors {
-						neighbors := NeighborsAround(r.ip, targetNets)
-						for _, nip := range neighbors {
-							if atomic.LoadInt64(&neighborsQueued) >= maxNeighbors {
-								break
-							}
-							submitJob(nip, r.port)
-							atomic.AddInt64(&neighborsQueued, 1)
-						}
-					}
-
-					// 3. Broadcast update to websocket listeners
-					s.broadcast("scanner.update", gin.H{
-						"ip":         r.ip.String(),
-						"port":       r.port,
-						"ok":         true,
-						"latency_ms": r.latency,
-						"speed_mbps": r.speed,
-					})
-				} else {
-					atomic.AddInt64(&s.stats.Failed, 1)
-					s.broadcast("scanner.update", gin.H{
-						"ip":   r.ip.String(),
-						"port": r.port,
-						"ok":   false,
-					})
+				if wasInTargets && !verifiedMap[key] {
+					toDelete = append(toDelete, c.ID)
 				}
 			}
 		}
-	}()
+		if len(toDelete) > 0 {
+			s.broadcast("scanner.log", fmt.Sprintf("Cleanup: removing %d dead/failed discovered nodes from Pebble DB...", len(toDelete)))
+			for _, id := range toDelete {
+				_ = pebble.DeleteClientConfig(id)
+			}
+			s.broadcast("scanner.log", "Cleanup complete.")
+		}
+	}
 
-	wg.Wait()
-	close(results)
-
-	// Export pipeline
 	exportVerifiedIPs()
-	s.broadcast("scanner.complete", nil)
+
+	finalStats := s.GetLiveStats()
+	s.broadcast("scanner.log", fmt.Sprintf("Scanner engine sweep completed. Tested: %d | Healthy: %d | Failed: %d", finalStats.Tested, finalStats.Healthy, finalStats.Failed))
+	s.broadcast("scanner.finished", gin.H{
+		"stats": finalStats,
+		"event": "scanner.finished",
+	})
+}
+
+// SaveLastSettings persists current scanner targets inside Pebble storage keys
+func (s *ScannerEngine) SaveLastSettings(cfg *ScanConfig) {
+	bytes, err := json.Marshal(cfg)
+	if err == nil && pebble.DB != nil {
+		_ = pebble.DB.Set([]byte("cache:last_scan_config"), bytes, rawpebble.Sync)
+	}
+}
+
+// LoadLastSettings retrieves previous parameter vectors from cache keys
+func (s *ScannerEngine) LoadLastSettings() (*ScanConfig, error) {
+	if pebble.DB == nil {
+		return nil, fmt.Errorf("pebble engine offline")
+	}
+	bytes, closer, err := pebble.DB.Get([]byte("cache:last_scan_config"))
+	if err != nil {
+		return nil, err
+	}
+	defer closer.Close()
+	var cfg ScanConfig
+	err = json.Unmarshal(bytes, &cfg)
+	return &cfg, err
 }
 
 func cryptoRandIntn(n int) int {
@@ -1361,50 +889,66 @@ func probeTCP(ctx context.Context, ip net.IP, port int, timeout time.Duration) (
 
 func probeTLS(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration) (time.Duration, error) {
 	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
-	dialer := &net.Dialer{Timeout: timeout / 4} // 1/4 TCP handshake split
+	dl := time.Now().Add(timeout)
+	dialCtx, cancel := context.WithDeadline(ctx, dl)
+	defer cancel()
+
+	d := tls.Dialer{
+		NetDialer: &net.Dialer{},
+		Config: &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS12,
+		},
+	}
+
 	start := time.Now()
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	conn, err := d.DialContext(dialCtx, "tcp", addr)
 	if err != nil {
 		return 0, err
 	}
 	defer conn.Close()
-
-	uConn := utls.UClient(conn, &utls.Config{
-		ServerName:         sni,
-		InsecureSkipVerify: true,
-		MinVersion:         utls.VersionTLS12,
-	}, utls.HelloChrome_Auto)
-
-	_ = conn.SetDeadline(time.Now().Add(timeout / 2)) // 1/2 TLS validation split
-	if err := uConn.Handshake(); err != nil {
-		return 0, err
-	}
 	return time.Since(start), nil
 }
 
-func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, requireWS bool, wsHost, wsPath string) (time.Duration, string, bool, error) {
+var fallbackTraceSNIs = []string{
+	"speed.cloudflare.com",
+	"www.cloudflare.com",
+	"cloudflare.com",
+}
+
+func getTraceHostsForProbe(primary string) []string {
+	seen := make(map[string]struct{})
+	var hosts []string
+	add := func(h string) {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			return
+		}
+		if _, ok := seen[h]; ok {
+			return
+		}
+		seen[h] = struct{}{}
+		hosts = append(hosts, h)
+	}
+	add(primary)
+	for _, h := range fallbackTraceSNIs {
+		add(h)
+	}
+	return hosts
+}
+
+func probeTrace(ctx context.Context, ip net.IP, port int, host string, timeout time.Duration) (time.Duration, bool, int, string, error) {
 	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
 
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{Timeout: timeout / 4}).DialContext(ctx, network, addr)
 		},
-		DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			conn, err := (&net.Dialer{Timeout: timeout / 4}).DialContext(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			uConn := utls.UClient(conn, &utls.Config{
-				ServerName:         sni,
-				InsecureSkipVerify: true,
-				MinVersion:         utls.VersionTLS12,
-			}, utls.HelloChrome_Auto)
-			_ = uConn.SetDeadline(time.Now().Add(timeout / 2))
-			if err := uConn.Handshake(); err != nil {
-				uConn.Close()
-				return nil, err
-			}
-			return uConn, nil
+		TLSClientConfig: &tls.Config{
+			ServerName:         host,
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: true,
 		},
 		DisableKeepAlives:   true,
 		TLSHandshakeTimeout: timeout / 2,
@@ -1419,39 +963,63 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 	if port == 80 {
 		scheme = "http"
 	}
-	reqURL := fmt.Sprintf("%s://%s/cdn-cgi/trace", scheme, sni)
+	reqURL := fmt.Sprintf("%s://%s/cdn-cgi/trace", scheme, host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return 0, "", false, err
+		return 0, false, 0, "", err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Host = sni
+	req.Host = host
 
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, "", false, err
+		return 0, false, 0, "", err
 	}
 	defer resp.Body.Close()
 
 	latency := time.Since(start)
-	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return 0, "", false, fmt.Errorf("status code %d", resp.StatusCode)
-	}
+	tlsOk := resp.TLS != nil
+	httpStatus := resp.StatusCode
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	if err != nil {
-		return 0, "", false, err
+		return 0, false, 0, "", err
 	}
 	bodyStr := string(bodyBytes)
 	colo := parseTraceColo(bodyStr)
 
-	wsOk := false
-	if requireWS {
-		wsOk = probeWebSocket(ctx, ip, port, sni, wsHost, wsPath, timeout)
+	return latency, tlsOk, httpStatus, colo, nil
+}
+
+func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, requireWS bool, wsHost, wsPath string) (time.Duration, string, bool, error) {
+	var lat time.Duration
+	var httpStatus int
+	var colo string
+	var err error
+
+	traceSNI := sni
+	for _, host := range getTraceHostsForProbe(sni) {
+		lat, _, httpStatus, colo, err = probeTrace(ctx, ip, port, host, timeout)
+		if err == nil && httpStatus >= 200 && httpStatus < 400 && colo != "" {
+			traceSNI = host
+			break
+		}
 	}
 
-	return latency, colo, wsOk, nil
+	if err != nil || httpStatus < 200 || httpStatus >= 400 || colo == "" {
+		if err == nil {
+			err = fmt.Errorf("status code %d, colo %s", httpStatus, colo)
+		}
+		return 0, "", false, err
+	}
+
+	wsOk := false
+	if requireWS {
+		wsOk = probeWebSocket(ctx, ip, port, traceSNI, wsHost, wsPath, timeout)
+	}
+
+	return lat, colo, wsOk, nil
 }
 
 func probeWebSocket(ctx context.Context, ip net.IP, port int, sni, host, path string, timeout time.Duration) bool {
@@ -1480,17 +1048,33 @@ func probeWebSocket(ctx context.Context, ip net.IP, port int, sni, host, path st
 	}
 	defer conn.Close()
 
-	uConn := utls.UClient(conn, &utls.Config{
+	tlsConn := tls.Client(conn, &tls.Config{
 		ServerName:         sni,
-		MinVersion:         utls.VersionTLS12,
+		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: true,
-	}, utls.HelloChrome_Auto)
+	})
 
-	_ = uConn.SetDeadline(deadline)
-	if err := uConn.Handshake(); err != nil {
+	_ = tlsConn.SetDeadline(deadline)
+	if err := tlsConn.HandshakeContext(wsCtx); err != nil {
 		return false
 	}
 
+	// Phase 1: idle hold
+	idleHold := 2 * time.Second
+	if remaining := time.Until(deadline); remaining < 2*idleHold {
+		idleHold = remaining / 2
+	}
+	if idleHold > 0 {
+		_ = tlsConn.SetReadDeadline(time.Now().Add(idleHold))
+		oneByte := make([]byte, 1)
+		if _, err := tlsConn.Read(oneByte); err != nil {
+			if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+				return false
+			}
+		}
+	}
+
+	// Phase 2: send WebSocket upgrade
 	wsReq := fmt.Sprintf(
 		"GET %s HTTP/1.1\r\n"+
 			"Host: %s\r\n"+
@@ -1500,42 +1084,19 @@ func probeWebSocket(ctx context.Context, ip net.IP, port int, sni, host, path st
 			"Sec-WebSocket-Version: 13\r\n"+
 			"\r\n", path, host)
 
-	_ = uConn.SetWriteDeadline(time.Now().Add(timeout / 2))
-	if _, err := uConn.Write([]byte(wsReq)); err != nil {
+	_ = tlsConn.SetWriteDeadline(time.Now().Add(timeout / 2))
+	if _, err := tlsConn.Write([]byte(wsReq)); err != nil {
 		return false
 	}
 
 	respBuf := make([]byte, 1024)
-	_ = uConn.SetReadDeadline(time.Now().Add(timeout / 3))
-	n, err := uConn.Read(respBuf)
+	_ = tlsConn.SetReadDeadline(time.Now().Add(timeout / 3))
+	n, err := tlsConn.Read(respBuf)
 	if err != nil || n == 0 {
 		return false
 	}
 
-	respStr := string(respBuf[:n])
-	if !strings.Contains(respStr, "101") && !strings.Contains(strings.ToLower(respStr), "switching protocols") {
-		return false
-	}
-
-	// 2-second Stateful Idle Hold check
-	idleHold := 2 * time.Second
-	if remaining := time.Until(deadline); remaining < 2*idleHold {
-		idleHold = remaining / 2
-	}
-	if idleHold > 0 {
-		_ = uConn.SetReadDeadline(time.Now().Add(idleHold))
-		oneByte := make([]byte, 1)
-		_, errRead := uConn.Read(oneByte)
-		if errRead != nil {
-			if netErr, ok := errRead.(net.Error); ok && netErr.Timeout() {
-				return true
-			}
-			return false
-		}
-		return true
-	}
-
-	return true
+	return strings.Contains(string(respBuf[:n]), "HTTP/")
 }
 
 func parseTraceColo(body string) string {
@@ -1663,14 +1224,28 @@ func exportVerifiedIPs() {
 	})
 
 	var lines []string
+	var cleanLines []string
+	var csvLines []string
+	csvLines = append(csvLines, "IP,Port,Latency(ms),Speed(Mbps)")
+
 	for _, cfg := range activeConfigs {
 		lines = append(lines, fmt.Sprintf("%s:%d (latency: %dms)", cfg.Address, cfg.Port, cfg.LatencyMs))
+		cleanLines = append(cleanLines, fmt.Sprintf("%s:%d", cfg.Address, cfg.Port))
+		csvLines = append(csvLines, fmt.Sprintf("%s,%d,%d,%.2f", cfg.Address, cfg.Port, cfg.LatencyMs, 0.0))
 	}
 	
 	content := strings.Join(lines, "\n")
+	cleanContent := strings.Join(cleanLines, "\n")
+	csvContent := strings.Join(csvLines, "\n")
+
 	_ = os.WriteFile("ips.txt", []byte(content), 0644)
+	_ = os.WriteFile("ips_clean.txt", []byte(cleanContent), 0644)
+	_ = os.WriteFile("ips.csv", []byte(csvContent), 0644)
+
 	_ = os.MkdirAll("data", 0755)
 	_ = os.WriteFile("data/ips.txt", []byte(content), 0644)
+	_ = os.WriteFile("data/ips_clean.txt", []byte(cleanContent), 0644)
+	_ = os.WriteFile("data/ips.csv", []byte(csvContent), 0644)
 }
 
 func socks5Dial(proxyAddr, targetAddr string, timeout time.Duration) (net.Conn, error) {
@@ -1852,4 +1427,153 @@ func testProxyThroughput(ctx context.Context, baseConfig models.V2RayClientConfi
 	}
 
 	return ttfb, mbps, nil
+}
+
+// reloadClientCore compiles and hot-reloads the client core engine using the active configuration.
+func reloadClientCore() error {
+	if !core.IsClientRunning() {
+		return nil
+	}
+
+	// Fetch active config
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+	var activeConfig *models.V2RayClientConfig
+	for _, cfg := range configs {
+		if cfg.IsActive {
+			activeCopy := cfg
+			activeConfig = &activeCopy
+			break
+		}
+	}
+	if activeConfig == nil {
+		return fmt.Errorf("no active configuration found in pebble db")
+	}
+
+	// Fetch settings
+	var socksPort, httpPort int
+	socksPort = 10808
+	httpPort = 10809
+	evasion := true
+
+	if db.DB != nil {
+		var socksPortSetting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "socks_port").First(&socksPortSetting).Error; err == nil {
+			socksPort, _ = strconv.Atoi(socksPortSetting.Value)
+		}
+		var httpPortSetting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "http_port").First(&httpPortSetting).Error; err == nil {
+			httpPort, _ = strconv.Atoi(httpPortSetting.Value)
+		}
+		var evasionSetting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "evasion_enabled").First(&evasionSetting).Error; err == nil {
+			evasion = evasionSetting.Value == "true"
+		}
+	}
+
+	socksPortPublic := core.FindAvailablePort(socksPort)
+	socksPortInternal := core.FindAvailablePort(socksPortPublic+1000, socksPortPublic)
+	httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic, socksPortInternal)
+	httpPortInternal := core.FindAvailablePort(httpPortPublic+1000, socksPortPublic, socksPortInternal, httpPortPublic)
+
+	configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortInternal, httpPortInternal, evasion, "")
+	if err != nil {
+		return fmt.Errorf("failed to compile client config: %w", err)
+	}
+
+	tempPath := filepath.Join(os.TempDir(), "xray_client.json")
+	_ = os.WriteFile(tempPath, configBytes, 0644)
+
+	_ = core.StopClientCore()
+	if err := core.StartClientCore(tempPath); err != nil {
+		return fmt.Errorf("failed to start client core: %w", err)
+	}
+
+	core.StartLocalProxyEngine(socksPortPublic, socksPortInternal, httpPortPublic, httpPortInternal)
+	return nil
+}
+
+// probeTLS3Strike verifies a TLS handshake to the target IP:port, attempting up to 3 times.
+func probeTLS3Strike(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration) (time.Duration, error) {
+	var lastErr error
+	var latency time.Duration
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+
+	for attempt := 0; attempt < 3; attempt++ {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+
+		t0 := time.Now()
+		dialer := &net.Dialer{Timeout: timeout}
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+		})
+
+		_ = tlsConn.SetDeadline(time.Now().Add(timeout))
+		err = tlsConn.HandshakeContext(ctx)
+		if err != nil {
+			_ = tlsConn.Close()
+			lastErr = err
+			continue
+		}
+
+		latency = time.Since(t0)
+		_ = tlsConn.Close()
+		return latency, nil
+	}
+	return 0, fmt.Errorf("tls handshake failed after 3 attempts: %w", lastErr)
+}
+
+// probeHTTP1Byte writes a minimal HTTP GET request and verifies at least 1 byte of response is received.
+func probeHTTP1Byte(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, path string) (time.Duration, error) {
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	t0 := time.Now()
+
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	var reqConn net.Conn = conn
+	if port == 443 || port == 8443 {
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+		})
+		_ = tlsConn.SetDeadline(time.Now().Add(timeout))
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return 0, err
+		}
+		reqConn = tlsConn
+	}
+
+	_ = reqConn.SetDeadline(time.Now().Add(timeout))
+
+	if path == "" {
+		path = "/"
+	}
+	reqStr := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, sni)
+	_, err = reqConn.Write([]byte(reqStr))
+	if err != nil {
+		return 0, err
+	}
+
+	buf := make([]byte, 1)
+	_, err = io.ReadFull(reqConn, buf)
+	if err != nil {
+		return 0, err
+	}
+
+	return time.Since(t0), nil
 }

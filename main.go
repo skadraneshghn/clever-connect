@@ -169,6 +169,7 @@ func main() {
 	schedulerHandler := handlers.NewSchedulerHandler(cfg)
 	soroushHandler := handlers.NewSoroushHandler(cfg)
 	v2rayHandler := handlers.NewV2RayHandler(cfg)
+	domainHandler := handlers.NewDomainHandler(cfg)
 
 	// API Group
 	api := router.Group("/api")
@@ -272,6 +273,10 @@ func main() {
 			protected.POST("/v2ray/scanner/stop", v2rayHandler.StopNetworkScannerSweep)
 			protected.GET("/v2ray/scanner/stats", v2rayHandler.GetNetworkScannerLiveTelemetry)
 			protected.GET("/v2ray/scanner/ws", v2rayHandler.GetNetworkScannerWebSocket)
+			protected.GET("/v2ray/scanner/sources", v2rayHandler.ListScannerSources)
+			protected.POST("/v2ray/scanner/sources", v2rayHandler.CreateScannerSource)
+			protected.PUT("/v2ray/scanner/sources/:id", v2rayHandler.UpdateScannerSource)
+			protected.DELETE("/v2ray/scanner/sources/:id", v2rayHandler.DeleteScannerSource)
 			protected.POST("/v2ray/nodes/:id/provision", v2rayHandler.ProvisionNode)
 			protected.POST("/v2ray/firewall/block", v2rayHandler.BlockFirewallIP)
 			protected.POST("/v2ray/mcp", v2rayHandler.HandleMCP)
@@ -280,10 +285,20 @@ func main() {
 			// System monitoring route
 			protected.GET("/system/stats", handlers.GetSystemStats)
 
+			// Domain Checker Endpoints
+			protected.GET("/domains", domainHandler.List)
+			protected.GET("/domains/categories", domainHandler.Categories)
+			protected.POST("/domains", domainHandler.Add)
+			protected.POST("/domains/check/:id", domainHandler.CheckSingle)
+			protected.POST("/domains/check/bulk", domainHandler.CheckBulk)
+			protected.DELETE("/domains/:id", domainHandler.DeleteSingle)
+			protected.POST("/domains/delete", domainHandler.DeleteBulk)
+
 			// File Manager API Endpoints
 			protected.GET("/files/list", fileHandler.ListDirectory)
 			protected.GET("/files/search", fileHandler.SearchFiles)
 			protected.GET("/files/stream", fileHandler.StreamOrDownload)
+			protected.GET("/files/download", fileHandler.RawDownload)
 			protected.GET("/files/content", fileHandler.GetContent)
 			protected.POST("/files/save", fileHandler.SaveContent)
 			protected.POST("/files/create-folder", fileHandler.CreateFolder)

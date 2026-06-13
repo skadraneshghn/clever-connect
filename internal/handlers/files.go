@@ -462,6 +462,45 @@ func (h *FileHandler) StreamOrDownload(c *gin.Context) {
 	http.ServeContent(c.Writer, c.Request, stat.Name(), stat.ModTime(), file)
 }
 
+// RawDownload handles GET /api/files/download
+// It serves the file aggressively from disk directly without any stream mechanisms (no HTTP Range support, no torrent reader readahead, etc.)
+func (h *FileHandler) RawDownload(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+	target := c.Query("path")
+	safePath, err := h.securePath(target)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	file, err := os.Open(safePath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil || stat.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request target"})
+		return
+	}
+
+	// Set headers for raw download
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Disposition", "attachment; filename=\""+filepath.Base(safePath)+"\"")
+	c.Header("Content-Length", fmt.Sprintf("%d", stat.Size()))
+	c.Header("Expires", "0")
+	c.Header("Cache-Control", "must-revalidate")
+	c.Header("Pragma", "public")
+
+	// Read and write directly to response writer aggressively (without range/stream support)
+	_, _ = io.Copy(c.Writer, file)
+}
+
 // GetContent handles GET /api/files/content for text editor integrations
 func (h *FileHandler) GetContent(c *gin.Context) {
 	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
