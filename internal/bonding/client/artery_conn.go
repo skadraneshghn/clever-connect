@@ -252,7 +252,15 @@ func (ac *ArteryConn) WriteFrame(f *frame.Frame) error {
 	return nil
 }
 
+// wsPingInterval is how often we send native WebSocket Ping control frames.
+// Clever Cloud's Sozu/HAProxy infra only resets its idle timer on native WS
+// Ping/Pong frames — binary data messages are invisible to the load balancer.
+// We ping every 20s to stay well within the 60s infra idle timeout.
+const wsPingInterval = 20 * time.Second
+
 // ReadFrameLoop reads WebSocket binary messages from this artery and dispatches them.
+// It also runs a native WS ping ticker in the background to keep Clever Cloud's
+// infrastructure load balancer from killing the connection at 60s idle.
 // Runs as a goroutine; exits on error or context cancellation.
 func (ac *ArteryConn) ReadFrameLoop(ctx context.Context, sess *session.Session, pingCB func(float64)) {
 	ac.mu.Lock()
@@ -262,6 +270,39 @@ func (ac *ArteryConn) ReadFrameLoop(ctx context.Context, sess *session.Session, 
 	if conn == nil {
 		return
 	}
+
+	// Native WS Ping/Pong: keeps Clever Cloud's infrastructure proxy alive.
+	// The pong handler extends the read deadline so the conn stays open.
+	conn.SetPongHandler(func(string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return nil
+	})
+	// Set initial read deadline; pong handler will keep rolling it forward.
+	_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+
+	// Background native ping ticker
+	go func() {
+		ticker := time.NewTicker(wsPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				ac.mu.Lock()
+				if ac.wsConn == nil || !ac.alive {
+					ac.mu.Unlock()
+					return
+				}
+				_ = ac.wsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				err := ac.wsConn.WriteMessage(websocket.PingMessage, nil)
+				ac.mu.Unlock()
+				if err != nil {
+					return // connection is gone; let ReadMessage surface the error
+				}
+			}
+		}
+	}()
 
 	for {
 		select {
@@ -307,6 +348,41 @@ func (ac *ArteryConn) ReadFrameLoop(ctx context.Context, sess *session.Session, 
 					"tag", ac.tag, "stream", f.StreamID,
 					"type", frame.TypeName(f.Type), "error", err)
 			}
+		}
+	}
+}
+
+// RunWithAutoReconnect keeps this artery alive indefinitely: when the connection
+// drops (due to infra timeout, network blip, or server restart) it reconnects
+// with backoff and restarts the ReadFrameLoop automatically.
+// This is the persistent lifecycle goroutine for each artery.
+func (ac *ArteryConn) RunWithAutoReconnect(ctx context.Context, sess *session.Session, pingCB func(float64)) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		// Block until connected (with backoff)
+		if err := ac.ConnectWithBackoff(ctx); err != nil {
+			// ctx was cancelled
+			return
+		}
+
+		logger.Info("Bonding", "Artery connected, starting read loop", "tag", ac.tag)
+
+		// ReadFrameLoop blocks until the connection dies
+		ac.ReadFrameLoop(ctx, sess, pingCB)
+
+		if ctx.Err() != nil {
+			return
+		}
+
+		logger.Info("Bonding", "Artery dropped, scheduling reconnect", "tag", ac.tag)
+		// Brief pause before the next ConnectWithBackoff attempt
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }

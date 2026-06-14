@@ -38,8 +38,9 @@ import (
 const (
 	// WebSocket configuration
 	writeWait      = 10 * time.Second
-	pongWait       = 60 * time.Second
+	pongWait       = 90 * time.Second // client pings every 20s; must be > infra idle timeout (60s)
 	maxMessageSize = 65536
+
 
 	// Keepalive / RTT measurement
 	rttPingInterval = 3 * time.Second
@@ -277,6 +278,15 @@ func (c *Combiner) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	conn.SetReadLimit(maxMessageSize)
 	conn.SetReadDeadline(time.Now().Add(pongWait))
+	// Respond to native WebSocket Ping control frames from the client.
+	// Gorilla does this automatically, but we also reset the read deadline here
+	// so the server-side timeout stays in sync with the client's 20s ping cadence.
+	conn.SetPingHandler(func(appData string) error {
+		_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+		_ = conn.WriteMessage(websocket.PongMessage, nil)
+		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil

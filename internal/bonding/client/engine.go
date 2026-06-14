@@ -229,17 +229,11 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 	e.cancelFunc = cancel
 	e.mu.Unlock()
 
-	// Connect arteries (with backoff)
+	// Connect arteries (with auto-reconnect on drop)
 	for _, ac := range e.arteries {
 		go func(a *ArteryConn) {
-			if err := a.ConnectWithBackoff(ctx); err != nil {
-				logger.Error("Bonding", "Artery failed to connect",
-					"tag", a.Tag(), "error", err)
-				return
-			}
-			// Start reading frames from this artery
 			metrics := e.metrics[a.Tag()]
-			a.ReadFrameLoop(ctx, e.session, func(rtt float64) {
+			a.RunWithAutoReconnect(ctx, e.session, func(rtt float64) {
 				if metrics != nil {
 					metrics.UpdateRTT(rtt)
 					metrics.RecordPongReceived()
