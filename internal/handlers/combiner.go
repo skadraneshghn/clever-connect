@@ -143,15 +143,28 @@ func (h *CombinerHandler) DiagnoseCombiner(c *gin.Context) {
 
 	// 1. Database Configuration
 	var cfg models.BondingEngineConfig
-	if err := db.DB.First(&cfg).Error; err != nil {
-		steps = append(steps, DiagnosticStep{
-			Name:         "Database Configuration",
-			Description:  "Verify engine configuration exists in database",
-			Status:       "error",
-			ErrorMessage: "No bonding configuration found. Please save settings first.",
-		})
-		c.JSON(http.StatusOK, steps)
-		return
+	if c.Request.Method == "POST" {
+		if err := c.ShouldBindJSON(&cfg); err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Database Configuration",
+				Description:  "Verify engine configuration exists in database",
+				Status:       "error",
+				ErrorMessage: fmt.Sprintf("Invalid diagnostic input configuration: %v", err),
+			})
+			c.JSON(http.StatusOK, steps)
+			return
+		}
+	} else {
+		if err := db.DB.First(&cfg).Error; err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Database Configuration",
+				Description:  "Verify engine configuration exists in database",
+				Status:       "error",
+				ErrorMessage: "No bonding configuration found. Please save settings first.",
+			})
+			c.JSON(http.StatusOK, steps)
+			return
+		}
 	}
 
 	steps = append(steps, DiagnosticStep{

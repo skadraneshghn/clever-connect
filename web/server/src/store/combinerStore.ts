@@ -47,7 +47,7 @@ interface CombinerState {
   fetchStatus: () => Promise<void>;
   startCombiner: () => Promise<void>;
   stopCombiner: () => Promise<void>;
-  runDiagnostics: () => Promise<void>;
+  runDiagnostics: (cfg?: CombinerConfig) => Promise<void>;
 }
 
 const getToken = () => localStorage.getItem('cc_server_token') || '';
@@ -146,10 +146,16 @@ export const useCombinerStore = create<CombinerState>((set, get) => ({
     }
   },
 
-  runDiagnostics: async () => {
+  runDiagnostics: async (cfg) => {
     set({ diagnoseLoading: true, error: null });
     try {
-      const res = await fetch('/api/bonding/combiner/diagnose', { headers: apiHeaders() });
+      const method = cfg ? 'POST' : 'GET';
+      const body = cfg ? JSON.stringify(cfg) : undefined;
+      const res = await fetch('/api/bonding/combiner/diagnose', {
+        method,
+        headers: apiHeaders(),
+        body,
+      });
       if (res.ok) {
         const steps = await res.json();
         set({ diagnoseResults: steps, diagnoseLoading: false });

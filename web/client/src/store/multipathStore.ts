@@ -77,7 +77,7 @@ interface MultipathState {
   startEngine: () => Promise<void>;
   stopEngine: () => Promise<void>;
   connectTelemetry: () => () => void;
-  runDiagnostics: () => Promise<void>;
+  runDiagnostics: (cfg?: BondingConfig) => Promise<void>;
 }
 
 const getToken = () => localStorage.getItem('cc_client_token') || '';
@@ -232,10 +232,16 @@ export const useMultipathStore = create<MultipathState>((set, get) => {
       };
     },
 
-    runDiagnostics: async () => {
+    runDiagnostics: async (cfg) => {
       set({ diagnoseLoading: true, error: null });
       try {
-        const res = await fetch('/api/v2ray/bonding/diagnose', { headers: apiHeaders() });
+        const method = cfg ? 'POST' : 'GET';
+        const body = cfg ? JSON.stringify(cfg) : undefined;
+        const res = await fetch('/api/v2ray/bonding/diagnose', {
+          method,
+          headers: apiHeaders(),
+          body,
+        });
         if (res.ok) {
           const steps = await res.json();
           set({ diagnoseResults: steps, diagnoseLoading: false });

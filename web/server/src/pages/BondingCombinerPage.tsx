@@ -544,7 +544,10 @@ export const BondingCombinerPage: React.FC = () => {
                 type="text"
                 placeholder="default"
                 value={originId}
-                onChange={(e) => setOriginId(e.target.value)}
+                onChange={(e) => {
+                  setOriginId(e.target.value);
+                  useCombinerStore.setState({ diagnoseResults: null });
+                }}
                 required
                 disabled={isRunning}
                 style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', fontSize: 13, color: 'var(--color-brand-heading)' }}
@@ -560,7 +563,10 @@ export const BondingCombinerPage: React.FC = () => {
                 {!isRunning && (
                   <button
                     type="button"
-                    onClick={generatePSK}
+                    onClick={() => {
+                      generatePSK();
+                      useCombinerStore.setState({ diagnoseResults: null });
+                    }}
                     style={{ background: 'none', border: 'none', color: 'var(--color-brand)', cursor: 'pointer', fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}
                   >
                     <FiRefreshCw size={10} /> Generate Secure Key
@@ -571,7 +577,10 @@ export const BondingCombinerPage: React.FC = () => {
                 type="text"
                 placeholder="Optional 32-byte hexadecimal key (64 characters)"
                 value={pskHex}
-                onChange={(e) => setPskHex(e.target.value)}
+                onChange={(e) => {
+                  setPskHex(e.target.value);
+                  useCombinerStore.setState({ diagnoseResults: null });
+                }}
                 disabled={isRunning}
                 style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', fontSize: 13, color: 'var(--color-brand-heading)', fontFamily: 'monospace' }}
               />
@@ -592,7 +601,16 @@ export const BondingCombinerPage: React.FC = () => {
           </form>
         </div>
 
-        <DiagnosticsPanel results={diagnoseResults} loading={diagnoseLoading} onRun={runDiagnostics} />
+        <DiagnosticsPanel
+          results={diagnoseResults}
+          loading={diagnoseLoading}
+          onRun={() => runDiagnostics({
+            is_active: config?.is_active ?? false,
+            mode: 'combiner',
+            origin_id: originId,
+            psk_hex: pskHex,
+          })}
+        />
       </div>
 
         {/* Copy Connection Parameters */}

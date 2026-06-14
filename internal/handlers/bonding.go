@@ -264,17 +264,30 @@ type DiagnosticStep struct {
 func (h *BondingHandler) DiagnoseEngine(c *gin.Context) {
 	var steps []DiagnosticStep
 
-	// Load config from DB
+	// Load config from DB or request body if POST
 	var cfg models.BondingEngineConfig
-	if err := db.DB.First(&cfg).Error; err != nil {
-		steps = append(steps, DiagnosticStep{
-			Name:         "Database Configuration",
-			Description:  "Verify engine configuration exists in database",
-			Status:       "error",
-			ErrorMessage: "No bonding configuration found. Please save settings first.",
-		})
-		c.JSON(http.StatusOK, steps)
-		return
+	if c.Request.Method == "POST" {
+		if err := c.ShouldBindJSON(&cfg); err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Database Configuration",
+				Description:  "Verify engine configuration exists in database",
+				Status:       "error",
+				ErrorMessage: fmt.Sprintf("Invalid diagnostic input configuration: %v", err),
+			})
+			c.JSON(http.StatusOK, steps)
+			return
+		}
+	} else {
+		if err := db.DB.First(&cfg).Error; err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Database Configuration",
+				Description:  "Verify engine configuration exists in database",
+				Status:       "error",
+				ErrorMessage: "No bonding configuration found. Please save settings first.",
+			})
+			c.JSON(http.StatusOK, steps)
+			return
+		}
 	}
 
 	steps = append(steps, DiagnosticStep{
@@ -285,44 +298,88 @@ func (h *BondingHandler) DiagnoseEngine(c *gin.Context) {
 	})
 
 	// 1. Local Ports Check
+	engineRunning := selector.GetEngine().State() == selector.EngineStateRunning ||
+		bonding_client.GetBondingEngine().State() == bonding_client.BondingStateRunning
+
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", cfg.SocksPort)
-	socksListener, err := net.Listen("tcp", socksAddr)
 	var socksAvailable bool
-	if err != nil {
-		steps = append(steps, DiagnosticStep{
-			Name:         "Local SOCKS Port Availability",
-			Description:  fmt.Sprintf("Verify local port %d is free", cfg.SocksPort),
-			Status:       "error",
-			ErrorMessage: fmt.Sprintf("SOCKS port %d is currently occupied or unavailable: %v", cfg.SocksPort, err),
-		})
+	if engineRunning {
+		conn, err := net.DialTimeout("tcp", socksAddr, 1*time.Second)
+		if err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Local SOCKS Port Availability",
+				Description:  fmt.Sprintf("Verify local port %d is active", cfg.SocksPort),
+				Status:       "error",
+				ErrorMessage: fmt.Sprintf("SOCKS port %d is not active or responding: %v", cfg.SocksPort, err),
+			})
+		} else {
+			conn.Close()
+			socksAvailable = true
+			steps = append(steps, DiagnosticStep{
+				Name:        "Local SOCKS Port Availability",
+				Description: fmt.Sprintf("Verify local port %d is active", cfg.SocksPort),
+				Status:      "success",
+				Details:     fmt.Sprintf("Local port %d is active and bound by the running engine.", cfg.SocksPort),
+			})
+		}
 	} else {
-		socksListener.Close()
-		socksAvailable = true
-		steps = append(steps, DiagnosticStep{
-			Name:        "Local SOCKS Port Availability",
-			Description: fmt.Sprintf("Verify local port %d is free", cfg.SocksPort),
-			Status:      "success",
-			Details:     fmt.Sprintf("Local port %d is available.", cfg.SocksPort),
-		})
+		socksListener, err := net.Listen("tcp", socksAddr)
+		if err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Local SOCKS Port Availability",
+				Description:  fmt.Sprintf("Verify local port %d is free", cfg.SocksPort),
+				Status:       "error",
+				ErrorMessage: fmt.Sprintf("SOCKS port %d is currently occupied or unavailable: %v", cfg.SocksPort, err),
+			})
+		} else {
+			socksListener.Close()
+			socksAvailable = true
+			steps = append(steps, DiagnosticStep{
+				Name:        "Local SOCKS Port Availability",
+				Description: fmt.Sprintf("Verify local port %d is free", cfg.SocksPort),
+				Status:      "success",
+				Details:     fmt.Sprintf("Local port %d is free and available to bind.", cfg.SocksPort),
+			})
+		}
 	}
 
 	httpAddr := fmt.Sprintf("127.0.0.1:%d", cfg.HTTPPort)
-	httpListener, err := net.Listen("tcp", httpAddr)
-	if err != nil {
-		steps = append(steps, DiagnosticStep{
-			Name:         "Local HTTP Port Availability",
-			Description:  fmt.Sprintf("Verify local port %d is free", cfg.HTTPPort),
-			Status:       "error",
-			ErrorMessage: fmt.Sprintf("HTTP port %d is currently occupied or unavailable: %v", cfg.HTTPPort, err),
-		})
+	if engineRunning {
+		conn, err := net.DialTimeout("tcp", httpAddr, 1*time.Second)
+		if err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Local HTTP Port Availability",
+				Description:  fmt.Sprintf("Verify local port %d is active", cfg.HTTPPort),
+				Status:       "error",
+				ErrorMessage: fmt.Sprintf("HTTP port %d is not active or responding: %v", cfg.HTTPPort, err),
+			})
+		} else {
+			conn.Close()
+			steps = append(steps, DiagnosticStep{
+				Name:        "Local HTTP Port Availability",
+				Description: fmt.Sprintf("Verify local port %d is active", cfg.HTTPPort),
+				Status:      "success",
+				Details:     fmt.Sprintf("Local port %d is active and bound by the running engine.", cfg.HTTPPort),
+			})
+		}
 	} else {
-		httpListener.Close()
-		steps = append(steps, DiagnosticStep{
-			Name:        "Local HTTP Port Availability",
-			Description: fmt.Sprintf("Verify local port %d is free", cfg.HTTPPort),
-			Status:      "success",
-			Details:     fmt.Sprintf("Local port %d is available.", cfg.HTTPPort),
-		})
+		httpListener, err := net.Listen("tcp", httpAddr)
+		if err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Local HTTP Port Availability",
+				Description:  fmt.Sprintf("Verify local port %d is free", cfg.HTTPPort),
+				Status:       "error",
+				ErrorMessage: fmt.Sprintf("HTTP port %d is currently occupied or unavailable: %v", cfg.HTTPPort, err),
+			})
+		} else {
+			httpListener.Close()
+			steps = append(steps, DiagnosticStep{
+				Name:        "Local HTTP Port Availability",
+				Description: fmt.Sprintf("Verify local port %d is free", cfg.HTTPPort),
+				Status:      "success",
+				Details:     fmt.Sprintf("Local port %d is free and available to bind.", cfg.HTTPPort),
+			})
+		}
 	}
 
 	// 2. Scanner Pool Check
@@ -394,9 +451,6 @@ func (h *BondingHandler) DiagnoseEngine(c *gin.Context) {
 	}
 
 	// 4. Live Core/Routing Loopback (Checks SOCKS routing if running)
-	engineRunning := selector.GetEngine().State() == selector.EngineStateRunning ||
-		bonding_client.GetBondingEngine().State() == bonding_client.BondingStateRunning
-
 	if engineRunning && socksAvailable {
 		// Test exit path routing through local SOCKS port
 		client := &http.Client{
@@ -428,8 +482,8 @@ func (h *BondingHandler) DiagnoseEngine(c *gin.Context) {
 		steps = append(steps, DiagnosticStep{
 			Name:        "Proxy Traffic Routing Check",
 			Description: "Verify traffic can route through the engine proxy",
-			Status:      "warning",
-			Details:     "Skipped: Proxy loopback test requires the engine to be running.",
+			Status:      "success",
+			Details:     "Skipped: Engine is not currently running. Start the engine to run the loopback routing test.",
 		})
 	}
 

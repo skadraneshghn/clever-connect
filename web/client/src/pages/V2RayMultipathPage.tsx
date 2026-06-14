@@ -770,7 +770,11 @@ export const V2RayMultipathPage: React.FC = () => {
               </div>
             </div>
 
-            <DiagnosticsPanel results={diagnoseResults} loading={diagnoseLoading} onRun={runDiagnostics} />
+            <DiagnosticsPanel
+              results={diagnoseResults}
+              loading={diagnoseLoading}
+              onRun={() => runDiagnostics(config || undefined)}
+            />
           </div>
         </div>
       )}
@@ -839,7 +843,10 @@ export const V2RayMultipathPage: React.FC = () => {
                 </label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                   <div
-                    onClick={() => setMode('selector')}
+                    onClick={() => {
+                      setMode('selector');
+                      useMultipathStore.setState({ diagnoseResults: null });
+                    }}
                     style={{
                       padding: '16px', borderRadius: 10, cursor: 'pointer',
                       background: mode === 'selector' ? 'rgba(16,185,129,0.08)' : 'var(--color-brand-bg)',
@@ -852,7 +859,10 @@ export const V2RayMultipathPage: React.FC = () => {
                     <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', marginTop: 4 }}>Failover / Smart Selection</div>
                   </div>
                   <div
-                    onClick={() => setMode('bonding')}
+                    onClick={() => {
+                      setMode('bonding');
+                      useMultipathStore.setState({ diagnoseResults: null });
+                    }}
                     style={{
                       padding: '16px', borderRadius: 10, cursor: 'pointer',
                       background: mode === 'bonding' ? 'rgba(99,102,241,0.08)' : 'var(--color-brand-bg)',
@@ -1048,7 +1058,29 @@ export const V2RayMultipathPage: React.FC = () => {
             </form>
           </div>
 
-          <DiagnosticsPanel results={diagnoseResults} loading={diagnoseLoading} onRun={runDiagnostics} />
+          <DiagnosticsPanel
+            results={diagnoseResults}
+            loading={diagnoseLoading}
+            onRun={() => runDiagnostics({
+              mode,
+              striping_mode: stripingMode,
+              max_arteries: maxArteries,
+              min_arteries: minArteries,
+              socks_port: socksPort,
+              http_port: httpPort,
+              combiner_url: combinerUrl,
+              origin_id: originId,
+              psk_hex: pskHex,
+              frame_size: frameSize,
+              eval_window_ms: evalWindowMs,
+              demote_rtt_x: demoteRttX,
+              promote_rtt_x: promoteRttX,
+              loss_demote_pct: lossDemotePct,
+              cooldown_sec: cooldownSec,
+              error_budget: errorBudget,
+              is_active: config?.is_active ?? false,
+            })}
+          />
         </div>
 
           {/* Right Column: Explanatory Details */}
