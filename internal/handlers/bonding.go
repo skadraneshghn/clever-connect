@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	bonding_client "clever-connect/internal/bonding/client"
 	"clever-connect/internal/bonding/selector"
@@ -174,6 +175,27 @@ func (h *BondingHandler) ServeTelemetryWS(c *gin.Context) {
 	}
 	defer conn.Close()
 
+	// Set a read deadline so we detect client disconnects
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	// Start a goroutine to read pong/close frames from client
+	clientGone := make(chan struct{})
+	go func() {
+		defer close(clientGone)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	pingTicker := time.NewTicker(20 * time.Second)
+	defer pingTicker.Stop()
+
 	// Determine which engine is running and stream from the correct channel
 	bondingEngine := bonding_client.GetBondingEngine()
 	selectorEngine := selector.GetEngine()
@@ -182,6 +204,14 @@ func (h *BondingHandler) ServeTelemetryWS(c *gin.Context) {
 		// Mode B: stream from bonding engine telemetry
 		for {
 			select {
+			case <-c.Request.Context().Done():
+				return
+			case <-clientGone:
+				return
+			case <-pingTicker.C:
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return
+				}
 			case status, ok := <-bondingEngine.TelemetryChan:
 				if !ok {
 					return
@@ -195,6 +225,14 @@ func (h *BondingHandler) ServeTelemetryWS(c *gin.Context) {
 		// Mode A / default: stream from selector engine telemetry
 		for {
 			select {
+			case <-c.Request.Context().Done():
+				return
+			case <-clientGone:
+				return
+			case <-pingTicker.C:
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return
+				}
 			case status, ok := <-selectorEngine.TelemetryChan:
 				if !ok {
 					return

@@ -42,7 +42,7 @@ func HandleStatsStream(c *gin.Context) {
 
 	// Previous values to calculate speed (bytes per second)
 	var prevUp, prevDown int64
-	isFirstTick := true
+	var prevUpSet bool
 
 	// Dial gRPC once (it handles reconnection automatically)
 	grpcConn, err := grpc.Dial("127.0.0.1:10085", grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -63,29 +63,38 @@ func HandleStatsStream(c *gin.Context) {
 			currentDown := rx
 			activeConns := conns
 
-			if currentUp == 0 && currentDown == 0 && client != nil {
+			// 2. If wrapper traffic is zero (engine might be starting), also try gRPC stats
+			if client != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				resp, err := client.QueryStats(ctx, &command.QueryStatsRequest{
+				resp, grpcErr := client.QueryStats(ctx, &command.QueryStatsRequest{
 					Pattern: "",
 					Reset_:  false,
 				})
 				cancel()
 
-				if err == nil && resp != nil {
+				if grpcErr == nil && resp != nil {
+					var grpcUp, grpcDown int64
 					for _, stat := range resp.Stat {
 						// aggregate all uplink/downlink values
 						if strings.HasSuffix(stat.Name, ">>>uplink") {
-							currentUp += stat.Value
+							grpcUp += stat.Value
 						} else if strings.HasSuffix(stat.Name, ">>>downlink") {
-							currentDown += stat.Value
+							grpcDown += stat.Value
 						}
+					}
+					// Use whichever source has higher values (they may count different things)
+					if grpcUp > currentUp {
+						currentUp = grpcUp
+					}
+					if grpcDown > currentDown {
+						currentDown = grpcDown
 					}
 				}
 			}
 
-			// 2. Calculate speed
+			// 3. Calculate speed delta
 			var upSpeed, downSpeed int64
-			if !isFirstTick {
+			if prevUpSet {
 				if currentUp >= prevUp {
 					upSpeed = currentUp - prevUp
 				}
@@ -93,14 +102,11 @@ func HandleStatsStream(c *gin.Context) {
 					downSpeed = currentDown - prevDown
 				}
 			}
+			prevUp = currentUp
+			prevDown = currentDown
+			prevUpSet = true
 
-			if currentUp > 0 || currentDown > 0 {
-				isFirstTick = false
-				prevUp = currentUp
-				prevDown = currentDown
-			}
-
-			// 3. Build payload
+			// 4. Build payload
 			stats := RealtimeStats{
 				UplinkSpeed:   upSpeed,
 				DownlinkSpeed: downSpeed,
@@ -109,7 +115,7 @@ func HandleStatsStream(c *gin.Context) {
 				ActiveConns:   activeConns,
 			}
 
-			// 4. Stream to React
+			// 5. Stream to React
 			if err := conn.WriteJSON(stats); err != nil {
 				return // Client disconnected
 			}

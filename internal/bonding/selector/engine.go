@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"clever-connect/internal/bonding/control"
@@ -61,6 +62,10 @@ type Engine struct {
 
 	// Telemetry channels
 	TelemetryChan chan EngineStatus
+
+	// Traffic tracking for speed calculation
+	prevBytesTx int64
+	prevBytesRx int64
 }
 
 // ArteryEntry tracks one active line in the selector pool.
@@ -78,6 +83,12 @@ type EngineStatus struct {
 	TotalPool     int                   `json:"total_pool"`
 	Arteries      []ArteryStatus        `json:"arteries"`
 	LastEvalAt    time.Time             `json:"last_eval_at"`
+	// Real-time traffic counters (populated from local proxy wrapper)
+	BytesTx       int64                 `json:"bytes_tx"`
+	BytesRx       int64                 `json:"bytes_rx"`
+	UplinkBps     int64                 `json:"uplink_bps"`
+	DownlinkBps   int64                 `json:"downlink_bps"`
+	ActiveConns   int                   `json:"active_conns"`
 }
 
 // ArteryStatus is per-artery telemetry.
@@ -656,6 +667,25 @@ func (e *Engine) telemetryLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			status := e.GetStatus()
+
+			// Attach real-time traffic metrics from local proxy wrapper
+			tx, rx, conns := core.GetClientTraffic()
+			status.BytesTx = tx
+			status.BytesRx = rx
+			status.ActiveConns = conns
+
+			// Calculate per-second speed using atomic stored previous values
+			prevTx := atomic.LoadInt64(&e.prevBytesTx)
+			prevRx := atomic.LoadInt64(&e.prevBytesRx)
+			if tx >= prevTx {
+				status.UplinkBps = tx - prevTx
+			}
+			if rx >= prevRx {
+				status.DownlinkBps = rx - prevRx
+			}
+			atomic.StoreInt64(&e.prevBytesTx, tx)
+			atomic.StoreInt64(&e.prevBytesRx, rx)
+
 			select {
 			case e.TelemetryChan <- status:
 			default: // drop if channel full

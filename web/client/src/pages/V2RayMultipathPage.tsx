@@ -2,6 +2,24 @@ import React, { useEffect, useCallback } from 'react';
 import { useMultipathStore, type ArteryStatus } from '../store/multipathStore';
 
 /* ────────────────────────────────────────────────────────────────────────── */
+/*  Helpers                                                                  */
+/* ────────────────────────────────────────────────────────────────────────── */
+function formatSpeed(bps: number): string {
+  if (bps === 0) return '0 B/s';
+  if (bps < 1024) return `${bps} B/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+  return `${(bps / (1024 * 1024)).toFixed(2)} MB/s`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
 /*  State → visual mapping                                                  */
 /* ────────────────────────────────────────────────────────────────────────── */
 const stateColor: Record<string, string> = {
@@ -255,7 +273,7 @@ export const V2RayMultipathPage: React.FC = () => {
           </button>
         </div>
 
-        {/* Stats strip */}
+        {/* Stats strip — row 1: engine info */}
         {isRunning && (
           <div style={{
             display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16,
@@ -265,7 +283,42 @@ export const V2RayMultipathPage: React.FC = () => {
             <Stat label="Mode" value={config?.mode === 'bonding' ? 'Bonding' : 'Selector'} color="#ff6b2c" />
             <Stat label="Active Arteries" value={status?.active_count || 0} color="#10b981" />
             <Stat label="Pool Size" value={status?.total_pool || 0} color="#6366f1" />
-            <Stat label="Engine State" value={status?.state || '—'} color="#f59e0b" />
+            <Stat label="Active Conns" value={status?.active_conns || 0} color="#f59e0b" />
+          </div>
+        )}
+        {/* Stats strip — row 2: live traffic */}
+        {isRunning && (
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16,
+            marginTop: 8, padding: '14px 0', borderTop: '1px solid rgba(255,255,255,0.06)',
+            position: 'relative', zIndex: 1,
+          }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 10, color: '#9b9bab', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>↑ Upload Speed</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#10b981', fontVariantNumeric: 'tabular-nums' }}>
+                {formatSpeed(status?.uplink_bps || 0)}
+              </div>
+              <div style={{ fontSize: 10, color: '#9b9bab', marginTop: 2 }}>Total: {formatBytes(status?.bytes_tx || 0)}</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 10, color: '#9b9bab', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>↓ Download Speed</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#6366f1', fontVariantNumeric: 'tabular-nums' }}>
+                {formatSpeed(status?.downlink_bps || 0)}
+              </div>
+              <div style={{ fontSize: 10, color: '#9b9bab', marginTop: 2 }}>Total: {formatBytes(status?.bytes_rx || 0)}</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 10, color: '#9b9bab', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Total Uploaded</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#f59e0b', fontVariantNumeric: 'tabular-nums' }}>
+                {formatBytes(status?.bytes_tx || 0)}
+              </div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 10, color: '#9b9bab', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Total Downloaded</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#a78bfa', fontVariantNumeric: 'tabular-nums' }}>
+                {formatBytes(status?.bytes_rx || 0)}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -370,6 +423,68 @@ export const V2RayMultipathPage: React.FC = () => {
         </div>
       )}
 
+      {/* ── Architecture Info ────────────────────────────────────────── */}
+      <div style={{
+        background: 'var(--color-brand-card)', borderRadius: 14,
+        border: '1px solid var(--color-brand-border)', padding: '20px 24px',
+      }}>
+        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.5, color: 'var(--color-brand-muted)', marginBottom: 16, fontWeight: 600 }}>
+          🏗 Architecture &amp; Exit IP Explained
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          {/* Mode A */}
+          <div style={{
+            padding: '16px', borderRadius: 10,
+            background: config?.mode === 'selector' || !config?.mode
+              ? 'rgba(16,185,129,0.08)' : 'rgba(255,255,255,0.03)',
+            border: `1px solid ${config?.mode === 'selector' || !config?.mode ? 'rgba(16,185,129,0.3)' : 'var(--color-brand-border)'}`,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              <span style={{ fontSize: 18 }}>⚡</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)' }}>Mode A — Selector/Failover</div>
+                <div style={{ fontSize: 10, color: '#10b981', fontWeight: 600 }}>{config?.mode === 'selector' || !config?.mode ? '● ACTIVE' : '○ Inactive'}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--color-brand-text)', lineHeight: 1.7 }}>
+              Traffic flows: <strong>You → Best V2Ray Node → Internet</strong><br />
+              <span style={{ color: '#f59e0b' }}>⚠ Exit IP = V2Ray node IP</span> (not your Clever Cloud server).<br />
+              Use this for: smart failover, lowest latency selection, zero-server-change bypass.
+            </div>
+          </div>
+          {/* Mode B */}
+          <div style={{
+            padding: '16px', borderRadius: 10,
+            background: config?.mode === 'bonding'
+              ? 'rgba(99,102,241,0.08)' : 'rgba(255,255,255,0.03)',
+            border: `1px solid ${config?.mode === 'bonding' ? 'rgba(99,102,241,0.3)' : 'var(--color-brand-border)'}`,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              <span style={{ fontSize: 18 }}>🔗</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)' }}>Mode B — True Bonding</div>
+                <div style={{ fontSize: 10, color: '#6366f1', fontWeight: 600 }}>{config?.mode === 'bonding' ? '● ACTIVE' : '○ Inactive'}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--color-brand-text)', lineHeight: 1.7 }}>
+              Traffic flows: <strong>You → V2Ray Nodes → Clever Cloud Server → Internet</strong><br />
+              <span style={{ color: '#10b981' }}>✓ Exit IP = Clever Cloud server IP</span>.<br />
+              Requires: Combiner URL configured + server-side combiner running.
+            </div>
+          </div>
+        </div>
+        {config?.mode === 'selector' || !config?.mode ? (
+          <div style={{
+            marginTop: 12, padding: '10px 14px', borderRadius: 8,
+            background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)',
+            fontSize: 12, color: '#f59e0b',
+          }}>
+            💡 <strong>You are in Mode A (Selector).</strong> IP checkers will show a V2Ray node IP — this is correct behavior.
+            To route traffic through your Clever Cloud server (and see its IP), switch to <strong>Mode B (Bonding)</strong> and configure the Combiner URL.
+          </div>
+        ) : null}
+      </div>
+
       {/* ── Empty State ─────────────────────────────────────────────── */}
       {!isRunning && (
         <div style={{
@@ -393,3 +508,4 @@ export const V2RayMultipathPage: React.FC = () => {
     </div>
   );
 };
+

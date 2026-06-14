@@ -20,6 +20,12 @@ export interface EngineStatus {
   total_pool: number;
   arteries: ArteryStatus[];
   last_eval_at: string;
+  // Real-time traffic metrics
+  bytes_tx: number;
+  bytes_rx: number;
+  uplink_bps: number;
+  downlink_bps: number;
+  active_conns: number;
 }
 
 export interface BondingConfig {
