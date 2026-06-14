@@ -43,12 +43,17 @@ func NewDispatcher(mode control.ScheduleMode, arteries []*ArteryConn, metrics ma
 	}
 }
 
-// DispatchFrame sends a frame to the appropriate artery(s) based on
-// the scheduler's current mode and per-path metrics.
-// Enforces cwnd backpressure: blocks if all selected paths are congested.
 func (d *Dispatcher) DispatchFrame(f *frame.Frame) error {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+
+	// Synchronize physical ArteryConn liveness to PathMetrics so the scheduler
+	// is immediately aware of connection state drops in real-time.
+	for _, ac := range d.arteries {
+		if pm, ok := d.metrics[ac.Tag()]; ok {
+			pm.SetAlive(ac.IsAlive())
+		}
+	}
 
 	result := d.scheduler.Schedule(f.StreamID, len(f.Payload))
 
@@ -79,17 +84,22 @@ func (d *Dispatcher) DispatchFrame(f *frame.Frame) error {
 			continue
 		}
 
+		// Record send before writing to track concurrent in-flight writes
+		selectedPath.RecordSend()
+
 		if err := artery.WriteFrame(f); err != nil {
 			lastErr = err
 			logger.Warn("Bonding", "Frame dispatch write failed",
 				"artery", artery.Tag(), "error", err)
 			// Record loss for scheduler
 			selectedPath.RecordLoss()
+			// Decrement InFlight since send failed
+			selectedPath.RecordAck(0, 0)
 			continue
 		}
 
-		// Record successful send (increments InFlight)
-		selectedPath.RecordSend()
+		// Decrement InFlight since frame was successfully accepted by WebSocket/TCP layer
+		selectedPath.RecordAck(len(f.Payload), 0)
 	}
 
 	return lastErr

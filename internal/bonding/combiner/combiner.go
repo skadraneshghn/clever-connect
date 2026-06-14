@@ -17,11 +17,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -330,7 +332,14 @@ func (c *Combiner) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			ac.lastPing = time.Now()
 			ac.mu.Unlock()
 
-			pongFrame := frame.NewPingFrame(0, f.Seq)
+			// Extract nonce and sendTimeNs from client's PING frame payload
+			var nonce uint32
+			var sendTimeNs uint64
+			if len(f.Payload) >= 12 {
+				nonce = binary.BigEndian.Uint32(f.Payload[0:4])
+				sendTimeNs = binary.BigEndian.Uint64(f.Payload[4:12])
+			}
+			pongFrame := frame.NewPingFrame(nonce, sendTimeNs)
 			encoded, err := pongFrame.Encode()
 			if err == nil {
 				ac.mu.Lock()
@@ -359,8 +368,16 @@ func (c *Combiner) handleStreamOpen(streamID uint32, target string, primaryArter
 	logger.Info("Combiner", "Opening stream to target",
 		"stream", streamID, "target", target, "artery", primaryArtery)
 
-	// Connect to the target
-	conn, err := net.DialTimeout("tcp", target, 10*time.Second)
+	// Reject IPv6 targets early to prevent cloud infrastructure unreachability cascades
+	if strings.HasPrefix(target, "[") {
+		logger.Warn("Combiner", "IPv6 target rejected (unreachable on server environment)",
+			"stream", streamID, "target", target)
+		c.sendFrameToAllArteries(frame.NewRstFrame(streamID, 0, 0x01))
+		return
+	}
+
+	// Connect to the target using tcp4 strictly
+	conn, err := net.DialTimeout("tcp4", target, 10*time.Second)
 	if err != nil {
 		logger.Warn("Combiner", "Failed to connect to target",
 			"stream", streamID, "target", target, "error", err)

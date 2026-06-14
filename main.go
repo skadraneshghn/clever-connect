@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	bonding_client "clever-connect/internal/bonding/client"
 	"clever-connect/internal/bonding/selector"
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
@@ -118,14 +119,21 @@ func main() {
 		go sub.StartSubscriptionUpdater(context.Background())
 	}
 
-	// Auto-start DMB Bonding Engine (Selector/Failover) if configured
+	// Auto-start DMB Bonding Engine (Selector/Failover or True Bonding) if configured
 	if cfg.AppMode == "client" {
 		var bondCfg models.BondingEngineConfig
 		if err := db.DB.First(&bondCfg).Error; err == nil && bondCfg.IsActive {
 			logger.Info("Bonding", "Auto-starting DMB Engine", "mode", bondCfg.Mode)
-			engine := selector.GetEngine()
-			if err := engine.StartEngine(&bondCfg); err != nil {
-				logger.Error("Bonding", "Failed to auto-start DMB Engine", "error", err)
+			var startErr error
+			if bondCfg.Mode == "bonding" {
+				engine := bonding_client.GetBondingEngine()
+				startErr = engine.StartEngine(&bondCfg)
+			} else {
+				engine := selector.GetEngine()
+				startErr = engine.StartEngine(&bondCfg)
+			}
+			if startErr != nil {
+				logger.Error("Bonding", "Failed to auto-start DMB Engine", "error", startErr)
 			}
 		}
 	}

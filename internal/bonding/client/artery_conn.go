@@ -111,30 +111,36 @@ func (ac *ArteryConn) SetAuthCredentials(pskHex string, originID string) {
 // xray routes that through the artery outbound (CDN edge node → combiner).
 func (ac *ArteryConn) Connect() error {
 	ac.mu.Lock()
-	defer ac.mu.Unlock()
-
 	if ac.wsConn != nil {
 		_ = ac.wsConn.Close()
 		ac.wsConn = nil
 	}
 
 	if ac.combinerURL == "" {
+		ac.mu.Unlock()
 		return fmt.Errorf("artery %s: combiner URL not set", ac.tag)
 	}
 
+	combinerURL := ac.combinerURL
+	pskHex := ac.pskHex
+	originID := ac.originID
+	tag := ac.tag
+	localPort := ac.localPort
+	ac.mu.Unlock()
+
 	// Parse the real combiner URL to build the dial target with auth query params.
-	parsed, err := url.Parse(ac.combinerURL)
+	parsed, err := url.Parse(combinerURL)
 	if err != nil {
-		return fmt.Errorf("artery %s: invalid combiner URL %q: %w", ac.tag, ac.combinerURL, err)
+		return fmt.Errorf("artery %s: invalid combiner URL %q: %w", tag, combinerURL, err)
 	}
 
 	// Generate fresh HMAC token from PSK + OriginID (short-lived, matches server window)
 	token := ""
-	if ac.pskHex != "" && ac.originID != "" {
-		pskBytes, err := hex.DecodeString(ac.pskHex)
+	if pskHex != "" && originID != "" {
+		pskBytes, err := hex.DecodeString(pskHex)
 		if err == nil {
 			ts := time.Now().Unix() / 30
-			message := fmt.Sprintf("%s:%s:%d", ac.originID, ac.tag, ts)
+			message := fmt.Sprintf("%s:%s:%d", originID, tag, ts)
 			mac := hmac.New(sha256.New, pskBytes)
 			mac.Write([]byte(message))
 			token = hex.EncodeToString(mac.Sum(nil))
@@ -143,7 +149,7 @@ func (ac *ArteryConn) Connect() error {
 
 	// Append artery tag + optional auth token to the query string.
 	q := parsed.Query()
-	q.Set("artery", ac.tag)
+	q.Set("artery", tag)
 	if token != "" {
 		q.Set("token", token)
 	}
@@ -151,13 +157,11 @@ func (ac *ArteryConn) Connect() error {
 	targetURL := parsed.String()
 
 	// Route through the local xray SOCKS5 proxy (artery-N-in inbound).
-	// This is the KEY fix: we are NOT dialing 127.0.0.1 as the destination —
-	// we are using it only as a SOCKS5 gateway.
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", ac.localPort)
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", localPort)
 	baseDialer := &net.Dialer{Timeout: 15 * time.Second}
 	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, baseDialer)
 	if err != nil {
-		return fmt.Errorf("artery %s: failed to create SOCKS5 dialer for %s: %w", ac.tag, socksAddr, err)
+		return fmt.Errorf("artery %s: failed to create SOCKS5 dialer for %s: %w", tag, socksAddr, err)
 	}
 
 	wsDialer := websocket.Dialer{
@@ -176,16 +180,20 @@ func (ac *ArteryConn) Connect() error {
 		if resp != nil {
 			status = resp.StatusCode
 		}
+		ac.mu.Lock()
 		ac.alive = false
+		ac.mu.Unlock()
 		return fmt.Errorf("artery %s: websocket dial to %s via SOCKS5 %s failed (HTTP %d): %w",
-			ac.tag, targetURL, socksAddr, status, err)
+			tag, targetURL, socksAddr, status, err)
 	}
 
+	ac.mu.Lock()
 	ac.wsConn = conn
 	ac.alive = true
+	ac.mu.Unlock()
 
 	logger.Info("Bonding", "Artery WebSocket connected",
-		"tag", ac.tag, "socks_port", ac.localPort, "target", targetURL)
+		"tag", tag, "socks_port", localPort, "target", targetURL)
 	return nil
 }
 

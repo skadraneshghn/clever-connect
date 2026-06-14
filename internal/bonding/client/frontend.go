@@ -120,6 +120,14 @@ type bondingResolver struct {
 func (br *bondingResolver) dialBonding(ctx context.Context, network, addr string) (net.Conn, error) {
 	fe := br.frontend
 
+	// Filter out IPv6 addresses to force browser/system fallback to IPv4
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+			logger.Debug("Bonding", "Rejecting SOCKS5 IPv6 request to trigger IPv4 fallback", "addr", addr)
+			return nil, fmt.Errorf("IPv6 connections are unsupported: host environment is single-stack IPv4")
+		}
+	}
+
 	// Allocate a new stream
 	streamID := nextStreamID()
 	stream, _, err := fe.session.OpenStream(streamID)
@@ -140,7 +148,7 @@ func (br *bondingResolver) dialBonding(ctx context.Context, network, addr string
 	// Start downstream reassembly (reads frames from stream → writes to bondingConn)
 	go HandleDownstream(bondingConn, stream)
 
-	return clientConn, nil
+	return &SOCKSTCPConnWrapper{Conn: clientConn}, nil
 }
 
 // startHTTPConnect launches an HTTP CONNECT proxy server.
@@ -199,6 +207,15 @@ func (fe *Frontend) handleHTTPConnect(ctx context.Context, conn net.Conn, req *h
 		targetAddr = targetAddr + ":443"
 	}
 
+	// Filter out IPv6 addresses to prevent unreachability errors
+	if host, _, err := net.SplitHostPort(targetAddr); err == nil {
+		if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+			logger.Debug("Bonding", "Rejecting HTTP CONNECT IPv6 request", "addr", targetAddr)
+			_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\nIPv6 connections are unsupported\r\n"))
+			return
+		}
+	}
+
 	// Respond with 200 OK to establish the tunnel
 	_, _ = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
@@ -230,6 +247,15 @@ func (fe *Frontend) handleHTTPProxy(ctx context.Context, conn net.Conn, req *htt
 		targetAddr = targetAddr + ":80"
 	}
 
+	// Filter out IPv6 addresses to prevent unreachability errors
+	if host, _, err := net.SplitHostPort(targetAddr); err == nil {
+		if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+			logger.Debug("Bonding", "Rejecting HTTP Proxy IPv6 request", "addr", targetAddr)
+			_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\nIPv6 connections are unsupported\r\n"))
+			return
+		}
+	}
+
 	streamID := nextStreamID()
 	stream, _, err := fe.session.OpenStream(streamID)
 	if err != nil {
@@ -256,3 +282,31 @@ func (fe *Frontend) handleHTTPProxy(ctx context.Context, conn net.Conn, req *htt
 	// Downstream
 	HandleDownstream(conn, stream)
 }
+
+// SOCKSTCPConnWrapper intercepts address resolution calls to satisfy go-socks5 type assertions.
+type SOCKSTCPConnWrapper struct {
+	net.Conn
+}
+
+// LocalAddr overrides net.pipeAddr to return a valid fake *net.TCPAddr struct.
+func (w *SOCKSTCPConnWrapper) LocalAddr() net.Addr {
+	if tcpAddr, ok := w.Conn.LocalAddr().(*net.TCPAddr); ok {
+		return tcpAddr
+	}
+	return &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: 10646,
+	}
+}
+
+// RemoteAddr overrides net.pipeAddr to return a valid fake *net.TCPAddr struct.
+func (w *SOCKSTCPConnWrapper) RemoteAddr() net.Addr {
+	if tcpAddr, ok := w.Conn.RemoteAddr().(*net.TCPAddr); ok {
+		return tcpAddr
+	}
+	return &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: 80,
+	}
+}
+

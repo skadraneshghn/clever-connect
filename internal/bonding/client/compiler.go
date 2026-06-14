@@ -3,8 +3,10 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/logger"
@@ -205,6 +207,22 @@ func CompileBondingClientConfig(nodes []models.V2RayClientConfig, combinerAddr s
 		Rules:          routingRules,
 	}
 
+	// Extract hostname from combinerAddr for DNS fronting/bypass
+	var combinerHost string
+	tempAddr := combinerAddr
+	if !strings.Contains(tempAddr, "://") {
+		tempAddr = "ws://" + tempAddr
+	}
+	if parsed, err := url.Parse(tempAddr); err == nil {
+		combinerHost = parsed.Hostname()
+	}
+
+	hostsMap := make(map[string]interface{})
+	if combinerHost == "ondata.ir" || combinerHost == "www.ondata.ir" {
+		hostsMap["ondata.ir"] = []string{"185.143.234.235", "185.143.233.235"}
+		hostsMap["www.ondata.ir"] = []string{"185.143.234.235", "185.143.233.235"}
+	}
+
 	// DNS
 	config.DNS = &compiler.DnsConfig{
 		Servers: []interface{}{
@@ -215,6 +233,7 @@ func CompileBondingClientConfig(nodes []models.V2RayClientConfig, combinerAddr s
 			},
 			"localhost",
 		},
+		Hosts: hostsMap,
 	}
 
 	// Serialize

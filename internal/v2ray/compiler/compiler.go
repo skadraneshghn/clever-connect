@@ -232,7 +232,8 @@ type DnsServerConfig struct {
 
 // DnsConfig defines the DNS block in Xray
 type DnsConfig struct {
-	Servers []interface{} `json:"servers"`
+	Servers []interface{}          `json:"servers"`
+	Hosts   map[string]interface{} `json:"hosts,omitempty"`
 }
 
 // ObservatoryConfig defines Xray Observatory settings
@@ -766,7 +767,17 @@ func compileClientConfigXray(
 				},
 				"localhost",
 			},
+			Hosts: map[string]interface{}{
+				"ondata.ir":     []string{"185.143.234.235", "185.143.233.235"},
+				"www.ondata.ir": []string{"185.143.234.235", "185.143.233.235"},
+			},
 		}
+	} else if config.DNS != nil {
+		if config.DNS.Hosts == nil {
+			config.DNS.Hosts = make(map[string]interface{})
+		}
+		config.DNS.Hosts["ondata.ir"] = []string{"185.143.234.235", "185.143.233.235"}
+		config.DNS.Hosts["www.ondata.ir"] = []string{"185.143.234.235", "185.143.233.235"}
 	}
 
 	// ────────────────────────────────────────────────────────────────────────

@@ -14,6 +14,7 @@ import (
 	"clever-connect/internal/bonding/control"
 	"clever-connect/internal/bonding/frame"
 	"clever-connect/internal/bonding/session"
+	"clever-connect/internal/bonding/hotswap"
 	"clever-connect/internal/db"
 	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/logger"
@@ -53,6 +54,7 @@ type BondingEngine struct {
 	stateMachine   *control.StateMachine
 	metrics        map[string]*control.PathMetrics
 	adaptiveCtrl   *control.AdaptiveController
+	hotswapMgr     *hotswap.Manager
 
 	// Pool of candidate nodes
 	candidatePool []models.V2RayClientConfig
@@ -284,6 +286,23 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 	e.state = BondingStateRunning
 	e.mu.Unlock()
 
+	// Initialize hot-swap manager
+	mgr := hotswap.NewManager("127.0.0.1:10085")
+	go func() {
+		// Wait a bit for gRPC port to open
+		time.Sleep(2 * time.Second)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.state == BondingStateRunning || e.state == BondingStateStarting {
+			if err := mgr.Connect(); err != nil {
+				logger.Warn("Bonding", "Failed to connect hot-swap manager to Xray gRPC API", "error", err)
+			} else {
+				logger.Info("Bonding", "Hot-swap manager connected to Xray gRPC API", "addr", "127.0.0.1:10085")
+				e.hotswapMgr = mgr
+			}
+		}
+	}()
+
 	// Reset traffic counters
 	core.ResetClientTraffic()
 
@@ -358,6 +377,10 @@ func (e *BondingEngine) StopEngine() error {
 	_ = sysproxy.ClearSystemProxy()
 
 	e.mu.Lock()
+	if e.hotswapMgr != nil {
+		e.hotswapMgr.Close()
+		e.hotswapMgr = nil
+	}
 	e.state = BondingStateStopped
 	e.arteries = nil
 	e.dispatcher = nil
@@ -547,6 +570,13 @@ func (e *BondingEngine) runEvaluation(ctx context.Context) {
 		e.mu.RUnlock()
 		return
 	}
+	// Synchronize physical ArteryConn liveness to PathMetrics so the scheduler
+	// and state machine are aware of connection state drops.
+	for _, ac := range e.arteries {
+		if pm, ok := e.metrics[ac.Tag()]; ok {
+			pm.SetAlive(ac.IsAlive())
+		}
+	}
 	e.mu.RUnlock()
 
 	// Run unified evaluation (state machine + cwnd + mode promotion)
@@ -675,7 +705,12 @@ func (e *BondingEngine) replaceDeadArtery(ctx context.Context, pathID string) {
 		"new_latency", replacement.LatencyMs,
 	)
 
-	// Trigger core reload
+	// Hot-swap the outbound via gRPC if available; fallback to full core restart
+	hotswapMgr := e.hotswapMgr
+	newConfig := replacement
+	swapTag := pathID
+
+	// Trigger core reload or hot-swap
 	go func() {
 		if ctx.Err() != nil {
 			return
@@ -687,8 +722,28 @@ func (e *BondingEngine) replaceDeadArtery(ctx context.Context, pathID string) {
 			return
 		}
 
-		if err := e.compileAndStartCore(); err != nil {
-			logger.Error("Bonding", "Failed to reload core after replacement", "error", err)
+		if hotswapMgr != nil && hotswapMgr.IsConnected() {
+			if err := hotswapMgr.SwapOutbound(swapTag, newConfig, swapTag); err != nil {
+				logger.Warn("Bonding", "Hot-swap failed, falling back to core restart",
+					"tag", swapTag, "error", err)
+				e.mu.RLock()
+				running = (e.state == BondingStateRunning)
+				e.mu.RUnlock()
+				if !running {
+					return
+				}
+				if err := e.compileAndStartCore(); err != nil {
+					logger.Error("Bonding", "Failed to reload core after replacement", "error", err)
+				}
+			} else {
+				logger.Info("Bonding", "Hot-swap completed — zero downtime for other arteries",
+					"tag", swapTag)
+			}
+		} else {
+			// Fallback: full core restart
+			if err := e.compileAndStartCore(); err != nil {
+				logger.Error("Bonding", "Failed to reload core after replacement", "error", err)
+			}
 		}
 	}()
 }

@@ -22,6 +22,7 @@ import (
 // targetAddr is the SOCKS5/HTTP-extracted destination "host:port".
 func HandleUpstream(conn io.ReadCloser, streamID uint32, targetAddr string,
 	dispatcher *Dispatcher, seq *uint64, frameSize int) {
+	defer conn.Close()
 
 	if frameSize <= 0 {
 		frameSize = 4096

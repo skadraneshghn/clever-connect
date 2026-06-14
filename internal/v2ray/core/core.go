@@ -165,9 +165,16 @@ func StartCore(configPath string) error {
 	// Separate process group to allow clean termination of children if needed
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	// We don't want stdout/stderr clogging, but we can capture it in debug logs or suppress
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	// Redirect stdout/stderr to log file for debugging
+	logFilePath := "/home/salman/Projects/golang/clever-connect/logs/xray_core.log"
+	if logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	} else {
+		logger.Warn("V2Ray", "Failed to open xray log file", "path", logFilePath, "error", err)
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
