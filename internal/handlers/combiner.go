@@ -126,9 +126,31 @@ func (h *CombinerHandler) SaveCombinerConfig(c *gin.Context) {
 
 // AutoStartCombiner starts the combiner if configured and active.
 // Called from main.go during server boot.
+//
+// On Clever Cloud (and similar ephemeral-disk platforms) the SQLite database
+// is wiped on every deployment. To prevent the combiner from silently staying
+// offline after a redeploy, we fall back to a hard-coded production baseline
+// whenever no DB record exists, and persist it so the UI shows the right state.
 func (h *CombinerHandler) AutoStartCombiner() {
 	var cfg models.BondingEngineConfig
-	if err := db.DB.First(&cfg).Error; err != nil || !cfg.IsActive {
+	if err := db.DB.First(&cfg).Error; err != nil {
+		// DB was wiped (fresh deploy) — seed a baseline production config.
+		psk := h.cfg.BondingPSKHex // read from env: BONDING_PSK_HEX
+		if psk == "" {
+			logger.Warn("Combiner", "BONDING_PSK env var not set; combiner will start without HMAC validation")
+		}
+		cfg = models.BondingEngineConfig{
+			OriginID: "clever-cloud-prod",
+			PSKHex:   psk,
+			IsActive: true,
+		}
+		if createErr := db.DB.Create(&cfg).Error; createErr != nil {
+			logger.Error("Combiner", "Failed to seed fallback combiner config", "error", createErr)
+		}
+		logger.Info("Combiner", "Seeded fallback combiner config (fresh deployment detected)", "origin", cfg.OriginID)
+	} else if !cfg.IsActive {
+		// Config exists but was explicitly disabled — honour that choice.
+		logger.Info("Combiner", "Combiner is disabled in config (IsActive=false); skipping auto-start")
 		return
 	}
 
