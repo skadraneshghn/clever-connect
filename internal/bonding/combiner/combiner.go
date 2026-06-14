@@ -405,7 +405,7 @@ func (c *Combiner) handleStreamOpen(streamID uint32, target string, primaryArter
 				c.sendFrameToAllArteries(dataFrame)
 			}
 			if err != nil {
-				if err != io.EOF {
+				if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
 					logger.Warn("Combiner", "Target read error", "stream", streamID, "error", err)
 				}
 				c.sendFrameToAllArteries(frame.NewFinFrame(streamID, seq))

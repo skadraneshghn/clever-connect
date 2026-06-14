@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -300,9 +301,12 @@ func (ac *ArteryConn) ReadFrameLoop(ctx context.Context, sess *session.Session, 
 		// Dispatch to session for dedup/reorder
 		_, _, err = sess.Dispatch(f)
 		if err != nil {
-			logger.Warn("Bonding", "Frame dispatch error",
-				"tag", ac.tag, "stream", f.StreamID,
-				"type", frame.TypeName(f.Type), "error", err)
+			// Ignore normal duplicate frame arrivals for closed/deleted streams under replication mode
+			if !errors.Is(err, session.ErrStreamClosed) && !errors.Is(err, session.ErrStreamNotFound) {
+				logger.Warn("Bonding", "Frame dispatch error",
+					"tag", ac.tag, "stream", f.StreamID,
+					"type", frame.TypeName(f.Type), "error", err)
+			}
 		}
 	}
 }
