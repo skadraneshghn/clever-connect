@@ -1,5 +1,5 @@
 import React, { useEffect, useCallback } from 'react';
-import { useMultipathStore, ArteryStatus } from '../store/multipathStore';
+import { useMultipathStore, type ArteryStatus } from '../store/multipathStore';
 
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  State → visual mapping                                                  */

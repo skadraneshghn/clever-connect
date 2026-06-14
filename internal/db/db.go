@@ -310,7 +310,6 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		})
 	}
 
-<<<<<<< HEAD
 	// Seed default IPLookupConfig
 	var ipLookupCount int64
 	if DB.Model(&models.IPLookupConfig{}).Count(&ipLookupCount); ipLookupCount == 0 {
@@ -362,8 +361,6 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			DB.Create(&resolver)
 		}
 	}
-
-
 
 	// Seed Admin User
 	seedAdmin(cfg)

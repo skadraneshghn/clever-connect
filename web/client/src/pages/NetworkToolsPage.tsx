@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  FiRefreshCw, FiPlay, FiSquare, FiDownload, FiUpload, FiSettings, 
+import {
+  FiRefreshCw, FiPlay, FiSquare, FiDownload, FiUpload, FiSettings,
   FiSearch, FiClipboard, FiAlertCircle, FiCheckCircle, FiFileText, FiList,
   FiTerminal, FiTrash2, FiGlobe, FiSliders, FiActivity, FiPlus, FiChevronDown, FiChevronUp,
   FiPlusCircle, FiXCircle
@@ -50,14 +50,12 @@ const ToggleSwitch: React.FC<{ checked: boolean; onChange: () => void }> = ({ ch
     <button
       type="button"
       onClick={onChange}
-      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-        checked ? 'bg-[var(--color-brand)]' : 'bg-zinc-700'
-      }`}
+      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${checked ? 'bg-[var(--color-brand)]' : 'bg-zinc-700'
+        }`}
     >
       <span
-        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-          checked ? 'translate-x-4' : 'translate-x-0'
-        }`}
+        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${checked ? 'translate-x-4' : 'translate-x-0'
+          }`}
       />
     </button>
   );
@@ -115,10 +113,7 @@ export const NetworkToolsPage: React.FC = () => {
   const [newSourceName, setNewSourceName] = useState('');
   const [newSourceUrl, setNewSourceUrl] = useState('');
   const [newSourceType, setNewSourceType] = useState<'cidr' | 'proxyip' | 'domain'>('cidr');
-<<<<<<< HEAD
   const [selectedCDNs, setSelectedCDNs] = useState<string[]>([]);
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 
   // Collapsible configuration panels
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
@@ -148,7 +143,7 @@ export const NetworkToolsPage: React.FC = () => {
       let cleaned = rawConfigLink.trim();
       const urlObj = new URL(cleaned);
       const protocol = urlObj.protocol.replace(':', '');
-      
+
       if (protocol !== 'vless' && protocol !== 'trojan') {
         setMessage({ type: 'error', text: `Unsupported protocol scheme: ${protocol}` });
         return;
@@ -524,7 +519,7 @@ export const NetworkToolsPage: React.FC = () => {
     setIsScanning(true);
     setCandidates([]);
     setScannerLogs([]); // Clear logs
-    
+
     const ports = getSelectedPorts();
 
     const cidrs = targetCidrs
@@ -558,7 +553,6 @@ export const NetworkToolsPage: React.FC = () => {
     ws.send(JSON.stringify(payload));
   };
 
-<<<<<<< HEAD
   const fetchScannerConfig = async () => {
     try {
       const activeToken = token || localStorage.getItem('cc_client_token') || '';
@@ -667,8 +661,6 @@ export const NetworkToolsPage: React.FC = () => {
     }
   };
 
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
   const handleCleanupDiscovered = async () => {
     if (!confirm('Are you sure you want to clean up all failed candidates from the database?')) {
       return;
@@ -742,7 +734,7 @@ export const NetworkToolsPage: React.FC = () => {
             .split('\n')
             .map((line) => line.trim())
             .filter((line) => line.length > 0 && !line.startsWith('#'));
-          
+
           setTargetCidrs(lines.join('\n'));
           setMessage({ type: 'success', text: `Imported ${lines.length} network targets from ${file.name}` });
         }
@@ -755,10 +747,7 @@ export const NetworkToolsPage: React.FC = () => {
   useEffect(() => {
     fetchSavedConfigs();
     fetchSources();
-<<<<<<< HEAD
     fetchScannerConfig();
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
   }, []);
 
   const handleAddSourceSubmit = (e: React.FormEvent) => {
@@ -809,7 +798,7 @@ export const NetworkToolsPage: React.FC = () => {
 
   return (
     <div className="page-container animate-fade-in" style={{ padding: '4px 0', fontFamily: 'var(--font-sans)' }}>
-      
+
       {/* Styles for premium visuals & animations */}
       <style>{`
         @keyframes radar-sweep {
@@ -846,7 +835,7 @@ export const NetworkToolsPage: React.FC = () => {
             High-velocity deep-packet inspection (DPI) bypass verification engine. Emulates TLS and WebSocket handshakes.
           </p>
         </div>
-        
+
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', background: 'var(--color-brand-light)', border: '1px solid var(--color-brand-border)', borderRadius: 20 }}>
             <span style={{ display: 'flex', width: 8, height: 8, position: 'relative' }}>
@@ -918,11 +907,10 @@ export const NetworkToolsPage: React.FC = () => {
 
       {/* Main Grid Layout */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gap: '20px' }}>
-        
+
         {/* Left Column: Config Panel (span 5) */}
         <div className="col-span-12 lg:col-span-5" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          
-<<<<<<< HEAD
+
           {/* Card: Target CDN Filtering */}
           <div className="g-card" style={{ padding: 20 }}>
             <h3 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', margin: 0, marginBottom: 14 }}>
@@ -991,8 +979,6 @@ export const NetworkToolsPage: React.FC = () => {
             )}
           </div>
 
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
           {/* Card 1: Port Configuration */}
           <div className="g-card" style={{ padding: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
@@ -1142,7 +1128,7 @@ export const NetworkToolsPage: React.FC = () => {
                 sources.map((src) => {
                   const isCidr = src.type === 'cidr';
                   const isProxy = src.type === 'proxyip';
-                  
+
                   return (
                     <div
                       key={src.id}
@@ -1229,9 +1215,9 @@ export const NetworkToolsPage: React.FC = () => {
 
             {showAdvancedSettings && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 14 }}>
-                
+
                 {/* Drag and Drop Zone */}
-                <div 
+                <div
                   onDragEnter={handleDragEnter}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
@@ -1436,72 +1422,62 @@ export const NetworkToolsPage: React.FC = () => {
               ) : (
                 <>
                   <div style={{ display: 'flex', gap: 8 }}>
-<<<<<<< HEAD
                     <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 2, justifyContent: 'center', padding: '10px' }}>
                       <FiPlay style={{ marginRight: 6 }} /> Start Sweep
                     </button>
                     <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Rerun last configuration scan parameters" style={{ flex: 1, justifyContent: 'center', padding: '10px' }}>
-=======
-                    <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 1, justifyContent: 'center', padding: '10px' }}>
-                      <FiPlay style={{ marginRight: 6 }} /> Start Sweep
-                    </button>
-                    <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Rerun last configuration scan parameters" style={{ padding: '10px' }}>
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                       Retry Last
                     </button>
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button 
-                      className="btn btn--secondary" 
-                      onClick={() => handleStartScan(false, true)} 
+                    <button
+                      className="btn btn--secondary"
+                      onClick={() => handleStartScan(false, true)}
                       style={{ flex: 1, justifyContent: 'center' }}
                       title="Rescan previously verified healthy nodes"
                     >
                       <FiRefreshCw style={{ marginRight: 6 }} /> Rescan Healthy
                     </button>
-                    <button 
-                      className="btn btn--secondary" 
-                      onClick={handleCleanupDiscovered} 
+                    <button
+                      className="btn btn--secondary"
+                      onClick={handleCleanupDiscovered}
                       style={{ flex: 1, justifyContent: 'center', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.2)' }}
                       title="Delete all failed nodes from database"
                     >
                       <FiTrash2 style={{ marginRight: 6 }} /> Clean Failed
                     </button>
                   </div>
-<<<<<<< HEAD
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button 
-                      className="btn btn--secondary" 
-                      onClick={handleCleanupDiscoveredHealthy} 
+                    <button
+                      className="btn btn--secondary"
+                      onClick={handleCleanupDiscoveredHealthy}
                       style={{ flex: 1, justifyContent: 'center', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.2)' }}
                       title="Delete ALL scanner-discovered healthy results completely from database"
                     >
                       <FiTrash2 style={{ marginRight: 6 }} /> Delete Healthy
                     </button>
-                    <button 
-                      className="btn btn--secondary" 
-                      onClick={handleResetSettings} 
+                    <button
+                      className="btn btn--secondary"
+                      onClick={handleResetSettings}
                       style={{ flex: 1, justifyContent: 'center' }}
                       title="Reset all scanner settings to default values"
                     >
                       <FiRefreshCw style={{ marginRight: 6 }} /> Reset Settings
                     </button>
                   </div>
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                 </>
               )}
-            </div>
-          </div>
-        </div>
+            </div >
+          </div >
+        </div >
 
         {/* Right Column: Visual Telemetry + Output Table + Logs (span 7) */}
-        <div className="col-span-12 lg:col-span-7" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          
+        < div className="col-span-12 lg:col-span-7" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
           {/* Card 1: Radar status & metrics */}
-          <div className="g-card" style={{ padding: 20 }}>
+          < div className="g-card" style={{ padding: 20 }}>
             <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
-              
+
               <div style={{ display: 'flex', width: '100%', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-around', gap: 20 }}>
                 {/* Sonar Radar Graphic */}
                 <div style={{ position: 'relative', width: 120, height: 120, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.25)', background: 'radial-gradient(circle, rgba(255, 107, 44, 0.05) 0%, rgba(0,0,0,0) 70%)', overflow: 'hidden', flexShrink: 0 }}>
@@ -1509,12 +1485,12 @@ export const NetworkToolsPage: React.FC = () => {
                   <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.1)', transform: 'scale(0.33)' }} />
                   <div style={{ position: 'absolute', width: '100%', height: '1px', background: 'rgba(255, 107, 44, 0.12)', top: '50%', left: 0 }} />
                   <div style={{ position: 'absolute', height: '100%', width: '1px', background: 'rgba(255, 107, 44, 0.12)', left: '50%', top: 0 }} />
-                  
+
                   {/* Blinking center spot */}
                   <div style={{ position: 'absolute', width: 6, height: 6, borderRadius: '50%', background: 'var(--color-brand)', boxShadow: '0 0 10px var(--color-brand)', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 5 }} />
-                  
+
                   {/* Sweep ray */}
-                  <div 
+                  <div
                     className={`clip-radar ${isScanning ? 'animate-radar-sweep' : 'opacity-20'}`}
                     style={{
                       position: 'absolute',
@@ -1564,74 +1540,73 @@ export const NetworkToolsPage: React.FC = () => {
               </div>
 
             </div>
-          </div>
+          </div >
 
-<<<<<<< HEAD
           {/* Card: CDN Benchmarking Chart */}
-          {candidates.filter(c => c.status === 'healthy' && c.cdnProvider).length > 0 && (
-            <div className="g-card" style={{ padding: 20 }}>
-              <h3 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', margin: 0, marginBottom: 14 }}>
-                CDN PERFORMANCE BENCHMARKING
-              </h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {(() => {
-                  const groups: { [key: string]: { count: number; totalLat: number; totalSpeed: number } } = {};
-                  candidates.forEach(c => {
-                    if (c.status === 'healthy' && c.cdnProvider) {
-                      if (!groups[c.cdnProvider]) {
-                        groups[c.cdnProvider] = { count: 0, totalLat: 0, totalSpeed: 0 };
+          {
+            candidates.filter(c => c.status === 'healthy' && c.cdnProvider).length > 0 && (
+              <div className="g-card" style={{ padding: 20 }}>
+                <h3 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', margin: 0, marginBottom: 14 }}>
+                  CDN PERFORMANCE BENCHMARKING
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {(() => {
+                    const groups: { [key: string]: { count: number; totalLat: number; totalSpeed: number } } = {};
+                    candidates.forEach(c => {
+                      if (c.status === 'healthy' && c.cdnProvider) {
+                        if (!groups[c.cdnProvider]) {
+                          groups[c.cdnProvider] = { count: 0, totalLat: 0, totalSpeed: 0 };
+                        }
+                        groups[c.cdnProvider].count++;
+                        groups[c.cdnProvider].totalLat += c.latencyMs;
+                        groups[c.cdnProvider].totalSpeed += c.speedMbps;
                       }
-                      groups[c.cdnProvider].count++;
-                      groups[c.cdnProvider].totalLat += c.latencyMs;
-                      groups[c.cdnProvider].totalSpeed += c.speedMbps;
-                    }
-                  });
+                    });
 
-                  const data = Object.keys(groups).map(name => ({
-                    name,
-                    count: groups[name].count,
-                    avgLat: groups[name].totalLat / groups[name].count,
-                    avgSpeed: groups[name].totalSpeed / groups[name].count
-                  })).sort((a, b) => b.avgSpeed - a.avgSpeed);
+                    const data = Object.keys(groups).map(name => ({
+                      name,
+                      count: groups[name].count,
+                      avgLat: groups[name].totalLat / groups[name].count,
+                      avgSpeed: groups[name].totalSpeed / groups[name].count
+                    })).sort((a, b) => b.avgSpeed - a.avgSpeed);
 
-                  const maxSpeed = Math.max(...data.map(d => d.avgSpeed), 1);
-                  const maxLat = Math.max(...data.map(d => d.avgLat), 1);
+                    const maxSpeed = Math.max(...data.map(d => d.avgSpeed), 1);
+                    const maxLat = Math.max(...data.map(d => d.avgLat), 1);
 
-                  return data.map((d, index) => (
-                    <div key={d.name} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 14px', borderRadius: 8, background: 'var(--color-brand-card)', border: '1px solid var(--color-brand-border)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
-                          {index + 1}. {d.name} <span style={{ fontSize: 10, color: 'var(--color-brand-text)', fontWeight: 500 }}>({d.count} nodes)</span>
-                        </span>
-                        <div style={{ display: 'flex', gap: 12, fontSize: 11, fontWeight: 600 }}>
-                          <span style={{ color: 'var(--color-brand)' }}>{d.avgSpeed.toFixed(2)} MB/s</span>
-                          <span style={{ color: 'var(--color-brand-muted)' }}>|</span>
-                          <span style={{ color: 'var(--color-brand-green)' }}>{Math.round(d.avgLat)} ms</span>
+                    return data.map((d, index) => (
+                      <div key={d.name} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 14px', borderRadius: 8, background: 'var(--color-brand-card)', border: '1px solid var(--color-brand-border)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
+                            {index + 1}. {d.name} <span style={{ fontSize: 10, color: 'var(--color-brand-text)', fontWeight: 500 }}>({d.count} nodes)</span>
+                          </span>
+                          <div style={{ display: 'flex', gap: 12, fontSize: 11, fontWeight: 600 }}>
+                            <span style={{ color: 'var(--color-brand)' }}>{d.avgSpeed.toFixed(2)} MB/s</span>
+                            <span style={{ color: 'var(--color-brand-muted)' }}>|</span>
+                            <span style={{ color: 'var(--color-brand-green)' }}>{Math.round(d.avgLat)} ms</span>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <span style={{ width: 45, fontSize: 9, fontWeight: 600, color: 'var(--color-brand-text)' }}>SPEED:</span>
+                          <div style={{ flex: 1, height: 8, background: 'var(--color-brand-bg)', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-brand-border)' }}>
+                            <div style={{ width: `${(d.avgSpeed / maxSpeed) * 100}%`, height: '100%', background: 'linear-gradient(90deg, var(--color-brand) 0%, var(--color-brand-blue) 100%)', borderRadius: 4 }} />
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <span style={{ width: 45, fontSize: 9, fontWeight: 600, color: 'var(--color-brand-text)' }}>PING:</span>
+                          <div style={{ flex: 1, height: 8, background: 'var(--color-brand-bg)', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-brand-border)' }}>
+                            <div style={{ width: `${(d.avgLat / maxLat) * 100}%`, height: '100%', background: 'linear-gradient(90deg, #10b981 0%, #f59e0b 100%)', borderRadius: 4 }} />
+                          </div>
                         </div>
                       </div>
-                      
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <span style={{ width: 45, fontSize: 9, fontWeight: 600, color: 'var(--color-brand-text)' }}>SPEED:</span>
-                        <div style={{ flex: 1, height: 8, background: 'var(--color-brand-bg)', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-brand-border)' }}>
-                          <div style={{ width: `${(d.avgSpeed / maxSpeed) * 100}%`, height: '100%', background: 'linear-gradient(90deg, var(--color-brand) 0%, var(--color-brand-blue) 100%)', borderRadius: 4 }} />
-                        </div>
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <span style={{ width: 45, fontSize: 9, fontWeight: 600, color: 'var(--color-brand-text)' }}>PING:</span>
-                        <div style={{ flex: 1, height: 8, background: 'var(--color-brand-bg)', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-brand-border)' }}>
-                          <div style={{ width: `${(d.avgLat / maxLat) * 100}%`, height: '100%', background: 'linear-gradient(90deg, #10b981 0%, #f59e0b 100%)', borderRadius: 4 }} />
-                        </div>
-                      </div>
-                    </div>
-                  ));
-                })()}
+                    ));
+                  })()}
+                </div>
               </div>
-            </div>
-          )}
+            )
+          }
 
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
           {/* Card 2: Discovered Candidates Table */}
           <div className="g-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', minHeight: 320, maxHeight: 420 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
@@ -1641,7 +1616,7 @@ export const NetworkToolsPage: React.FC = () => {
                   Discovered Proxy Candidates ({filteredCandidates.length})
                 </span>
               </div>
-              
+
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <div style={{ position: 'relative', width: 140 }}>
                   <FiSearch style={{ position: 'absolute', left: 8, top: 8, color: 'var(--color-brand-muted)', fontSize: 12 }} />
@@ -1681,8 +1656,8 @@ export const NetworkToolsPage: React.FC = () => {
                   <option value="time">Time Added</option>
                 </select>
 
-                <button 
-                  className="btn btn--sm btn--secondary" 
+                <button
+                  className="btn btn--sm btn--secondary"
                   onClick={() => {
                     const healthyList = candidates
                       .filter((c) => c.status === 'healthy')
@@ -1700,16 +1675,16 @@ export const NetworkToolsPage: React.FC = () => {
                   <FiClipboard /> Copy
                 </button>
 
-                <button 
-                  className="btn btn--sm btn--secondary" 
+                <button
+                  className="btn btn--sm btn--secondary"
                   onClick={downloadTxt}
                   title="Export healthy results to TXT file"
                 >
                   <FiFileText /> TXT
                 </button>
 
-                <button 
-                  className="btn btn--sm btn--secondary" 
+                <button
+                  className="btn btn--sm btn--secondary"
                   onClick={downloadCsv}
                   title="Export healthy results to CSV file"
                 >
@@ -1725,27 +1700,18 @@ export const NetworkToolsPage: React.FC = () => {
                   <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Endpoint IP</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Port</th>
-<<<<<<< HEAD
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>CDN Provider / POP</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Latency</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Packet Loss</th>
-=======
-                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Mode</th>
-                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Latency</th>
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Speed</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Status</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600, textAlign: 'right' }}>Actions</th>
-                  </tr>
-                </thead>
+                  </tr >
+                </thead >
                 <tbody>
                   {filteredCandidates.length === 0 ? (
                     <tr>
-<<<<<<< HEAD
                       <td colSpan={8} style={{ padding: 30, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
-=======
-                      <td colSpan={7} style={{ padding: 30, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                         <FiFileText size={20} style={{ marginBottom: 8, opacity: 0.3, display: 'inline-block' }} />
                         <div>No candidates found.</div>
                       </td>
@@ -1753,7 +1719,6 @@ export const NetworkToolsPage: React.FC = () => {
                   ) : (
                     filteredCandidates.map((c, idx) => (
                       <tr key={idx} style={{ borderBottom: '1px solid var(--color-brand-border)', verticalAlign: 'middle' }}>
-<<<<<<< HEAD
                         <td style={{ padding: '8px 6px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>
                           <IPResolveBadge ip={c.ip} />
                         </td>
@@ -1771,19 +1736,10 @@ export const NetworkToolsPage: React.FC = () => {
                           ) : (
                             <span style={{ color: 'var(--color-brand-muted)', fontSize: 11 }}>-</span>
                           )}
-=======
-                        <td style={{ padding: '8px 6px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>{c.ip}</td>
-                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-heading)' }}>{c.port}</td>
-                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-muted)' }}>
-                          <span style={{ fontSize: 9, padding: '2px 5px', background: 'var(--color-brand-light)', border: '1px solid var(--color-brand-border)', borderRadius: 4, textTransform: 'uppercase' }}>
-                            {c.protocol}
-                          </span>
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                         </td>
                         <td style={{ padding: '8px 6px', fontWeight: 600, color: c.latencyMs > 0 ? 'var(--color-brand-green)' : 'var(--color-brand-red)' }}>
                           {c.latencyMs > 0 ? `${c.latencyMs} ms` : '-'}
                         </td>
-<<<<<<< HEAD
                         <td style={{ padding: '8px 6px' }}>
                           {c.status === 'in_flight' ? (
                             <span style={{ color: 'var(--color-brand-muted)', fontSize: 11 }}>Testing...</span>
@@ -1800,10 +1756,6 @@ export const NetworkToolsPage: React.FC = () => {
                         </td>
                         <td style={{ padding: '8px 6px', color: 'var(--color-brand-blue)', fontWeight: 600 }}>
                           {c.speedMbps > 0 ? `${c.speedMbps.toFixed(2)} MB/s` : '-'}
-=======
-                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-blue)', fontWeight: 600 }}>
-                          {c.speedMbps > 0 ? `${c.speedMbps.toFixed(2)} Mbps` : '-'}
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                         </td>
                         <td style={{ padding: '8px 6px' }}>
                           <span style={{
@@ -1832,13 +1784,13 @@ export const NetworkToolsPage: React.FC = () => {
                       </tr>
                     ))
                   )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+                </tbody >
+              </table >
+            </div >
+          </div >
 
           {/* Card 3: Monospace Diagnostic Logs */}
-          <div className="g-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', height: 280 }}>
+          < div className="g-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', height: 280 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <FiTerminal style={{ color: 'var(--color-brand)', fontSize: 16 }} />
@@ -1863,8 +1815,8 @@ export const NetworkToolsPage: React.FC = () => {
                     outline: 'none'
                   }}
                 />
-                <button 
-                  className="btn btn--sm btn--secondary" 
+                <button
+                  className="btn btn--sm btn--secondary"
                   onClick={() => setScannerLogs([])}
                   title="Clear logs"
                   style={{ display: 'flex', alignItems: 'center', gap: 4 }}
@@ -1906,7 +1858,7 @@ export const NetworkToolsPage: React.FC = () => {
                   } else if (log.includes('Initiating') || log.includes('Parameters:')) {
                     color = 'var(--color-brand)';
                   }
-                  
+
                   return (
                     <div key={idx} style={{ wordBreak: 'break-all', whiteSpace: 'pre-wrap', color }}>
                       {log}
@@ -1915,12 +1867,12 @@ export const NetworkToolsPage: React.FC = () => {
                 })
               )}
             </div>
-          </div>
+          </div >
 
-        </div>
+        </div >
 
-      </div>
+      </div >
 
-    </div>
+    </div >
   );
 };

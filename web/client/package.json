@@ -16,10 +16,7 @@
     "@types/leaflet": "^1.9.21",
     "autoprefixer": "^10.5.0",
     "framer-motion": "^12.40.0",
-<<<<<<< HEAD
     "leaflet": "^1.9.4",
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
     "postcss": "^8.5.15",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

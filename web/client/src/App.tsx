@@ -26,12 +26,9 @@ const V2RayCorePage = lazy(() => import('./pages/V2RayCorePage').then(m => ({ de
 const V2RayRoutingPage = lazy(() => import('./pages/V2RayRoutingPage').then(m => ({ default: m.V2RayRoutingPage })));
 const NetworkToolsPage = lazy(() => import('./pages/NetworkToolsPage').then(m => ({ default: m.NetworkToolsPage })));
 const DomainCheckerPage = lazy(() => import('./pages/DomainCheckerPage').then(m => ({ default: m.DomainCheckerPage })));
-<<<<<<< HEAD
 const IPDomainCheckerPage = lazy(() => import('./pages/IPDomainCheckerPage').then(m => ({ default: m.IPDomainCheckerPage })));
 const DNSTesterPage = lazy(() => import('./pages/DNSTesterPage').then(m => ({ default: m.DNSTesterPage })));
 const V2RayMultipathPage = lazy(() => import('./pages/V2RayMultipathPage').then(m => ({ default: m.V2RayMultipathPage })));
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 
 // Loading spinner
 const PageLoader = () => (
@@ -74,12 +71,9 @@ const ProtectedLayout: React.FC = () => {
     'v2ray-routing': ['V2Ray', 'Routing Rules'],
     'v2ray-scanner': ['Network Tools', 'Scanner Engine'],
     'domain-checker': ['Network Tools', 'Domain Checker'],
-<<<<<<< HEAD
     'ip-domain-checker': ['Network Tools', 'IP & Domain Checker'],
     'dns-tester': ['Network Tools', 'DNS Tester'],
     'v2ray-multipath': ['V2Ray', 'Multipath Engine'],
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -154,12 +148,9 @@ const router = createBrowserRouter([
       { path: 'v2ray-routing', element: <V2RayRoutingPage /> },
       { path: 'v2ray-scanner', element: <NetworkToolsPage /> },
       { path: 'domain-checker', element: <DomainCheckerPage /> },
-<<<<<<< HEAD
       { path: 'ip-domain-checker', element: <IPDomainCheckerPage /> },
       { path: 'dns-tester', element: <DNSTesterPage /> },
       { path: 'v2ray-multipath', element: <V2RayMultipathPage /> },
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },
