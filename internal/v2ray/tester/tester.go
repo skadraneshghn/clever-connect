@@ -1,6 +1,7 @@
 package tester
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
@@ -308,16 +309,12 @@ func TestSingleConfig(ctx context.Context, cfg models.V2RayClientConfig, opts Te
 			return res
 		}
 
-		socksPort, err := getFreePort()
+		socksPort, httpPort, err := reservePortPair()
 		if err != nil {
-			res.Error = "failed to get socks port: " + err.Error()
+			res.Error = "failed to reserve port pair: " + err.Error()
 			return res
 		}
-		httpPort, err := getFreePort()
-		if err != nil {
-			res.Error = "failed to get http port: " + err.Error()
-			return res
-		}
+		defer releasePortPair(socksPort, httpPort)
 
 		configBytes, err := compiler.CompileClientConfigForCore(coreName, cfg, socksPort, httpPort, true, "")
 		if err != nil {
@@ -336,7 +333,20 @@ func TestSingleConfig(ctx context.Context, cfg models.V2RayClientConfig, opts Te
 			binPath = abs
 		}
 
-		cmd := exec.CommandContext(testCtx, binPath, "run", "-c", tempPath)
+		var logBuf bytes.Buffer
+		var cmd *exec.Cmd
+		if coreName == "v2ray" {
+			cmd = exec.CommandContext(testCtx, binPath, "-config", tempPath)
+		} else {
+			cmd = exec.CommandContext(testCtx, binPath, "run", "-c", tempPath)
+		}
+		cmd.Env = append(os.Environ(),
+			"ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true",
+			"ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER=true",
+			"ENABLE_DEPRECATED_SPECIAL_OUTBOUNDS=true",
+		)
+		cmd.Stdout = &logBuf
+		cmd.Stderr = &logBuf
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		absBinDir, err := filepath.Abs(filepath.Dir(binPath))
 		if err == nil {
@@ -377,6 +387,9 @@ func TestSingleConfig(ctx context.Context, cfg models.V2RayClientConfig, opts Te
 
 		if !ready {
 			res.Error = "SOCKS port failed to open"
+			if logStr := logBuf.String(); logStr != "" {
+				res.Error += ": " + strings.TrimSpace(logStr)
+			}
 			return res
 		}
 
@@ -449,28 +462,66 @@ func enforceIPCooldown(ctx context.Context, ip string, delay time.Duration) {
 }
 
 func getBinPath(coreName string) (string, error) {
-	localPath := filepath.Join("core", coreName, coreName)
-	if _, err := os.Stat(localPath); err == nil {
-		_ = os.Chmod(localPath, 0755)
-		return localPath, nil
-	}
-
-	exe, err := os.Executable()
-	if err == nil {
-		localPathExe := filepath.Join(filepath.Dir(exe), coreName)
-		if _, err := os.Stat(localPathExe); err == nil {
-			_ = os.Chmod(localPathExe, 0755)
-			return localPathExe, nil
-		}
-	}
-
-	if path, err := exec.LookPath(coreName); err == nil {
-		return path, nil
-	}
-
-	return "", fmt.Errorf("binary for core %q not found", coreName)
+	return core.GetBinPathForCore(coreName)
 }
 
+// portLeaseMu guards the leased ports registry against concurrent tester goroutines.
+var (
+	portLeaseMu     sync.Mutex
+	portLeasedPorts = make(map[int]struct{})
+)
+
+// reservePortPair atomically finds and reserves two free consecutive-ish ports
+// (socksPort and httpPort) under the global mutex so concurrent testers never
+// receive the same port. The caller MUST call releasePortPair when done.
+func reservePortPair() (socksPort, httpPort int, err error) {
+	portLeaseMu.Lock()
+	defer portLeaseMu.Unlock()
+
+	// Safe range outside local ephemeral ports (typically 32768-60999 on Linux)
+	minPort := 20000
+	maxPort := 30000
+
+	reserveOne := func() (int, error) {
+		for attempt := 0; attempt < 500; attempt++ {
+			p := minPort + rand.Intn(maxPort-minPort+1)
+			if _, leased := portLeasedPorts[p]; leased {
+				continue
+			}
+			// Verify port is free to listen
+			l, e := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p))
+			if e != nil {
+				continue
+			}
+			l.Close()
+			
+			portLeasedPorts[p] = struct{}{}
+			return p, nil
+		}
+		return 0, fmt.Errorf("could not find a free port after 500 attempts")
+	}
+
+	socksPort, err = reserveOne()
+	if err != nil {
+		return
+	}
+	httpPort, err = reserveOne()
+	if err != nil {
+		delete(portLeasedPorts, socksPort)
+		return
+	}
+	return
+}
+
+// releasePortPair removes the two ports from the lease registry.
+func releasePortPair(socksPort, httpPort int) {
+	portLeaseMu.Lock()
+	delete(portLeasedPorts, socksPort)
+	delete(portLeasedPorts, httpPort)
+	portLeaseMu.Unlock()
+}
+
+// getFreePort returns a single free port. For concurrent use, prefer reservePortPair.
 func getFreePort() (int, error) {
 	addr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -5,6 +5,7 @@ go 1.26.3
 require (
 	github.com/Ehco1996/ehco v1.1.6
 	github.com/anacrolix/torrent v1.61.0
+	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
 	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/coder/websocket v1.8.14
@@ -15,12 +16,14 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/gotd/td v0.119.0
+	github.com/ip2location/ip2location-go/v9 v9.8.0
 	github.com/joho/godotenv v1.5.1
 	github.com/jung-kurt/gofpdf/v2 v2.17.3
 	github.com/kkdai/youtube/v2 v2.10.6
 	github.com/livekit/protocol v1.46.6
 	github.com/livekit/server-sdk-go/v2 v2.16.6
 	github.com/mholt/archives v0.1.5
+	github.com/miekg/dns v1.1.72
 	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/pion/webrtc/v4 v4.2.11
 	github.com/quic-go/quic-go v0.59.0
@@ -30,6 +33,7 @@ require (
 	github.com/tuotoo/qrcode v0.0.0-20220425170535-52ccc2bebf5d
 	github.com/urfave/cli/v2 v2.27.7
 	github.com/xtls/xray-core v1.260206.0
+	github.com/yinheli/qqwry v0.0.0-20160229183603-f50680010f4a
 	golang.org/x/crypto v0.52.0
 	golang.org/x/image v0.41.0
 	golang.org/x/net v0.55.0
@@ -37,6 +41,7 @@ require (
 	google.golang.org/grpc v1.80.0
 	gopkg.in/telebot.v4 v4.0.0-beta.9
 	gorm.io/driver/mysql v1.6.0
+	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
 	lukechampine.com/blake3 v1.4.1
 	modernc.org/sqlite v1.46.1
@@ -80,7 +85,6 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/anytls/sing-anytls v0.0.11 // indirect
 	github.com/apernet/quic-go v0.57.2-0.20260111184307-eec823306178 // indirect
-	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/beevik/ntp v1.5.0 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
@@ -130,7 +134,6 @@ require (
 	github.com/ema/qdisc v1.0.0 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/florianl/go-nfqueue/v2 v2.0.2 // indirect
-	github.com/freshcn/qqwry v1.0.2 // indirect
 	github.com/frostbyte73/core v0.1.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
@@ -185,7 +188,6 @@ require (
 	github.com/huandu/xstrings v1.3.2 // indirect
 	github.com/illumos/go-kstat v0.0.0-20210513183136-173c9b0a9973 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20260220084031-5adc3eb26f91 // indirect
-	github.com/ip2location/ip2location-go/v9 v9.8.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.0 // indirect
@@ -217,6 +219,7 @@ require (
 	github.com/maruel/rs v1.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/mattn/go-xmlrpc v0.0.3 // indirect
 	github.com/mdlayher/ethtool v0.5.1 // indirect
 	github.com/mdlayher/genetlink v1.3.2 // indirect
@@ -225,7 +228,6 @@ require (
 	github.com/mdlayher/wifi v0.7.2 // indirect
 	github.com/metacubex/utls v1.8.4 // indirect
 	github.com/mholt/acmez/v3 v3.1.6 // indirect
-	github.com/miekg/dns v1.1.72 // indirect
 	github.com/mikelolasagasti/xz v1.0.1 // indirect
 	github.com/minio/minlz v1.0.1 // indirect
 	github.com/minio/sha256-simd v1.0.0 // indirect
@@ -268,7 +270,6 @@ require (
 	github.com/pires/go-proxyproto v0.11.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/pquerna/ffjson v0.0.0-20190930134022-aa0246cd15f7 // indirect
 	github.com/prometheus-community/go-runit v0.1.0 // indirect
 	github.com/prometheus-community/pro-bing v0.4.0 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
@@ -336,8 +337,6 @@ require (
 	github.com/sagernet/tailscale v1.92.4-sing-box-1.13-mod.6.0.20260303140313-3bcf9a4b9349 // indirect
 	github.com/sagernet/wireguard-go v0.0.2-beta.1.0.20260224074747-506b7631853c // indirect
 	github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854 // indirect
-	github.com/saracen/go7z v0.0.0-20191010121135-9c09b6bd7fda // indirect
-	github.com/saracen/solidblock v0.0.0-20190426153529-45df20abab6f // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
 	github.com/sorairolake/lzip-go v0.3.8 // indirect
@@ -372,7 +371,6 @@ require (
 	github.com/xrash/smetrics v0.0.0-20250705151800-55b8f293f342 // indirect
 	github.com/xtls/reality v0.0.0-20251116175510-cd53f7d50237 // indirect
 	github.com/yinheli/mahonia v0.0.0-20131226213531-0eef680515cc // indirect
-	github.com/yinheli/qqwry v0.0.0-20160229183603-f50680010f4a // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect

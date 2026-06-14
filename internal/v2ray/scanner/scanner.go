@@ -1301,7 +1301,64 @@ func uint32ToIPv4(v uint32) net.IP {
 	return ip
 }
 
-// getFreePort returns a free TCP port
+// portLeaseRegistry tracks ports currently leased by concurrent speed-test workers.
+// This prevents the TOCTOU race where getFreePort returns the same port to two goroutines
+// because the OS port is free between our Close() and sing-box's Bind().
+var (
+	portLeaseMu     sync.Mutex
+	portLeasedPorts = make(map[int]struct{})
+)
+
+// reservePort finds a free TCP port on 127.0.0.1 and registers it in the lease
+// registry to prevent concurrent workers from receiving the same port. The caller
+// MUST call releasePort(port) when the port is no longer needed.
+func reservePort() (int, error) {
+	portLeaseMu.Lock()
+	defer portLeaseMu.Unlock()
+
+	minPort := 20000
+	maxPort := 30000
+
+	for attempt := 0; attempt < 500; attempt++ {
+		// Pick a random even port so port+1 is distinct
+		p := minPort + cryptoRandIntn(maxPort-minPort)
+		
+		if _, alreadyLeased := portLeasedPorts[p]; alreadyLeased {
+			continue
+		}
+		if _, alreadyLeased := portLeasedPorts[p+1]; alreadyLeased {
+			continue
+		}
+
+		// Verify both ports can be listened on
+		l1, err1 := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p))
+		if err1 != nil {
+			continue
+		}
+		l2, err2 := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p+1))
+		if err2 != nil {
+			l1.Close()
+			continue
+		}
+		l1.Close()
+		l2.Close()
+
+		portLeasedPorts[p] = struct{}{}
+		portLeasedPorts[p+1] = struct{}{}
+		return p, nil
+	}
+	return 0, fmt.Errorf("failed to find a free port pair after 500 attempts")
+}
+
+// releasePort removes the port (and its companion) from the lease registry.
+func releasePort(port int) {
+	portLeaseMu.Lock()
+	delete(portLeasedPorts, port)
+	delete(portLeasedPorts, port+1)
+	portLeaseMu.Unlock()
+}
+
+// getFreePort is kept for backward compatibility; new code should use reservePort/releasePort.
 func getFreePort() (int, error) {
 	addr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
 	if err != nil {

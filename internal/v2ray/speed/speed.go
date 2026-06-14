@@ -1,6 +1,7 @@
 package speed
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -291,7 +292,20 @@ func TestProfile(cfg models.V2RayClientConfig, socksPort, httpPort int, measureS
 		binPath = abs
 	}
 
-	cmd := exec.CommandContext(ctx, binPath, "run", "-c", tempPath)
+	var logBuf bytes.Buffer
+	var cmd *exec.Cmd
+	if core.GetSelectedCoreName() == "v2ray" {
+		cmd = exec.CommandContext(ctx, binPath, "-config", tempPath)
+	} else {
+		cmd = exec.CommandContext(ctx, binPath, "run", "-c", tempPath)
+	}
+	cmd.Env = append(os.Environ(),
+		"ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true",
+		"ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER=true",
+		"ENABLE_DEPRECATED_SPECIAL_OUTBOUNDS=true",
+	)
+	cmd.Stdout = &logBuf
+	cmd.Stderr = &logBuf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	absBinDir, err := filepath.Abs(filepath.Dir(binPath))
 	if err == nil {
@@ -327,6 +341,9 @@ func TestProfile(cfg models.V2RayClientConfig, socksPort, httpPort int, measureS
 
 	if !ready {
 		res.Error = "xray SOCKS port failed to open"
+		if logStr := logBuf.String(); logStr != "" {
+			res.Error += ": " + strings.TrimSpace(logStr)
+		}
 		return res
 	}
 

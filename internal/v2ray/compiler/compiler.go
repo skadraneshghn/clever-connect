@@ -205,15 +205,15 @@ type RoutingRule struct {
 	IP          []string `json:"ip,omitempty"`
 	Port        string   `json:"port,omitempty"`
 	Network     string   `json:"network,omitempty"`
-	OutboundTag string   `json:"outboundTag"`
+	OutboundTag string   `json:"outboundTag,omitempty"`
 	BalancerTag string   `json:"balancerTag,omitempty"`
 }
 
 // BalancerConfig defines balancers
 type BalancerConfig struct {
-	Tag      string   `json:"tag"`
-	Selector []string `json:"selector"`
-	Strategy string   `json:"strategy,omitempty"` // leastPing
+	Tag      string      `json:"tag"`
+	Selector []string    `json:"selector"`
+	Strategy interface{} `json:"strategy,omitempty"` // leastPing (object or string)
 }
 
 // RoutingConfig defines routing settings
@@ -702,7 +702,7 @@ func compileClientConfigXray(
 					{
 						Tag:      "balancer",
 						Selector: balancerTargets,
-						Strategy: strategy,
+						Strategy: map[string]string{"type": strategy},
 					},
 				},
 			}
@@ -1224,7 +1224,7 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 
 	var outboundSettings map[string]interface{}
 	if activeConfig.Protocol == "vless" {
-		flowVal := "xtls-rprx-vision"
+		flowVal := ""
 		if f, ok := dbTlsSettings["flow"].(string); ok {
 			flowVal = f
 		}
@@ -1232,17 +1232,20 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 		if e, ok := dbTlsSettings["encryption"].(string); ok {
 			encryptVal = e
 		}
+		userMap := map[string]interface{}{
+			"id":         activeConfig.UUID,
+			"encryption": encryptVal,
+		}
+		if flowVal != "" {
+			userMap["flow"] = flowVal
+		}
 		outboundSettings = map[string]interface{}{
 			"vnext": []map[string]interface{}{
 				{
 					"address": activeConfig.Address,
 					"port":    activeConfig.Port,
 					"users": []map[string]interface{}{
-						{
-							"id":         activeConfig.UUID,
-							"encryption": encryptVal,
-							"flow":       flowVal,
-						},
+						userMap,
 					},
 				},
 			},

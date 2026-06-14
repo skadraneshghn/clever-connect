@@ -19,6 +19,7 @@ var (
 	cmdInstance *exec.Cmd
 	mu          sync.Mutex
 	cancelFunc  context.CancelFunc
+	waitChan    chan struct{}
 )
 
 // GetSelectedCoreName returns the selected core name ("xray", "v2ray", or "sing-box") from settings, or fallbacks.
@@ -42,51 +43,39 @@ func GetSelectedCoreName() string {
 	return "xray" // default fallback
 }
 
-// GetXrayBinPath returns the absolute or relative path to the xray, v2ray or sing-box binary
-func GetXrayBinPath() string {
-	coreName := GetSelectedCoreName()
-	var binPath string
-	switch coreName {
-	case "v2ray":
-		binPath = "core/v2ray/v2ray"
-	case "sing-box":
-		binPath = "core/sing-box/sing-box"
-	default: // "xray"
-		binPath = "core/xray/xray"
-	}
-
-	if _, err := os.Stat(binPath); err == nil {
-		return binPath
-	}
-
-	exe, err := os.Executable()
-	if err == nil {
-		localPath := filepath.Join(filepath.Dir(exe), coreName)
-		if _, err := os.Stat(localPath); err == nil {
-			return localPath
-		}
-	}
-	return filepath.Join("bin", coreName)
-}
-
-// GetClientBinPath returns the client-side binary path for the selected core with proper fallbacks.
-func GetClientBinPath() (string, error) {
-	coreName := GetSelectedCoreName()
-
-	// 1. Check local core folder
+// GetBinPathForCore returns the binary path for the given core name with proper robust fallbacks.
+func GetBinPathForCore(coreName string) (string, error) {
+	// 1. Check local core folder relative to current working directory
 	localPath := filepath.Join("core", coreName, coreName)
 	if _, err := os.Stat(localPath); err == nil {
 		_ = os.Chmod(localPath, 0755)
 		return localPath, nil
 	}
 
-	// 2. Check local executable dir
+	// 2. Check local executable dir and its parent (in case running from a bin/ directory)
 	exe, err := os.Executable()
 	if err == nil {
-		localPathExe := filepath.Join(filepath.Dir(exe), coreName)
+		exeDir := filepath.Dir(exe)
+		
+		// e.g. /path/to/project/bin/xray
+		localPathExe := filepath.Join(exeDir, coreName)
 		if _, err := os.Stat(localPathExe); err == nil {
 			_ = os.Chmod(localPathExe, 0755)
 			return localPathExe, nil
+		}
+		
+		// e.g. /path/to/project/bin/core/xray/xray
+		localPathExeCore := filepath.Join(exeDir, "core", coreName, coreName)
+		if _, err := os.Stat(localPathExeCore); err == nil {
+			_ = os.Chmod(localPathExeCore, 0755)
+			return localPathExeCore, nil
+		}
+
+		// e.g. /path/to/project/core/xray/xray when executable is in /path/to/project/bin/clever-connect
+		parentCorePath := filepath.Join(filepath.Dir(exeDir), "core", coreName, coreName)
+		if _, err := os.Stat(parentCorePath); err == nil {
+			_ = os.Chmod(parentCorePath, 0755)
+			return parentCorePath, nil
 		}
 	}
 
@@ -100,7 +89,23 @@ func GetClientBinPath() (string, error) {
 		return ExtractCoreBinary()
 	}
 
-	return "", fmt.Errorf("binary for selected core %q not found in core folder or system PATH", coreName)
+	return "", fmt.Errorf("binary for core %q not found in core folder or system PATH", coreName)
+}
+
+// GetXrayBinPath returns the absolute or relative path to the xray, v2ray or sing-box binary
+func GetXrayBinPath() string {
+	coreName := GetSelectedCoreName()
+	path, err := GetBinPathForCore(coreName)
+	if err == nil {
+		return path
+	}
+	return filepath.Join("bin", coreName)
+}
+
+// GetClientBinPath returns the client-side binary path for the selected core with proper fallbacks.
+func GetClientBinPath() (string, error) {
+	coreName := GetSelectedCoreName()
+	return GetBinPathForCore(coreName)
 }
 
 // StartCore starts the Xray/V2Ray/Sing-Box process with the given config file
@@ -130,6 +135,8 @@ func StartCore(configPath string) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancelFunc = cancel
+	waitChan = make(chan struct{})
+	wChan := waitChan
 
 	// Convert configPath to absolute path so Xray can find it even if cmd.Dir is set to binPath folder
 	absConfigPath, err := filepath.Abs(configPath)
@@ -137,7 +144,17 @@ func StartCore(configPath string) error {
 		absConfigPath = configPath
 	}
 
-	cmd := exec.CommandContext(ctx, binPath, "run", "-c", absConfigPath)
+	var cmd *exec.Cmd
+	if GetSelectedCoreName() == "v2ray" {
+		cmd = exec.CommandContext(ctx, binPath, "-config", absConfigPath)
+	} else {
+		cmd = exec.CommandContext(ctx, binPath, "run", "-c", absConfigPath)
+	}
+	cmd.Env = append(os.Environ(),
+		"ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true",
+		"ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER=true",
+		"ENABLE_DEPRECATED_SPECIAL_OUTBOUNDS=true",
+	)
 	
 	// Set Cwd to the folder containing xray/v2ray so it resolves geosite.dat and geoip.dat locally
 	absBinDir, err := filepath.Abs(filepath.Dir(binPath))
@@ -161,8 +178,9 @@ func StartCore(configPath string) error {
 	cmdInstance = cmd
 
 	// Start supervisor goroutine
-	go func(c *exec.Cmd) {
+	go func(c *exec.Cmd, wc chan struct{}) {
 		err := c.Wait()
+		close(wc)
 		mu.Lock()
 		defer mu.Unlock()
 		if cmdInstance == c {
@@ -177,7 +195,7 @@ func StartCore(configPath string) error {
 				cancelFunc = nil
 			}
 		}
-	}(cmd)
+	}(cmd, wChan)
 
 	return nil
 }
@@ -197,19 +215,19 @@ func StopCoreLocked() error {
 		// Try graceful SIGTERM first
 		pgid, err := syscall.Getpgid(cmdInstance.Process.Pid)
 		if err == nil {
-			_ = syscall.Kill(-pgid, syscall.SIGTERM) // Kill the whole process group
+			if errKill := syscall.Kill(-pgid, syscall.SIGTERM); errKill != nil {
+				logger.Warn("V2Ray", "Failed to kill process group with SIGTERM", "pgid", pgid, "error", errKill)
+				_ = cmdInstance.Process.Signal(syscall.SIGTERM)
+			}
 		} else {
+			logger.Warn("V2Ray", "Failed to get pgid", "error", err)
 			_ = cmdInstance.Process.Signal(syscall.SIGTERM)
 		}
 
 		// Wait for a brief moment
-		done := make(chan error, 1)
-		go func() {
-			done <- cmdInstance.Wait()
-		}()
-
+		wChan := waitChan
 		select {
-		case <-done:
+		case <-wChan:
 			// Gracefully stopped
 		case <-time.After(3 * time.Second):
 			// Force kill if it didn't exit in 3s
@@ -219,7 +237,9 @@ func StopCoreLocked() error {
 			} else {
 				_ = cmdInstance.Process.Kill()
 			}
-			<-done
+			if wChan != nil {
+				<-wChan
+			}
 		}
 
 		cmdInstance = nil

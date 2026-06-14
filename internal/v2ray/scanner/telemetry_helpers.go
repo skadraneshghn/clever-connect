@@ -171,10 +171,11 @@ func probeCdnPop(ctx context.Context, ip net.IP, port int, sni string, timeout t
 
 // testProxyThroughput performs an actual download speed test via sing-box SOCKS5 proxy
 func testProxyThroughput(ctx context.Context, baseConfig models.V2RayClientConfig, ip string, port int, downloadDuration time.Duration) (int, float64, error) {
-	socksPort, err := getFreePort()
+	socksPort, err := reservePort()
 	if err != nil {
 		return 0, 0, err
 	}
+	defer releasePort(socksPort)
 
 	testConfig := baseConfig
 	testConfig.Address = ip

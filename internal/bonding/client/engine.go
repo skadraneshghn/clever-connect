@@ -18,6 +18,7 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/v2ray/core"
+	"clever-connect/internal/v2ray/sysproxy"
 )
 
 // ErrNoActiveArteries is returned when no artery connections are available.
@@ -150,7 +151,9 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 	// Build candidate pool from PebbleDB
 	if err := e.refreshCandidatePool(); err != nil {
 		e.mu.Lock()
-		e.state = BondingStateStopped
+		if e.state == BondingStateStarting {
+			e.state = BondingStateStopped
+		}
 		e.mu.Unlock()
 		return fmt.Errorf("failed to build candidate pool: %w", err)
 	}
@@ -158,7 +161,9 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 	// Select top-N nodes
 	if err := e.buildActivePool(); err != nil {
 		e.mu.Lock()
-		e.state = BondingStateStopped
+		if e.state == BondingStateStarting {
+			e.state = BondingStateStopped
+		}
 		e.mu.Unlock()
 		return fmt.Errorf("failed to build active pool: %w", err)
 	}
@@ -166,7 +171,9 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 	// Compile and start xray core with dokodemo-door arteries
 	if err := e.compileAndStartCore(); err != nil {
 		e.mu.Lock()
-		e.state = BondingStateStopped
+		if e.state == BondingStateStarting {
+			e.state = BondingStateStopped
+		}
 		e.mu.Unlock()
 		return fmt.Errorf("failed to start core: %w", err)
 	}
@@ -230,14 +237,55 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 	if err := e.frontend.Start(ctx); err != nil {
 		cancel()
 		e.mu.Lock()
-		e.state = BondingStateStopped
+		if e.state == BondingStateStarting {
+			e.state = BondingStateStopped
+		}
 		e.mu.Unlock()
 		return fmt.Errorf("failed to start frontend: %w", err)
 	}
 
 	e.mu.Lock()
+	if e.state != BondingStateStarting {
+		// StopEngine was called during startup!
+		if e.frontend != nil {
+			e.frontend.Stop()
+		}
+		for _, ac := range e.arteries {
+			ac.Close()
+		}
+		if e.session != nil {
+			e.session.Close()
+		}
+		_ = core.StopCore()
+		e.state = BondingStateStopped
+		e.arteries = nil
+		e.dispatcher = nil
+		e.frontend = nil
+		e.session = nil
+		e.stateMachine = nil
+		e.metrics = make(map[string]*control.PathMetrics)
+		e.mu.Unlock()
+		return fmt.Errorf("bonding engine was stopped during startup")
+	}
+
 	e.state = BondingStateRunning
 	e.mu.Unlock()
+
+	// Reset traffic counters
+	core.ResetClientTraffic()
+
+	// Toggle OS system proxy if enabled in settings
+	sysProxyEnabled := false
+	if db.DB != nil {
+		var setting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "sys_proxy_enabled").First(&setting).Error; err == nil {
+			sysProxyEnabled = setting.Value == "true"
+		}
+	}
+	if sysProxyEnabled {
+		logger.Info("ClientProxy", "Setting OS system proxy for bonding client", "socksPort", cfg.SocksPort, "httpPort", cfg.HTTPPort)
+		_ = sysproxy.SetSystemProxy(cfg.SocksPort, cfg.HTTPPort)
+	}
 
 	// Start background loops
 	go e.controllerLoop(ctx)
@@ -255,7 +303,7 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 // StopEngine gracefully stops the bonding engine.
 func (e *BondingEngine) StopEngine() error {
 	e.mu.Lock()
-	if e.state != BondingStateRunning {
+	if e.state != BondingStateRunning && e.state != BondingStateStarting {
 		e.mu.Unlock()
 		return nil
 	}
@@ -291,6 +339,10 @@ func (e *BondingEngine) StopEngine() error {
 
 	// Stop xray core
 	_ = core.StopCore()
+
+	// Always clear OS system proxy on stop
+	logger.Info("ClientProxy", "Clearing OS system proxy for bonding client")
+	_ = sysproxy.ClearSystemProxy()
 
 	e.mu.Lock()
 	e.state = BondingStateStopped
@@ -427,10 +479,15 @@ func (e *BondingEngine) buildActivePool() error {
 // compileAndStartCore compiles the multi-inbound xray config and starts the core.
 func (e *BondingEngine) compileAndStartCore() error {
 	e.mu.RLock()
+	state := e.state
 	nodes := make([]models.V2RayClientConfig, len(e.activeNodes))
 	copy(nodes, e.activeNodes)
 	cfg := e.config
 	e.mu.RUnlock()
+
+	if state != BondingStateRunning && state != BondingStateStarting {
+		return fmt.Errorf("bonding engine is not running")
+	}
 
 	configPath, err := CompileBondingClientConfig(
 		nodes,
@@ -556,12 +613,20 @@ func (e *BondingEngine) pingLoop(ctx context.Context) {
 
 // replaceDeadArtery swaps a dead artery with a fresh node.
 func (e *BondingEngine) replaceDeadArtery(ctx context.Context, pathID string) {
+	if ctx.Err() != nil {
+		return
+	}
+
 	logger.Info("Bonding", "Replacing dead artery", "path", pathID)
 
 	_ = e.refreshCandidatePool()
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if e.state != BondingStateRunning {
+		return
+	}
 
 	if len(e.candidatePool) == 0 {
 		logger.Warn("Bonding", "No replacement candidates", "path", pathID)
@@ -593,6 +658,16 @@ func (e *BondingEngine) replaceDeadArtery(ctx context.Context, pathID string) {
 
 	// Trigger core reload
 	go func() {
+		if ctx.Err() != nil {
+			return
+		}
+		e.mu.RLock()
+		running := (e.state == BondingStateRunning)
+		e.mu.RUnlock()
+		if !running {
+			return
+		}
+
 		if err := e.compileAndStartCore(); err != nil {
 			logger.Error("Bonding", "Failed to reload core after replacement", "error", err)
 		}

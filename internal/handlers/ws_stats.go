@@ -11,6 +11,8 @@ import (
 	"github.com/xtls/xray-core/app/stats/command"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+
+	"clever-connect/internal/v2ray/core"
 )
 
 var statsUpgrader = websocket.Upgrader{
@@ -55,10 +57,13 @@ func HandleStatsStream(c *gin.Context) {
 		case <-c.Request.Context().Done():
 			return
 		case <-ticker.C:
-			var currentUp, currentDown int64
-			var activeConns int
+			// 1. Get wrapper stats (used for single client, selector, and bonding)
+			tx, rx, conns := core.GetClientTraffic()
+			currentUp := tx
+			currentDown := rx
+			activeConns := conns
 
-			if client != nil {
+			if currentUp == 0 && currentDown == 0 && client != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 				resp, err := client.QueryStats(ctx, &command.QueryStatsRequest{
 					Pattern: "",

@@ -110,10 +110,12 @@ type SingBoxMultiplex struct {
 }
 
 type SingBoxRouteRule struct {
-	Port     int      `json:"port,omitempty"`
-	Geosite  []string `json:"geosite,omitempty"`
-	Geoip    []string `json:"geoip,omitempty"`
-	Outbound string   `json:"outbound"`
+	Port         int      `json:"port,omitempty"`
+	Geosite      []string `json:"geosite,omitempty"`
+	DomainSuffix []string `json:"domain_suffix,omitempty"`
+	Geoip        []string `json:"geoip,omitempty"`
+	IpCidr       []string `json:"ip_cidr,omitempty"`
+	Outbound     string   `json:"outbound"`
 }
 
 type SingBoxRoute struct {
@@ -127,8 +129,9 @@ type SingBoxDNSServer struct {
 }
 
 type SingBoxDNSRule struct {
-	Geosite []string `json:"geosite,omitempty"`
-	Server  string   `json:"server"`
+	Geosite      []string `json:"geosite,omitempty"`
+	DomainSuffix []string `json:"domain_suffix,omitempty"`
+	Server       string   `json:"server"`
 }
 
 type SingBoxDNS struct {
@@ -447,12 +450,8 @@ func CompileSingBoxClientConfig(
 			},
 			Rules: []SingBoxDNSRule{
 				{
-					Geosite: []string{"geolocation-!ir"},
-					Server:  "dns_doh",
-				},
-				{
-					Geosite: []string{"ir"},
-					Server:  "dns_direct",
+					DomainSuffix: []string{".ir"},
+					Server:       "dns_direct",
 				},
 			},
 		}
@@ -473,36 +472,38 @@ func CompileSingBoxClientConfig(
 		Outbound: "direct",
 	})
 
+	privateCIDRs := []string{
+		"127.0.0.0/8",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"::1/128",
+		"fc00::/7",
+		"fe80::/10",
+	}
+
 	switch routingMode {
 	case "global":
 		rules = append(rules, SingBoxRouteRule{
-			Geosite:  []string{"private"},
-			Outbound: "direct",
-		})
-		rules = append(rules, SingBoxRouteRule{
-			Geoip:    []string{"private"},
+			IpCidr:   privateCIDRs,
 			Outbound: "direct",
 		})
 	case "bypass_domestic":
 		rules = append(rules, SingBoxRouteRule{
-			Geosite:  []string{"private", "ir"},
-			Outbound: "direct",
+			DomainSuffix: []string{".ir"},
+			Outbound:     "direct",
 		})
 		rules = append(rules, SingBoxRouteRule{
-			Geoip:    []string{"private", "ir"},
+			IpCidr:   privateCIDRs,
 			Outbound: "direct",
 		})
 	case "block_ads":
 		rules = append(rules, SingBoxRouteRule{
-			Geosite:  []string{"category-ads-all"},
-			Outbound: "block",
+			DomainSuffix: []string{".ir"},
+			Outbound:     "direct",
 		})
 		rules = append(rules, SingBoxRouteRule{
-			Geosite:  []string{"private", "ir"},
-			Outbound: "direct",
-		})
-		rules = append(rules, SingBoxRouteRule{
-			Geoip:    []string{"private", "ir"},
+			IpCidr:   privateCIDRs,
 			Outbound: "direct",
 		})
 	}
@@ -540,7 +541,11 @@ func CompileSingBoxOutbound(activeConfig models.V2RayClientConfig, evasionEnable
 	switch activeConfig.Protocol {
 	case "vless":
 		outbound.UUID = activeConfig.UUID
-		outbound.Flow = "xtls-rprx-vision"
+		if dbTlsSettings != nil {
+			if f, ok := dbTlsSettings["flow"].(string); ok {
+				outbound.Flow = f
+			}
+		}
 	case "vmess":
 		outbound.UUID = activeConfig.UUID
 		outbound.Security = "auto"

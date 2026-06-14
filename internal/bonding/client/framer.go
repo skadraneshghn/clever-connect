@@ -7,6 +7,7 @@ import (
 	"clever-connect/internal/bonding/frame"
 	"clever-connect/internal/bonding/session"
 	"clever-connect/internal/logger"
+	"clever-connect/internal/v2ray/core"
 )
 
 // Framer handles the conversion between raw TCP connections and DMB frames.
@@ -35,11 +36,15 @@ func HandleUpstream(conn io.ReadCloser, streamID uint32, targetAddr string,
 		return
 	}
 
+	core.IncrementActiveConns()
+	defer core.DecrementActiveConns()
+
 	// 2. Read loop: chunk raw bytes into DATA frames
 	buf := make([]byte, frameSize)
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
+			core.AddClientTraffic(int64(n), 0)
 			dataSeq := atomic.AddUint64(seq, 1)
 			payload := make([]byte, n)
 			copy(payload, buf[:n])
@@ -82,6 +87,7 @@ func HandleDownstream(conn io.WriteCloser, stream *session.Stream) {
 						"stream", stream.ID, "error", err)
 					return
 				}
+				core.AddClientTraffic(0, int64(len(f.Payload)))
 			}
 
 		case frame.TypeFIN:

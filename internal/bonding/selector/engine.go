@@ -20,6 +20,10 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/v2ray/core"
+
+	obscommand "github.com/xtls/xray-core/app/observatory/command"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // EngineState represents the lifecycle state of the selector engine.
@@ -166,17 +170,44 @@ func (e *Engine) StartEngine(cfg *models.BondingEngineConfig) error {
 	// Compile and start xray core with balancer config
 	if err := e.compileAndStartCore(); err != nil {
 		e.mu.Lock()
-		e.state = EngineStateStopped
+		if e.state == EngineStateStarting {
+			e.state = EngineStateStopped
+		}
 		e.mu.Unlock()
 		return fmt.Errorf("failed to start core: %w", err)
 	}
 
+	e.mu.Lock()
+	if e.state != EngineStateStarting {
+		// StopEngine was called during startup!
+		_ = core.StopCore()
+		e.state = EngineStateStopped
+		e.arteries = nil
+		e.stateMachine = nil
+		e.metrics = make(map[string]*control.PathMetrics)
+		e.mu.Unlock()
+		return fmt.Errorf("selector engine was stopped during startup")
+	}
+
 	// Start background health-check loop
 	ctx, cancel := context.WithCancel(context.Background())
-	e.mu.Lock()
 	e.cancelFunc = cancel
 	e.state = EngineStateRunning
 	e.mu.Unlock()
+
+	// Reset traffic counters
+	core.ResetClientTraffic()
+
+	// Start strong SOCKS5+HTTP proxy wrapper (xray runs on internal ports socksPort+2000 and httpPort+2000)
+	socksPort := cfg.SocksPort
+	if socksPort <= 0 {
+		socksPort = 10646
+	}
+	httpPort := cfg.HTTPPort
+	if httpPort <= 0 {
+		httpPort = 10545
+	}
+	core.StartLocalProxyEngine(socksPort, socksPort+2000, httpPort, httpPort+2000)
 
 	go e.healthCheckLoop(ctx)
 	go e.telemetryLoop(ctx)
@@ -184,12 +215,22 @@ func (e *Engine) StartEngine(cfg *models.BondingEngineConfig) error {
 	// Initialize hot-swap manager (best-effort — used for artery replacement)
 	go func() {
 		// Give the core 2 seconds to fully start before connecting gRPC
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+
 		mgr := hotswap.NewManager("127.0.0.1:10085")
 		if err := mgr.Connect(); err != nil {
 			logger.Warn("Bonding", "Hot-swap manager failed to connect (will fallback to core restart)", "error", err)
 		} else {
 			e.mu.Lock()
+			if e.state != EngineStateRunning {
+				mgr.Close()
+				e.mu.Unlock()
+				return
+			}
 			e.hotswapMgr = mgr
 			e.mu.Unlock()
 			logger.Info("Bonding", "Hot-swap manager ready for per-artery swaps")
@@ -207,7 +248,7 @@ func (e *Engine) StartEngine(cfg *models.BondingEngineConfig) error {
 // StopEngine gracefully stops the selector/failover engine.
 func (e *Engine) StopEngine() error {
 	e.mu.Lock()
-	if e.state != EngineStateRunning {
+	if e.state != EngineStateRunning && e.state != EngineStateStarting {
 		e.mu.Unlock()
 		return nil
 	}
@@ -219,6 +260,9 @@ func (e *Engine) StopEngine() error {
 	e.mu.Unlock()
 
 	logger.Info("Bonding", "Stopping selector engine")
+
+	// Stop local proxy wrapper
+	core.StopLocalProxyEngine()
 
 	// Stop the xray core process
 	_ = core.StopCore()
@@ -412,6 +456,8 @@ func (e *Engine) healthCheckLoop(ctx context.Context) {
 
 // runEvaluation executes one health-check cycle.
 func (e *Engine) runEvaluation(ctx context.Context) {
+	e.queryObservatoryAndUpdateMetrics()
+
 	e.mu.RLock()
 	if e.stateMachine == nil || len(e.arteries) == 0 {
 		e.mu.RUnlock()
@@ -466,6 +512,10 @@ func (e *Engine) runEvaluation(ctx context.Context) {
 
 // replaceDeadArtery swaps a dead artery with a fresh node from the candidate pool.
 func (e *Engine) replaceDeadArtery(ctx context.Context, pathID string) {
+	if ctx.Err() != nil {
+		return
+	}
+
 	logger.Info("Bonding", "Replacing dead artery", "path", pathID)
 
 	// Refresh pool to get latest nodes
@@ -473,6 +523,10 @@ func (e *Engine) replaceDeadArtery(ctx context.Context, pathID string) {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if e.state != EngineStateRunning {
+		return
+	}
 
 	if len(e.candidatePool) == 0 {
 		logger.Warn("Bonding", "No replacement candidates available", "path", pathID)
@@ -532,10 +586,26 @@ func (e *Engine) replaceDeadArtery(ctx context.Context, pathID string) {
 	swapTag := pathID
 
 	go func() {
+		if ctx.Err() != nil {
+			return
+		}
+		e.mu.RLock()
+		running := (e.state == EngineStateRunning)
+		e.mu.RUnlock()
+		if !running {
+			return
+		}
+
 		if hotswapMgr != nil && hotswapMgr.IsConnected() {
 			if err := hotswapMgr.SwapOutbound(swapTag, newConfig, swapTag); err != nil {
 				logger.Warn("Bonding", "Hot-swap failed, falling back to core restart",
 					"tag", swapTag, "error", err)
+				e.mu.RLock()
+				running = (e.state == EngineStateRunning)
+				e.mu.RUnlock()
+				if !running {
+					return
+				}
 				if err := e.compileAndStartCore(); err != nil {
 					logger.Error("Bonding", "Failed to reload core after replacement", "error", err)
 				}
@@ -590,6 +660,58 @@ func (e *Engine) telemetryLoop(ctx context.Context) {
 			case e.TelemetryChan <- status:
 			default: // drop if channel full
 			}
+		}
+	}
+}
+
+// queryObservatoryAndUpdateMetrics queries Xray's observatory gRPC service to update path metrics.
+func (e *Engine) queryObservatoryAndUpdateMetrics() {
+	grpcConn, err := grpc.Dial("127.0.0.1:10085", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return
+	}
+	defer grpcConn.Close()
+
+	client := obscommand.NewObservatoryServiceClient(grpcConn)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	resp, err := client.GetOutboundStatus(ctx, &obscommand.GetOutboundStatusRequest{})
+	if err != nil || resp == nil || resp.Status == nil {
+		return
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.state != EngineStateRunning {
+		return
+	}
+
+	for _, status := range resp.Status.Status {
+		if status == nil {
+			continue
+		}
+		tag := status.OutboundTag
+		metrics, ok := e.metrics[tag]
+		if !ok {
+			continue
+		}
+
+		// Simulate send so EWMA updates correctly
+		metrics.RecordSend()
+
+		if status.Alive {
+			// Update EWMA RTT
+			if status.Delay > 0 {
+				metrics.UpdateRTT(float64(status.Delay))
+			}
+			metrics.SetAlive(true)
+			// Mode A doesn't have frame logic, but we can simulate Acks to keep WinRate and EWMA loss correct
+			metrics.RecordAck(0, float64(status.Delay))
+		} else {
+			metrics.SetAlive(false)
+			metrics.RecordLoss()
 		}
 	}
 }

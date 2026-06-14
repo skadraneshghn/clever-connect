@@ -6,24 +6,94 @@ import (
 	"os"
 	"path/filepath"
 
+	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/logger"
+	"clever-connect/internal/models"
 	"clever-connect/internal/v2ray/compiler"
 	"clever-connect/internal/v2ray/core"
 )
+
+// getBaseTemplateConfig loads the first valid config from PebbleDB that has
+// Protocol/UUID/Network/TLSSettings set. This is the same template the scanner
+// uses; all discovered endpoints share the same protocol template but differ
+// only in Address and Port.
+func getBaseTemplateConfig() (*models.V2RayClientConfig, error) {
+	if pebble.DB == nil {
+		return nil, fmt.Errorf("pebble DB not initialized")
+	}
+	configs, total := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+	if total == 0 {
+		return nil, fmt.Errorf("no client configurations found in PebbleDB")
+	}
+	// Find the first config that has a valid protocol set
+	for _, cfg := range configs {
+		if cfg.Protocol != "" && cfg.UUID != "" {
+			return &cfg, nil
+		}
+	}
+	// Fallback: return the first config regardless
+	if len(configs) > 0 {
+		return &configs[0], nil
+	}
+	return nil, fmt.Errorf("no base template configuration found")
+}
+
+// mergeArteryWithBase creates a complete V2RayClientConfig by taking the artery's
+// Address/Port/Latency and filling in Protocol/UUID/Network/TLSSettings from the
+// base template. This ensures CompileOutbound receives a fully-populated config.
+func mergeArteryWithBase(artery models.V2RayClientConfig, base *models.V2RayClientConfig) models.V2RayClientConfig {
+	merged := artery
+	// Only override fields that are empty in the artery but present in the base
+	if merged.Protocol == "" {
+		merged.Protocol = base.Protocol
+	}
+	if merged.UUID == "" {
+		merged.UUID = base.UUID
+	}
+	if merged.Network == "" {
+		merged.Network = base.Network
+	}
+	if merged.TLSSettings == "" {
+		merged.TLSSettings = base.TLSSettings
+	}
+	if !merged.MuxEnabled && base.MuxEnabled {
+		merged.MuxEnabled = base.MuxEnabled
+	}
+	return merged
+}
 
 // compileAndStartCore generates a multi-outbound xray config with balancer + observatory
 // and (re)starts the core process. This is the key integration point with the existing
 // compiler infrastructure.
 func (e *Engine) compileAndStartCore() error {
 	e.mu.RLock()
+	state := e.state
 	arteries := make([]*ArteryEntry, len(e.arteries))
 	copy(arteries, e.arteries)
 	cfg := e.config
 	e.mu.RUnlock()
 
+	if state != EngineStateRunning && state != EngineStateStarting {
+		return fmt.Errorf("selector engine is not running")
+	}
+
 	if len(arteries) == 0 {
 		return fmt.Errorf("no active arteries to compile")
 	}
+
+	// Load base template config so we can fill in Protocol/UUID/Network/TLS for
+	// any arteries that only have Address+Port from the scanner.
+	baseTemplate, err := getBaseTemplateConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load base template config: %w", err)
+	}
+
+	logger.Info("Bonding", "Base template for outbound compilation",
+		"protocol", baseTemplate.Protocol,
+		"network", baseTemplate.Network,
+		"uuid_set", baseTemplate.UUID != "",
+		"tls_set", baseTemplate.TLSSettings != "",
+	)
 
 	// Determine evasion settings from first artery
 	evasionEnabled := true
@@ -39,7 +109,7 @@ func (e *Engine) compileAndStartCore() error {
 		},
 		Api: &compiler.ApiConfig{
 			Tag:      "api",
-			Services: []string{"StatsService", "LoggerService", "HandlerService"},
+			Services: []string{"StatsService", "LoggerService", "HandlerService", "ObservatoryService"},
 		},
 		Stats:  &compiler.StatsConfig{},
 		Policy: &compiler.PolicyConfig{
@@ -58,7 +128,7 @@ func (e *Engine) compileAndStartCore() error {
 		},
 	}
 
-	// User-facing inbounds: SOCKS5 and HTTP proxy
+	// User-facing inbounds: SOCKS5 and HTTP proxy (xray binds to internal ports, Go wrapper binds to public ports)
 	socksPort := cfg.SocksPort
 	if socksPort <= 0 {
 		socksPort = 10646
@@ -67,11 +137,13 @@ func (e *Engine) compileAndStartCore() error {
 	if httpPort <= 0 {
 		httpPort = 10545
 	}
+	socksInternalPort := socksPort + 2000
+	httpInternalPort := httpPort + 2000
 
 	xrayConfig.Inbounds = []compiler.InboundConfig{
 		{
 			Listen:   "127.0.0.1",
-			Port:     socksPort,
+			Port:     socksInternalPort,
 			Protocol: "socks",
 			Settings: map[string]interface{}{
 				"auth": "noauth",
@@ -85,7 +157,7 @@ func (e *Engine) compileAndStartCore() error {
 		},
 		{
 			Listen:   "127.0.0.1",
-			Port:     httpPort,
+			Port:     httpInternalPort,
 			Protocol: "http",
 			Settings: map[string]interface{}{
 				"allowRedirect": true,
@@ -103,12 +175,38 @@ func (e *Engine) compileAndStartCore() error {
 		},
 	}
 
-	// Build one outbound per artery using the existing CompileOutbound function
+	// Build one outbound per artery using the existing CompileOutbound function.
+	// Each artery's config is merged with the base template to ensure Protocol,
+	// UUID, Network, and TLSSettings are populated even if the scanner-discovered
+	// node only stored Address/Port/Latency.
 	var balancerTags []string
 	for _, a := range arteries {
-		outbound := compiler.CompileOutbound(a.Config, evasionEnabled, a.Tag)
+		mergedConfig := mergeArteryWithBase(a.Config, baseTemplate)
+
+		if mergedConfig.Protocol == "" {
+			logger.Warn("Bonding", "Skipping artery with empty protocol after merge",
+				"tag", a.Tag,
+				"address", mergedConfig.Address,
+				"port", mergedConfig.Port,
+			)
+			continue
+		}
+
+		logger.Debug("Bonding", "Compiling outbound for artery",
+			"tag", a.Tag,
+			"protocol", mergedConfig.Protocol,
+			"address", mergedConfig.Address,
+			"port", mergedConfig.Port,
+			"network", mergedConfig.Network,
+		)
+
+		outbound := compiler.CompileOutbound(mergedConfig, evasionEnabled, a.Tag)
 		xrayConfig.Outbounds = append(xrayConfig.Outbounds, outbound)
 		balancerTags = append(balancerTags, a.Tag)
+	}
+
+	if len(balancerTags) == 0 {
+		return fmt.Errorf("all arteries have empty protocol — check PebbleDB entries have valid Protocol/UUID fields")
 	}
 
 	// Add direct and block outbounds
@@ -125,7 +223,7 @@ func (e *Engine) compileAndStartCore() error {
 			{
 				Tag:      "bonding-balancer",
 				Selector: balancerTags,
-				Strategy: strategy,
+				Strategy: map[string]string{"type": strategy},
 			},
 		},
 		Rules: []compiler.RoutingRule{

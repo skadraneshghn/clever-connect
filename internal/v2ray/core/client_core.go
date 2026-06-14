@@ -37,6 +37,7 @@ var (
 	clientRunning    bool
 	clientCancel     context.CancelFunc
 	clientErr        error
+	clientWaitChan   chan struct{}
 
 	// Restart tracking
 	clientCrashes int
@@ -175,18 +176,18 @@ func StopClientCore() error {
 		logger.Info("ClientV2Ray", "Terminating client Xray core process")
 		pgid, err := syscall.Getpgid(clientCmd.Process.Pid)
 		if err == nil {
-			_ = syscall.Kill(-pgid, syscall.SIGTERM)
+			if errKill := syscall.Kill(-pgid, syscall.SIGTERM); errKill != nil {
+				logger.Warn("ClientV2Ray", "Failed to kill process group with SIGTERM", "pgid", pgid, "error", errKill)
+				_ = clientCmd.Process.Signal(syscall.SIGTERM)
+			}
 		} else {
+			logger.Warn("ClientV2Ray", "Failed to get pgid", "error", err)
 			_ = clientCmd.Process.Signal(syscall.SIGTERM)
 		}
 
-		done := make(chan error, 1)
-		go func() {
-			done <- clientCmd.Wait()
-		}()
-
+		wChan := clientWaitChan
 		select {
-		case <-done:
+		case <-wChan:
 		case <-time.After(3 * time.Second):
 			logger.Warn("ClientV2Ray", "Client core did not exit, sending SIGKILL")
 			if err == nil {
@@ -194,7 +195,9 @@ func StopClientCore() error {
 			} else {
 				_ = clientCmd.Process.Kill()
 			}
-			<-done
+			if wChan != nil {
+				<-wChan
+			}
 		}
 		clientCmd = nil
 	}
@@ -244,7 +247,17 @@ func clientSupervisor(ctx context.Context) {
 		clientLastStart = time.Now()
 		runCtx, runCancel := context.WithCancel(ctx)
 
-		cmd := exec.CommandContext(runCtx, binPath, "run", "-c", clientConfigPath)
+		var cmd *exec.Cmd
+		if GetSelectedCoreName() == "v2ray" {
+			cmd = exec.CommandContext(runCtx, binPath, "-config", clientConfigPath)
+		} else {
+			cmd = exec.CommandContext(runCtx, binPath, "run", "-c", clientConfigPath)
+		}
+		cmd.Env = append(os.Environ(),
+			"ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true",
+			"ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER=true",
+			"ENABLE_DEPRECATED_SPECIAL_OUTBOUNDS=true",
+		)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		absBinDir, err := filepath.Abs(filepath.Dir(binPath))
 		if err == nil {
@@ -257,6 +270,8 @@ func clientSupervisor(ctx context.Context) {
 
 		clientMu.Lock()
 		clientCmd = cmd
+		clientWaitChan = make(chan struct{})
+		wChan := clientWaitChan
 		clientMu.Unlock()
 
 		logger.Info("ClientV2Ray", "Supervisor starting client core process", "bin", binPath)
@@ -288,6 +303,7 @@ func clientSupervisor(ctx context.Context) {
 			}
 
 			_ = cmd.Wait()
+			close(wChan)
 			pipeWG.Wait()
 		}
 		runCancel()
@@ -584,4 +600,32 @@ func GetClientLogs(keyword string) []string {
 		}
 	}
 	return filtered
+}
+
+// IncrementActiveConns increments the active connection count.
+func IncrementActiveConns() {
+	atomic.AddInt32(&activeConns, 1)
+}
+
+// DecrementActiveConns decrements the active connection count.
+func DecrementActiveConns() {
+	atomic.AddInt32(&activeConns, -1)
+}
+
+// AddClientTraffic adds the given sent/received bytes to the total traffic.
+func AddClientTraffic(tx, rx int64) {
+	atomic.AddInt64(&totalBytesTx, tx)
+	atomic.AddInt64(&totalBytesRx, rx)
+}
+
+// GetClientTraffic returns the total client traffic tx, rx and active connection count.
+func GetClientTraffic() (tx, rx int64, conns int) {
+	return atomic.LoadInt64(&totalBytesTx), atomic.LoadInt64(&totalBytesRx), int(atomic.LoadInt32(&activeConns))
+}
+
+// ResetClientTraffic resets the traffic stats.
+func ResetClientTraffic() {
+	atomic.StoreInt32(&activeConns, 0)
+	atomic.StoreInt64(&totalBytesTx, 0)
+	atomic.StoreInt64(&totalBytesRx, 0)
 }
