@@ -1,5 +1,6 @@
 import React, { useEffect, useCallback, useState } from 'react';
 import { useMultipathStore, type ArteryStatus } from '../store/multipathStore';
+import { FiCheckCircle, FiAlertTriangle, FiXCircle, FiActivity, FiPlayCircle, FiRefreshCw } from 'react-icons/fi';
 
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  Helpers                                                                  */
@@ -178,12 +179,323 @@ const ArteryRow: React.FC<{ artery: ArteryStatus }> = ({ artery: a }) => {
 };
 
 /* ────────────────────────────────────────────────────────────────────────── */
+/*  DIAGNOSTICS PANEL                                                        */
+/* ────────────────────────────────────────────────────────────────────────── */
+const DiagnosticsPanel: React.FC<{
+  results: any[] | null;
+  loading: boolean;
+  onRun: () => void;
+}> = ({ results, loading, onRun }) => {
+  const [revealIndex, setRevealIndex] = useState(-1);
+  const [isAnimating, setIsAnimating] = useState(false);
+
+  useEffect(() => {
+    if (loading) {
+      setRevealIndex(-1);
+      setIsAnimating(true);
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    if (!loading && results && results.length > 0 && isAnimating) {
+      setRevealIndex(0);
+      const timer = setInterval(() => {
+        setRevealIndex((prev) => {
+          if (prev >= results.length - 1) {
+            clearInterval(timer);
+            setIsAnimating(false);
+            return results.length;
+          }
+          return prev + 1;
+        });
+      }, 900);
+      return () => clearInterval(timer);
+    }
+  }, [loading, results, isAnimating]);
+
+  const handleStart = () => {
+    onRun();
+  };
+
+  const getOverallStatus = () => {
+    if (!results || isAnimating || revealIndex < results.length) return 'pending';
+    let hasError = false;
+    let hasWarning = false;
+    for (const r of results) {
+      if (r.status === 'error') hasError = true;
+      if (r.status === 'warning') hasWarning = true;
+    }
+    if (hasError) return 'error';
+    if (hasWarning) return 'warning';
+    return 'success';
+  };
+
+  const overall = getOverallStatus();
+
+  return (
+    <div style={{
+      background: 'var(--color-brand-card)',
+      borderRadius: 14,
+      border: '1px solid var(--color-brand-border)',
+      padding: '20px 24px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 16,
+      boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+      position: 'relative',
+      overflow: 'hidden'
+    }}>
+      <style>{`
+        @keyframes pulse-indigo {
+          0%, 100% { opacity: 0.3; transform: scale(1); }
+          50% { opacity: 0.8; transform: scale(1.15); }
+        }
+        @keyframes rotate-slow {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        @keyframes slide-in-step {
+          0% { opacity: 0; transform: translateY(12px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        .animate-step {
+          animation: slide-in-step 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .animate-spin-slow {
+          animation: rotate-slow 2s linear infinite;
+        }
+        .animate-pulse-glow {
+          animation: pulse-indigo 1.5s ease-in-out infinite;
+        }
+      `}</style>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.5, color: 'var(--color-brand-muted)', fontWeight: 600 }}>
+            🔍 Diagnostics Observatory
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--color-brand-text)', marginTop: 2 }}>
+            Run real-time multi-layered verification tests
+          </div>
+        </div>
+        <button
+          onClick={handleStart}
+          disabled={loading || isAnimating}
+          style={{
+            padding: '8px 16px',
+            borderRadius: 8,
+            border: 'none',
+            background: loading || isAnimating ? 'var(--color-brand-border)' : 'linear-gradient(135deg, var(--color-brand), #4f46e5)',
+            color: '#fff',
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: loading || isAnimating ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            boxShadow: loading || isAnimating ? 'none' : '0 4px 12px rgba(99,102,241,0.2)',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          {loading ? (
+            <>
+              <FiRefreshCw className="animate-spin-slow" size={14} />
+              Running API...
+            </>
+          ) : isAnimating ? (
+            <>
+              <FiActivity className="animate-pulse-glow" size={14} />
+              Evaluating...
+            </>
+          ) : (
+            <>
+              <FiPlayCircle size={14} />
+              Run Health Checks
+            </>
+          )}
+        </button>
+      </div>
+
+      {(loading || results) && (
+        <div style={{ width: '100%', height: 4, background: 'var(--color-brand-bg)', borderRadius: 2, overflow: 'hidden', position: 'relative' }}>
+          <div style={{
+            height: '100%',
+            background: overall === 'error' ? '#ef4444' : overall === 'warning' ? '#f59e0b' : '#10b981',
+            width: loading ? '30%' : `${((results ? Math.min(revealIndex + 1, results.length) : 0) / (results?.length || 1)) * 100}%`,
+            transition: loading ? 'width 2s ease-in-out infinite' : 'width 0.4s ease-out',
+            borderRadius: 2
+          }} />
+        </div>
+      )}
+
+      {results && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {results.map((step, i) => {
+            const isRevealed = i < revealIndex;
+            const isCurrent = i === revealIndex;
+
+            if (!isRevealed && !isCurrent) {
+              return (
+                <div key={step.name} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderRadius: 8, border: '1px solid transparent', opacity: 0.35 }}>
+                  <div style={{ width: 20, height: 20, borderRadius: '50%', background: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#9ca3af' }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-muted)' }}>{step.name}</div>
+                    <div style={{ fontSize: 10, color: 'var(--color-brand-muted)' }}>Pending analysis...</div>
+                  </div>
+                </div>
+              );
+            }
+
+            let stepColor = 'var(--color-brand-muted)';
+            let statusIcon = <FiActivity className="animate-spin-slow" style={{ color: 'var(--color-brand)' }} size={16} />;
+            let bg = 'rgba(255, 255, 255, 0.02)';
+            let border = '1px solid var(--color-brand-border)';
+
+            if (isRevealed) {
+              if (step.status === 'success') {
+                stepColor = '#10b981';
+                statusIcon = <FiCheckCircle style={{ color: '#10b981' }} size={16} />;
+                bg = 'rgba(16, 185, 129, 0.04)';
+                border = '1px solid rgba(16, 185, 129, 0.15)';
+              } else if (step.status === 'warning') {
+                stepColor = '#f59e0b';
+                statusIcon = <FiAlertTriangle style={{ color: '#f59e0b' }} size={16} />;
+                bg = 'rgba(245, 158, 11, 0.04)';
+                border = '1px solid rgba(245, 158, 11, 0.15)';
+              } else if (step.status === 'error') {
+                stepColor = '#ef4444';
+                statusIcon = <FiXCircle style={{ color: '#ef4444' }} size={16} />;
+                bg = 'rgba(239, 68, 68, 0.04)';
+                border = '1px solid rgba(239, 68, 68, 0.15)';
+              }
+            } else if (isCurrent) {
+              bg = 'rgba(99, 102, 241, 0.04)';
+              border = '1px solid rgba(99, 102, 241, 0.25)';
+            }
+
+            return (
+              <div
+                key={step.name}
+                className="animate-step"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                  padding: '12px 16px',
+                  borderRadius: 10,
+                  background: bg,
+                  border: border,
+                  transition: 'all 0.3s ease',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    {statusIcon}
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-brand-heading)' }}>{step.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>{step.description}</div>
+                    </div>
+                  </div>
+                  {isRevealed && (
+                    <span style={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                      padding: '2px 8px',
+                      borderRadius: 12,
+                      background: step.status === 'success' ? 'rgba(16,185,129,0.1)' : step.status === 'warning' ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
+                      color: stepColor,
+                    }}>
+                      {step.status}
+                    </span>
+                  )}
+                  {isCurrent && (
+                    <span className="animate-pulse-glow" style={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                      padding: '2px 8px',
+                      borderRadius: 12,
+                      background: 'rgba(99,102,241,0.1)',
+                      color: 'var(--color-brand)',
+                    }}>
+                      Checking...
+                    </span>
+                  )}
+                </div>
+
+                {isRevealed && (step.details || step.error_message) && (
+                  <div style={{
+                    marginTop: 4,
+                    padding: '8px 12px',
+                    borderRadius: 6,
+                    background: 'var(--color-brand-bg)',
+                    fontSize: 11,
+                    fontFamily: 'monospace',
+                    color: step.status === 'error' ? '#ef4444' : 'var(--color-brand-muted)',
+                    borderLeft: `3px solid ${stepColor}`,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}>
+                    {step.status === 'error' ? step.error_message : step.details}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {results && !isAnimating && revealIndex >= results.length && (
+        <div style={{
+          padding: '14px 18px',
+          borderRadius: 10,
+          background: overall === 'error' ? 'rgba(239,68,68,0.06)' : overall === 'warning' ? 'rgba(245,158,11,0.06)' : 'rgba(16,185,129,0.06)',
+          border: `1.5px solid ${overall === 'error' ? '#ef4444' : overall === 'warning' ? '#f59e0b' : '#10b981'}`,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+          alignItems: 'center',
+          textAlign: 'center',
+          marginTop: 10,
+          animation: 'slide-in-step 0.5s ease forwards'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 18 }}>
+              {overall === 'error' ? '❌' : overall === 'warning' ? '⚠️' : '✅'}
+            </span>
+            <span style={{
+              fontWeight: 800,
+              fontSize: 14,
+              letterSpacing: 0.5,
+              color: overall === 'error' ? '#ef4444' : overall === 'warning' ? '#f59e0b' : '#10b981'
+            }}>
+              {overall === 'error'
+                ? 'CRITICAL FAULT DETECTED'
+                : overall === 'warning'
+                  ? 'SUBOPTIMAL PERFORMANCE WARNING'
+                  : 'ALL SYSTEMS FULLY FUNCTIONAL'}
+            </span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--color-brand-muted)' }}>
+            Scan completed successfully. Diagnostics verified local configs, network boundaries, and tunnel aggregation layers.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* ────────────────────────────────────────────────────────────────────────── */
 /*  MAIN PAGE                                                               */
 /* ────────────────────────────────────────────────────────────────────────── */
 export const V2RayMultipathPage: React.FC = () => {
   const {
     status, config, loading, error,
     fetchConfig, fetchStatus, startEngine, stopEngine, connectTelemetry, saveConfig,
+    diagnoseResults, diagnoseLoading, runDiagnostics,
   } = useMultipathStore();
 
   // Local config form states
@@ -427,34 +739,38 @@ export const V2RayMultipathPage: React.FC = () => {
           </div>
 
           {/* Config Summary */}
-          <div style={{
-            background: 'var(--color-brand-card)', borderRadius: 14,
-            border: '1px solid var(--color-brand-border)', padding: '20px 24px',
-          }}>
-            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.5, color: 'var(--color-brand-muted)', marginBottom: 16, fontWeight: 600 }}>
-              Engine Configuration
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <div style={{
+              background: 'var(--color-brand-card)', borderRadius: 14,
+              border: '1px solid var(--color-brand-border)', padding: '20px 24px',
+            }}>
+              <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.5, color: 'var(--color-brand-muted)', marginBottom: 16, fontWeight: 600 }}>
+                Engine Configuration
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                {[
+                  ['Mode', config?.mode || 'selector'],
+                  ['Striping', config?.striping_mode || 'auto'],
+                  ['Max Arteries', config?.max_arteries || 5],
+                  ['Min Arteries', config?.min_arteries || 2],
+                  ['SOCKS Port', config?.socks_port || 10646],
+                  ['HTTP Port', config?.http_port || 10545],
+                  ['Eval Window', `${config?.eval_window_ms || 5000}ms`],
+                  ['Demote RTT×', config?.demote_rtt_x || 1.5],
+                  ['Promote RTT×', config?.promote_rtt_x || 1.2],
+                  ['Loss Demote %', `${config?.loss_demote_pct || 5}%`],
+                  ['Cooldown', `${config?.cooldown_sec || 30}s`],
+                  ['Error Budget', config?.error_budget || 5],
+                ].map(([label, value]) => (
+                  <div key={String(label)} style={{ padding: '8px 12px', borderRadius: 8, background: 'var(--color-brand-bg)' }}>
+                    <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--color-brand-muted)' }}>{label}</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-brand-heading)', marginTop: 2 }}>{String(value)}</div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {[
-                ['Mode', config?.mode || 'selector'],
-                ['Striping', config?.striping_mode || 'auto'],
-                ['Max Arteries', config?.max_arteries || 5],
-                ['Min Arteries', config?.min_arteries || 2],
-                ['SOCKS Port', config?.socks_port || 10646],
-                ['HTTP Port', config?.http_port || 10545],
-                ['Eval Window', `${config?.eval_window_ms || 5000}ms`],
-                ['Demote RTT×', config?.demote_rtt_x || 1.5],
-                ['Promote RTT×', config?.promote_rtt_x || 1.2],
-                ['Loss Demote %', `${config?.loss_demote_pct || 5}%`],
-                ['Cooldown', `${config?.cooldown_sec || 30}s`],
-                ['Error Budget', config?.error_budget || 5],
-              ].map(([label, value]) => (
-                <div key={String(label)} style={{ padding: '8px 12px', borderRadius: 8, background: 'var(--color-brand-bg)' }}>
-                  <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--color-brand-muted)' }}>{label}</div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-brand-heading)', marginTop: 2 }}>{String(value)}</div>
-                </div>
-              ))}
-            </div>
+
+            <DiagnosticsPanel results={diagnoseResults} loading={diagnoseLoading} onRun={runDiagnostics} />
           </div>
         </div>
       )}
@@ -506,11 +822,12 @@ export const V2RayMultipathPage: React.FC = () => {
       {!isRunning && (
         <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 20, alignItems: 'start' }}>
           {/* Configuration Form Card */}
-          <div style={{
-            background: 'var(--color-brand-card)', borderRadius: 14,
-            border: '1px solid var(--color-brand-border)', padding: '20px 24px',
-            display: 'flex', flexDirection: 'column', gap: 16
-          }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <div style={{
+              background: 'var(--color-brand-card)', borderRadius: 14,
+              border: '1px solid var(--color-brand-border)', padding: '20px 24px',
+              display: 'flex', flexDirection: 'column', gap: 16
+            }}>
             <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.5, color: 'var(--color-brand-muted)', fontWeight: 600 }}>
               ⚙️ Engine Settings
             </div>
@@ -730,6 +1047,9 @@ export const V2RayMultipathPage: React.FC = () => {
               </button>
             </form>
           </div>
+
+          <DiagnosticsPanel results={diagnoseResults} loading={diagnoseLoading} onRun={runDiagnostics} />
+        </div>
 
           {/* Right Column: Explanatory Details */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>

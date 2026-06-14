@@ -26,17 +26,28 @@ export interface CombinerConfig {
   psk_hex: string;
 }
 
+export interface DiagnosticStep {
+  name: string;
+  description: string;
+  status: 'success' | 'warning' | 'error' | 'pending';
+  error_message?: string;
+  details?: string;
+}
+
 interface CombinerState {
   status: CombinerStatus | null;
   config: CombinerConfig | null;
   loading: boolean;
   error: string | null;
+  diagnoseResults: DiagnosticStep[] | null;
+  diagnoseLoading: boolean;
 
   fetchConfig: () => Promise<void>;
   saveConfig: (cfg: CombinerConfig) => Promise<void>;
   fetchStatus: () => Promise<void>;
   startCombiner: () => Promise<void>;
   stopCombiner: () => Promise<void>;
+  runDiagnostics: () => Promise<void>;
 }
 
 const getToken = () => localStorage.getItem('cc_server_token') || '';
@@ -50,6 +61,8 @@ export const useCombinerStore = create<CombinerState>((set, get) => ({
   config: null,
   loading: false,
   error: null,
+  diagnoseResults: null,
+  diagnoseLoading: false,
 
   fetchConfig: async () => {
     try {
@@ -130,6 +143,22 @@ export const useCombinerStore = create<CombinerState>((set, get) => ({
       }
     } catch (err: any) {
       set({ error: err.message, loading: false });
+    }
+  },
+
+  runDiagnostics: async () => {
+    set({ diagnoseLoading: true, error: null });
+    try {
+      const res = await fetch('/api/bonding/combiner/diagnose', { headers: apiHeaders() });
+      if (res.ok) {
+        const steps = await res.json();
+        set({ diagnoseResults: steps, diagnoseLoading: false });
+      } else {
+        const data = await res.json();
+        set({ error: data.error || 'Failed to run diagnostics', diagnoseLoading: false });
+      }
+    } catch (err: any) {
+      set({ error: err.message, diagnoseLoading: false });
     }
   },
 }));

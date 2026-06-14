@@ -344,6 +344,7 @@ func main() {
 			protected.POST("/v2ray/bonding/stop", bondingHandler.StopEngine)
 			protected.GET("/v2ray/bonding/status", bondingHandler.GetStatus)
 			protected.GET("/v2ray/bonding/arteries", bondingHandler.ListArteries)
+			protected.GET("/v2ray/bonding/diagnose", bondingHandler.DiagnoseEngine)
 
 			// System monitoring route
 			protected.GET("/system/stats", handlers.GetSystemStats)
@@ -484,6 +485,7 @@ func main() {
 			protected.POST("/bonding/combiner/start", combinerHandler.StartCombiner)
 			protected.POST("/bonding/combiner/stop", combinerHandler.StopCombiner)
 			protected.GET("/bonding/combiner/status", combinerHandler.GetCombinerStatus)
+			protected.GET("/bonding/combiner/diagnose", combinerHandler.DiagnoseCombiner)
 		}
 	}
 

@@ -1,7 +1,11 @@
 package handlers
 
 import (
+	"encoding/hex"
+	"fmt"
+	"net"
 	"net/http"
+	"time"
 
 	"clever-connect/internal/bonding/combiner"
 	"clever-connect/internal/config"
@@ -131,4 +135,94 @@ func (h *CombinerHandler) AutoStartCombiner() {
 	h.combiner = combiner.NewCombiner(cfg.OriginID, cfg.PSKHex)
 	h.combiner.Start()
 	logger.Info("Combiner", "Auto-started server combiner", "origin", cfg.OriginID)
+}
+
+// DiagnoseCombiner runs step-by-step diagnostic checks on server combiner configuration.
+func (h *CombinerHandler) DiagnoseCombiner(c *gin.Context) {
+	var steps []DiagnosticStep
+
+	// 1. Database Configuration
+	var cfg models.BondingEngineConfig
+	if err := db.DB.First(&cfg).Error; err != nil {
+		steps = append(steps, DiagnosticStep{
+			Name:         "Database Configuration",
+			Description:  "Verify engine configuration exists in database",
+			Status:       "error",
+			ErrorMessage: "No bonding configuration found. Please save settings first.",
+		})
+		c.JSON(http.StatusOK, steps)
+		return
+	}
+
+	steps = append(steps, DiagnosticStep{
+		Name:        "Database Configuration",
+		Description: "Verify engine configuration exists in database",
+		Status:      "success",
+		Details:     fmt.Sprintf("Configuration loaded (OriginID: %s).", cfg.OriginID),
+	})
+
+	// 2. Pre-Shared Key format
+	if cfg.PSKHex != "" {
+		_, err := hex.DecodeString(cfg.PSKHex)
+		if err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Pre-Shared Key Format",
+				Description:  "Verify Pre-Shared Key is valid hexadecimal format",
+				Status:       "error",
+				ErrorMessage: fmt.Sprintf("PSK is not a valid hex string: %v", err),
+			})
+		} else {
+			steps = append(steps, DiagnosticStep{
+				Name:        "Pre-Shared Key Format",
+				Description: "Verify Pre-Shared Key is valid hexadecimal format",
+				Status:      "success",
+				Details:     "Pre-Shared Key is valid hexadecimal.",
+			})
+		}
+	} else {
+		steps = append(steps, DiagnosticStep{
+			Name:        "Pre-Shared Key Format",
+			Description: "Verify Pre-Shared Key is valid hexadecimal format",
+			Status:      "warning",
+			Details:     "PSK is empty. Combiner is running in open/dev mode (no HMAC validation).",
+		})
+	}
+
+	// 3. Combiner Engine State
+	if h.combiner != nil && h.combiner.IsRunning() {
+		steps = append(steps, DiagnosticStep{
+			Name:        "Combiner Engine State",
+			Description: "Verify whether the combiner engine is active and running",
+			Status:      "success",
+			Details:     "Combiner engine is currently active.",
+		})
+	} else {
+		steps = append(steps, DiagnosticStep{
+			Name:        "Combiner Engine State",
+			Description: "Verify whether the combiner engine is active and running",
+			Status:      "warning",
+			Details:     "Combiner engine is stopped. Diagnostics can still check routing, but clients cannot connect.",
+		})
+	}
+
+	// 4. Exit Target Routing (resolve & tcp dial 1.1.1.1:53)
+	conn, err := net.DialTimeout("tcp", "1.1.1.1:53", 2*time.Second)
+	if err != nil {
+		steps = append(steps, DiagnosticStep{
+			Name:         "Exit Target Routing",
+			Description:  "Verify exit internet egress from the server (dials 1.1.1.1:53)",
+			Status:       "error",
+			ErrorMessage: fmt.Sprintf("Server internet egress failed: %v", err),
+		})
+	} else {
+		conn.Close()
+		steps = append(steps, DiagnosticStep{
+			Name:        "Exit Target Routing",
+			Description: "Verify exit internet egress from the server (dials 1.1.1.1:53)",
+			Status:      "success",
+			Details:     "Successfully reached DNS target 1.1.1.1:53.",
+		})
+	}
+
+	c.JSON(http.StatusOK, steps)
 }

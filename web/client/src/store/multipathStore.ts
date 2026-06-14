@@ -49,6 +49,14 @@ export interface BondingConfig {
   error_budget: number;
 }
 
+export interface DiagnosticStep {
+  name: string;
+  description: string;
+  status: 'success' | 'warning' | 'error' | 'pending';
+  error_message?: string;
+  details?: string;
+}
+
 interface MultipathState {
   // Engine status
   status: EngineStatus | null;
@@ -56,6 +64,8 @@ interface MultipathState {
   loading: boolean;
   error: string | null;
   wsConnected: boolean;
+  diagnoseResults: DiagnosticStep[] | null;
+  diagnoseLoading: boolean;
 
   // Telemetry history (last 60 data points)
   arteryHistory: Record<string, { time: string; srtt: number; loss: number }[]>;
@@ -67,6 +77,7 @@ interface MultipathState {
   startEngine: () => Promise<void>;
   stopEngine: () => Promise<void>;
   connectTelemetry: () => () => void;
+  runDiagnostics: () => Promise<void>;
 }
 
 const getToken = () => localStorage.getItem('cc_client_token') || '';
@@ -84,6 +95,8 @@ export const useMultipathStore = create<MultipathState>((set, get) => {
     loading: false,
     error: null,
     wsConnected: false,
+    diagnoseResults: null,
+    diagnoseLoading: false,
     arteryHistory: {},
 
     fetchConfig: async () => {
@@ -217,6 +230,22 @@ export const useMultipathStore = create<MultipathState>((set, get) => {
           ws = null;
         }
       };
+    },
+
+    runDiagnostics: async () => {
+      set({ diagnoseLoading: true, error: null });
+      try {
+        const res = await fetch('/api/v2ray/bonding/diagnose', { headers: apiHeaders() });
+        if (res.ok) {
+          const steps = await res.json();
+          set({ diagnoseResults: steps, diagnoseLoading: false });
+        } else {
+          const data = await res.json();
+          set({ error: data.error || 'Failed to run diagnostics', diagnoseLoading: false });
+        }
+      } catch (err: any) {
+        set({ error: err.message, diagnoseLoading: false });
+      }
     },
   };
 });

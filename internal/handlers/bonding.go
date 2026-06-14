@@ -1,13 +1,19 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	bonding_client "clever-connect/internal/bonding/client"
 	"clever-connect/internal/bonding/selector"
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
@@ -243,5 +249,190 @@ func (h *BondingHandler) ServeTelemetryWS(c *gin.Context) {
 			}
 		}
 	}
+}
+
+// DiagnosticStep represents a single verification step.
+type DiagnosticStep struct {
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Status       string `json:"status"` // "success", "warning", "error", "pending"
+	ErrorMessage string `json:"error_message,omitempty"`
+	Details      string `json:"details,omitempty"`
+}
+
+// DiagnoseEngine runs step-by-step diagnostic checks on client configuration.
+func (h *BondingHandler) DiagnoseEngine(c *gin.Context) {
+	var steps []DiagnosticStep
+
+	// Load config from DB
+	var cfg models.BondingEngineConfig
+	if err := db.DB.First(&cfg).Error; err != nil {
+		steps = append(steps, DiagnosticStep{
+			Name:         "Database Configuration",
+			Description:  "Verify engine configuration exists in database",
+			Status:       "error",
+			ErrorMessage: "No bonding configuration found. Please save settings first.",
+		})
+		c.JSON(http.StatusOK, steps)
+		return
+	}
+
+	steps = append(steps, DiagnosticStep{
+		Name:        "Database Configuration",
+		Description: "Verify engine configuration exists in database",
+		Status:      "success",
+		Details:     fmt.Sprintf("Configuration loaded (Mode: %s).", cfg.Mode),
+	})
+
+	// 1. Local Ports Check
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", cfg.SocksPort)
+	socksListener, err := net.Listen("tcp", socksAddr)
+	var socksAvailable bool
+	if err != nil {
+		steps = append(steps, DiagnosticStep{
+			Name:         "Local SOCKS Port Availability",
+			Description:  fmt.Sprintf("Verify local port %d is free", cfg.SocksPort),
+			Status:       "error",
+			ErrorMessage: fmt.Sprintf("SOCKS port %d is currently occupied or unavailable: %v", cfg.SocksPort, err),
+		})
+	} else {
+		socksListener.Close()
+		socksAvailable = true
+		steps = append(steps, DiagnosticStep{
+			Name:        "Local SOCKS Port Availability",
+			Description: fmt.Sprintf("Verify local port %d is free", cfg.SocksPort),
+			Status:      "success",
+			Details:     fmt.Sprintf("Local port %d is available.", cfg.SocksPort),
+		})
+	}
+
+	httpAddr := fmt.Sprintf("127.0.0.1:%d", cfg.HTTPPort)
+	httpListener, err := net.Listen("tcp", httpAddr)
+	if err != nil {
+		steps = append(steps, DiagnosticStep{
+			Name:         "Local HTTP Port Availability",
+			Description:  fmt.Sprintf("Verify local port %d is free", cfg.HTTPPort),
+			Status:       "error",
+			ErrorMessage: fmt.Sprintf("HTTP port %d is currently occupied or unavailable: %v", cfg.HTTPPort, err),
+		})
+	} else {
+		httpListener.Close()
+		steps = append(steps, DiagnosticStep{
+			Name:        "Local HTTP Port Availability",
+			Description: fmt.Sprintf("Verify local port %d is free", cfg.HTTPPort),
+			Status:      "success",
+			Details:     fmt.Sprintf("Local port %d is available.", cfg.HTTPPort),
+		})
+	}
+
+	// 2. Scanner Pool Check
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{
+		PingStatus: "pass",
+	}, 0, 0)
+	if len(configs) < 2 {
+		steps = append(steps, DiagnosticStep{
+			Name:         "Scanner Candidate Pool Check",
+			Description:  "Verify at least 2 healthy nodes exist in the scanner pool",
+			Status:       "warning",
+			ErrorMessage: fmt.Sprintf("Found %d healthy nodes. Multipath aggregation requires at least 2 nodes.", len(configs)),
+		})
+	} else {
+		steps = append(steps, DiagnosticStep{
+			Name:        "Scanner Candidate Pool Check",
+			Description: "Verify at least 2 healthy nodes exist in the scanner pool",
+			Status:      "success",
+			Details:     fmt.Sprintf("Found %d healthy nodes in the scanner pool.", len(configs)),
+		})
+	}
+
+	// 3. Mode-specific network combiner dial (only for bonding mode)
+	if cfg.Mode == "bonding" {
+		if cfg.CombinerURL == "" {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Server Combiner Connectivity",
+				Description:  "Verify reachability of remote combiner server",
+				Status:       "error",
+				ErrorMessage: "Combiner URL is empty. Please enter a valid combiner URL.",
+			})
+		} else {
+			parsed, err := url.Parse(cfg.CombinerURL)
+			if err != nil {
+				steps = append(steps, DiagnosticStep{
+					Name:         "Server Combiner Connectivity",
+					Description:  "Verify reachability of remote combiner server",
+					Status:       "error",
+					ErrorMessage: fmt.Sprintf("Invalid Combiner URL: %v", err),
+				})
+			} else {
+				hostPort := parsed.Host
+				if !strings.Contains(hostPort, ":") {
+					if parsed.Scheme == "wss" || parsed.Scheme == "https" {
+						hostPort += ":443"
+					} else {
+						hostPort += ":80"
+					}
+				}
+				conn, err := net.DialTimeout("tcp", hostPort, 2*time.Second)
+				if err != nil {
+					steps = append(steps, DiagnosticStep{
+						Name:         "Server Combiner Connectivity",
+						Description:  "Verify reachability of remote combiner server",
+						Status:       "error",
+						ErrorMessage: fmt.Sprintf("Failed to reach combiner server at %s: %v", hostPort, err),
+					})
+				} else {
+					conn.Close()
+					steps = append(steps, DiagnosticStep{
+						Name:        "Server Combiner Connectivity",
+						Description: "Verify reachability of remote combiner server",
+						Status:      "success",
+						Details:     fmt.Sprintf("Successfully connected to combiner server at %s.", hostPort),
+					})
+				}
+			}
+		}
+	}
+
+	// 4. Live Core/Routing Loopback (Checks SOCKS routing if running)
+	engineRunning := selector.GetEngine().State() == selector.EngineStateRunning ||
+		bonding_client.GetBondingEngine().State() == bonding_client.BondingStateRunning
+
+	if engineRunning && socksAvailable {
+		// Test exit path routing through local SOCKS port
+		client := &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return net.DialTimeout("tcp", socksAddr, 2*time.Second)
+				},
+			},
+			Timeout: 3 * time.Second,
+		}
+		resp, err := client.Get("http://www.google.com/generate_204")
+		if err != nil {
+			steps = append(steps, DiagnosticStep{
+				Name:         "Proxy Traffic Routing Check",
+				Description:  "Verify traffic can route through the engine proxy",
+				Status:       "warning",
+				ErrorMessage: fmt.Sprintf("Traffic routing loopback failed: %v", err),
+			})
+		} else {
+			resp.Body.Close()
+			steps = append(steps, DiagnosticStep{
+				Name:        "Proxy Traffic Routing Check",
+				Description: "Verify traffic can route through the engine proxy",
+				Status:      "success",
+				Details:     "Traffic successfully routed through proxy (Google 204 received).",
+			})
+		}
+	} else {
+		steps = append(steps, DiagnosticStep{
+			Name:        "Proxy Traffic Routing Check",
+			Description: "Verify traffic can route through the engine proxy",
+			Status:      "warning",
+			Details:     "Skipped: Proxy loopback test requires the engine to be running.",
+		})
+	}
+
+	c.JSON(http.StatusOK, steps)
 }
 
