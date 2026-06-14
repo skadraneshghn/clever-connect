@@ -460,11 +460,7 @@ type V2RaySecurityEvent struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	Timestamp   time.Time `json:"timestamp" gorm:"index"`
 	IPAddress   string    `json:"ip_address" gorm:"size:100;index"`
-<<<<<<< HEAD
-	EventType   string    `json:"event_type"`   // failed_auth, port_scan
-=======
 	EventType   string    `json:"event_type"` // failed_auth, port_scan
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	ActionTaken string    `json:"action_taken"` // banned, warned
 }
 
@@ -740,42 +736,5 @@ type BondingArtery struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Network Tools - Domain Checker Models
-// ──────────────────────────────────────────────────────────────────────────────
 
-type Domain struct {
-	ID            string    `gorm:"primaryKey" json:"id"` // UUID
-	DomainName    string    `gorm:"size:191;uniqueIndex;not null" json:"domain_name"`
-	Status        string    `json:"status" gorm:"size:50;index"` // pending, checking, online, offline, timeout, nxdomain
-	Category      string    `json:"category" gorm:"size:100;index;default:'ALL'"` // Category name, default 'ALL'
-	IPAddresses   string    `json:"ip_addresses"`
-	HTTPStatus    int       `json:"http_status"`
-	LatencyMs     int       `json:"latency_ms" gorm:"index"`
-	TLSStatus     bool      `json:"tls_status"`
-	TLSExpiryDays int       `json:"tls_expiry_days"`
-	LastCheckedAt time.Time `json:"last_checked_at" gorm:"index"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-}
 
-type ScannerSource struct {
-	ID          uint       `gorm:"primaryKey" json:"id"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	Name        string     `json:"name"`
-	URL         string     `json:"url"`
-	Type        string     `json:"type"` // Enum: cidr, proxyip, domain
-	IsEnabled   bool       `json:"is_enabled" gorm:"default:true"`
-	LastFetched *time.Time `json:"last_fetched"`
-}
-
-type ScannerConfig struct {
-	ID                  uint      `gorm:"primaryKey" json:"id"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
-	DeepTestEnabled     bool      `json:"deep_test_enabled" gorm:"default:true"`
-	TargetSNI           string    `json:"target_sni"`
-	AttemptCount        int       `json:"attempt_count" gorm:"default:3"`
-	MinSuccessThreshold int       `json:"min_success_threshold" gorm:"default:2"`
-}

@@ -13,6 +13,7 @@ import (
 	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/downloader"
 	"clever-connect/internal/ehcocore"
+	"clever-connect/internal/geo"
 	"clever-connect/internal/handlers"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
@@ -21,10 +22,9 @@ import (
 	"clever-connect/internal/spotify"
 	"clever-connect/internal/telegram"
 	"clever-connect/internal/torrent"
+	"clever-connect/internal/v2ray/scanner"
 	"clever-connect/internal/v2ray/sub"
 	"clever-connect/internal/v2ray/traffic"
-	"clever-connect/internal/v2ray/scanner"
-	"clever-connect/internal/geo"
 	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
@@ -201,7 +201,6 @@ func main() {
 	soroushHandler := handlers.NewSoroushHandler(cfg)
 	v2rayHandler := handlers.NewV2RayHandler(cfg)
 	domainHandler := handlers.NewDomainHandler(cfg)
-<<<<<<< HEAD
 	geoHandler := handlers.NewGeoHandler(cfg)
 	dnsHandler := handlers.NewDNSHandler(cfg)
 	bondingHandler := handlers.NewBondingHandler(cfg)
@@ -211,8 +210,6 @@ func main() {
 	if cfg.AppMode == "server" {
 		combinerHandler.AutoStartCombiner()
 	}
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 
 	// API Group
 	api := router.Group("/api")
@@ -348,7 +345,6 @@ func main() {
 			protected.DELETE("/domains/:id", domainHandler.DeleteSingle)
 			protected.POST("/domains/delete", domainHandler.DeleteBulk)
 
-<<<<<<< HEAD
 			// Geo Geolocation & CDN Endpoints
 			protected.POST("/geo/resolve", geoHandler.Resolve)
 			protected.GET("/settings/apikeys", geoHandler.GetAPIKeys)
@@ -370,8 +366,6 @@ func main() {
 			protected.GET("/dns/metrics", dnsHandler.GetMetrics)
 			protected.POST("/dns/core/apply", dnsHandler.ApplyActiveResolver)
 
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 			// File Manager API Endpoints
 			protected.GET("/files/list", fileHandler.ListDirectory)
 			protected.GET("/files/search", fileHandler.SearchFiles)
@@ -520,8 +514,6 @@ func main() {
 		logger.Fatal("Core", "Failed to run server", "error", err)
 	}
 }
-
-
 
 func serveEmbeddedSPA(embedFS fs.FS) gin.HandlerFunc {
 	fileServer := http.FileServer(http.FS(embedFS))

@@ -1,18 +1,15 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { 
-  FiSearch, FiPlay, FiCheckCircle, FiXCircle, 
+import {
+  FiSearch, FiPlay, FiCheckCircle, FiXCircle,
   FiClock, FiGlobe, FiPlus, FiChevronDown, FiChevronUp,
   FiUploadCloud, FiDownload, FiFolderPlus, FiFilter,
   FiFileText, FiFolder, FiTrash2
 } from 'react-icons/fi';
 import { useDomainStore } from '../store/domainStore';
 import { useAuthStore } from '../store/authStore';
-<<<<<<< HEAD
 import { IPResolveBadge } from '../components/atoms/IPResolveBadge';
 import { useGeoStore } from '../store/geoStore';
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 
 const StatusBadge = ({ status }: { status: string }) => {
   switch (status) {
@@ -34,15 +31,15 @@ const StatusBadge = ({ status }: { status: string }) => {
   }
 };
 
-const DomainRow = React.memo(({ 
-  domainId, 
-  style, 
+const DomainRow = React.memo(({
+  domainId,
+  style,
   isSelected,
   onToggleSelect,
   onCheckSingle,
   onDeleteSingle
-}: { 
-  domainId: string; 
+}: {
+  domainId: string;
   style: React.CSSProperties;
   isSelected: boolean;
   onToggleSelect: (id: string) => void;
@@ -54,7 +51,7 @@ const DomainRow = React.memo(({
   if (!domain) return null;
 
   const isChecking = domain.status === 'checking';
-  
+
   let rowStyle: React.CSSProperties = {
     ...style,
     borderBottom: '1px solid var(--color-brand-border)',
@@ -75,8 +72,8 @@ const DomainRow = React.memo(({
       style={rowStyle}
     >
       <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-        <input 
-          type="checkbox" 
+        <input
+          type="checkbox"
           checked={isSelected}
           onChange={() => onToggleSelect(domainId)}
           style={{ cursor: 'pointer', accentColor: 'var(--color-brand)', transform: 'scale(1.1)' }}
@@ -102,21 +99,19 @@ const DomainRow = React.memo(({
         <StatusBadge status={domain.status} />
       </td>
       <td style={{ padding: '10px 12px', color: 'var(--color-brand-text)' }}>
-<<<<<<< HEAD
-        {domain.ip_addresses ? (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {domain.ip_addresses.split(',').map((ip: string) => {
-              const cleanIp = ip.trim();
-              return cleanIp ? <IPResolveBadge key={cleanIp} ip={cleanIp} /> : null;
-            })}
-          </div>
-        ) : (
-          '-'
-        )}
-=======
-        {domain.ip_addresses || '-'}
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
-      </td>
+        {
+          domain.ip_addresses ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {domain.ip_addresses.split(',').map((ip: string) => {
+                const cleanIp = ip.trim();
+                return cleanIp ? <IPResolveBadge key={cleanIp} ip={cleanIp} /> : null;
+              })}
+            </div>
+          ) : (
+            '-'
+          )
+        }
+      </td >
       <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, color: getLatencyColor(domain.latency_ms) }}>
         {domain.latency_ms > 0 ? `${domain.latency_ms}ms` : '-'}
       </td>
@@ -156,16 +151,16 @@ const DomainRow = React.memo(({
           </button>
         </div>
       </td>
-    </tr>
+    </tr >
   );
 });
 
 export const DomainCheckerPage: React.FC = () => {
   const { token } = useAuthStore();
   const { domains, domainIds, setDomains, appendDomains, updateDomain } = useDomainStore();
-  
+
   const [ws, setWs] = useState<WebSocket | null>(null);
-  
+
   // Filtering & Pagination States
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('ALL');
@@ -173,10 +168,10 @@ export const DomainCheckerPage: React.FC = () => {
   const [tlsFilter, setTlsFilter] = useState('');
   const [httpStatusFilter, setHttpStatusFilter] = useState('');
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
-  
+
   const [categories, setCategories] = useState<string[]>(['ALL']);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  
+
   const [sortBy, setSortBy] = useState<string>('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
@@ -188,7 +183,7 @@ export const DomainCheckerPage: React.FC = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isNewCatModalOpen, setIsNewCatModalOpen] = useState(false);
   const [newCatName, setNewCatName] = useState('');
-  
+
   // Add Modal Internal States
   const [addMethod, setAddMethod] = useState<'text' | 'file'>('text');
   const [rawTextImport, setRawTextImport] = useState('');
@@ -244,7 +239,7 @@ export const DomainCheckerPage: React.FC = () => {
     try {
       const activeToken = token || localStorage.getItem('cc_client_token') || '';
       const limit = 100;
-      
+
       let url = `/api/domains?limit=${limit}&offset=${pageNum * limit}&sortBy=${sortBy}&sortOrder=${sortOrder}`;
       if (selectedCategory && selectedCategory !== 'ALL') {
         url += `&category=${encodeURIComponent(selectedCategory)}`;
@@ -275,7 +270,7 @@ export const DomainCheckerPage: React.FC = () => {
         }
         setHasMore(incoming.length === limit);
         setPage(pageNum);
-        
+
         if (data.stats) {
           setDbStats(data.stats);
         }
@@ -296,18 +291,18 @@ export const DomainCheckerPage: React.FC = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const activeToken = token || localStorage.getItem('cc_client_token') || '';
     const wsUrl = `${protocol}//${window.location.host}/ws?token=${activeToken}`;
-    
+
     const socket = new WebSocket(wsUrl);
-    
+
     socket.onopen = () => console.log('Domain checker WS connected');
-    
+
     socket.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'DOMAIN_CHECK_RESULT' && msg.data) {
           const oldDomain = useDomainStore.getState().domains[msg.data.id];
           updateDomain(msg.data);
-          
+
           if (msg.data.status !== 'checking' && msg.data.status !== 'pending') {
             setCheckedAllCount(prev => prev + 1);
           }
@@ -318,7 +313,7 @@ export const DomainCheckerPage: React.FC = () => {
               if (oldDomain.status === 'online') next.online = Math.max(0, next.online - 1);
               else if (['offline', 'timeout', 'nxdomain'].includes(oldDomain.status)) next.offline = Math.max(0, next.offline - 1);
               else if (oldDomain.status === 'checking') next.checking = Math.max(0, next.checking - 1);
-              
+
               if (oldDomain.tls_status) next.ssl_valid = Math.max(0, next.ssl_valid - 1);
             } else {
               // fallback: if not in memory (paginated out), it was probably "checking"
@@ -334,19 +329,16 @@ export const DomainCheckerPage: React.FC = () => {
             return next;
           });
         }
-<<<<<<< HEAD
         if (msg.type === 'GEO_RESOLVED' && msg.data) {
           useGeoStore.getState().updateGeoInfo(msg.data);
         }
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
       } catch (err) {
         // ignore
       }
     };
-    
+
     setWs(socket);
-    
+
     return () => socket.close();
   }, [token]);
 
@@ -400,12 +392,12 @@ export const DomainCheckerPage: React.FC = () => {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target?.result as string;
       if (!text) return;
-      
+
       let parsedDomains: string[] = [];
       if (file.name.endsWith('.csv')) {
         const lines = text.split(/\r?\n/);
@@ -413,7 +405,7 @@ export const DomainCheckerPage: React.FC = () => {
           const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
           let domainColIndex = headers.findIndex(h => h.includes('domain') || h.includes('host') || h.includes('url'));
           if (domainColIndex === -1) domainColIndex = 0; // fallback to first column
-          
+
           for (let i = 1; i < lines.length; i++) {
             const row = lines[i].split(',');
             if (row.length > domainColIndex) {
@@ -425,7 +417,7 @@ export const DomainCheckerPage: React.FC = () => {
       } else {
         parsedDomains = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
       }
-      
+
       setFileParsedCount(parsedDomains.length);
       setFileDomains(parsedDomains);
     };
@@ -444,19 +436,19 @@ export const DomainCheckerPage: React.FC = () => {
 
     const targetCategory = isCreatingNewCatInImport ? customImportCat.trim() : importCategory;
     if (!targetCategory) return;
-    
+
     setIsImporting(true);
     try {
       const activeToken = token || localStorage.getItem('cc_client_token') || '';
       const res = await fetch('/api/domains', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Authorization': `Bearer ${activeToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           domains: list,
-          category: targetCategory 
+          category: targetCategory
         })
       });
       if (res.ok) {
@@ -491,7 +483,7 @@ export const DomainCheckerPage: React.FC = () => {
   const handleCheckSelected = async () => {
     if (selectedIds.size === 0) return;
     const activeToken = token || localStorage.getItem('cc_client_token') || '';
-    
+
     const idsArray = Array.from(selectedIds);
     setCheckedAllCount(0);
     setTotalAllToCheck(idsArray.length);
@@ -503,23 +495,23 @@ export const DomainCheckerPage: React.FC = () => {
 
     await fetch('/api/domains/check/bulk', {
       method: 'POST',
-      headers: { 
+      headers: {
         'Authorization': `Bearer ${activeToken}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         ids: idsArray,
         threads: runnerThreads,
         timeout: runnerTimeout
       })
     });
-    
+
     setSelectedIds(new Set());
   };
 
   const handleCheckCategory = async () => {
     const activeToken = token || localStorage.getItem('cc_client_token') || '';
-    
+
     setCheckedAllCount(0);
     setTotalAllToCheck(0);
     setIsCheckingAll(true);
@@ -535,18 +527,18 @@ export const DomainCheckerPage: React.FC = () => {
 
     const res = await fetch('/api/domains/check/bulk', {
       method: 'POST',
-      headers: { 
+      headers: {
         'Authorization': `Bearer ${activeToken}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         ids: [],
         category: selectedCategory,
         threads: runnerThreads,
         timeout: runnerTimeout
       })
     });
-    
+
     if (res.ok) {
       const data = await res.json();
       if (data && data.count) {
@@ -558,7 +550,7 @@ export const DomainCheckerPage: React.FC = () => {
 
   const handleDeleteSingle = useCallback(async (id: string) => {
     if (!window.confirm("Are you sure you want to delete this domain?")) return;
-    
+
     const activeToken = token || localStorage.getItem('cc_client_token') || '';
     const res = await fetch(`/api/domains/${id}`, {
       method: 'DELETE',
@@ -577,7 +569,7 @@ export const DomainCheckerPage: React.FC = () => {
     const activeToken = token || localStorage.getItem('cc_client_token') || '';
     const res = await fetch('/api/domains/delete', {
       method: 'POST',
-      headers: { 
+      headers: {
         'Authorization': `Bearer ${activeToken}`,
         'Content-Type': 'application/json'
       },
@@ -595,11 +587,11 @@ export const DomainCheckerPage: React.FC = () => {
     const activeToken = token || localStorage.getItem('cc_client_token') || '';
     const res = await fetch('/api/domains/delete', {
       method: 'POST',
-      headers: { 
+      headers: {
         'Authorization': `Bearer ${activeToken}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         category: selectedCategory,
         all: true
       })
@@ -636,10 +628,10 @@ export const DomainCheckerPage: React.FC = () => {
       d.tls_status ? 'YES' : 'NO',
       d.tls_expiry_days || ''
     ]);
-    
-    const csvContent = "data:text/csv;charset=utf-8," 
+
+    const csvContent = "data:text/csv;charset=utf-8,"
       + [headers.join(','), ...rows.map(e => e.map(val => `"${val}"`).join(","))].join("\n");
-      
+
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
@@ -652,9 +644,9 @@ export const DomainCheckerPage: React.FC = () => {
   const exportToTXT = () => {
     const list = domainIds.map(id => domains[id]).filter(Boolean);
     const textContent = list.map(d => d.domain_name).join('\n');
-    
+
     const element = document.createElement("a");
-    const file = new Blob([textContent], {type: 'text/plain'});
+    const file = new Blob([textContent], { type: 'text/plain' });
     element.href = URL.createObjectURL(file);
     element.download = `domains_${selectedCategory.toLowerCase()}.txt`;
     document.body.appendChild(element);
@@ -720,7 +712,7 @@ export const DomainCheckerPage: React.FC = () => {
           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-brand-heading)', display: 'flex', alignItems: 'center', gap: 6 }}>
             <FiFolder /> Categories
           </span>
-          <button 
+          <button
             onClick={() => setIsNewCatModalOpen(true)}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', padding: 0 }}
             title="Create New Category"
@@ -764,7 +756,7 @@ export const DomainCheckerPage: React.FC = () => {
 
       {/* RIGHT CONTENT: Toolbar, Filters & Table */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 20, minWidth: 0 }}>
-        
+
         {/* Header toolbar */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
           <div>
@@ -775,15 +767,15 @@ export const DomainCheckerPage: React.FC = () => {
               Real-time TLS/DNS/TCP network telemetry and health verification
             </p>
           </div>
-          
+
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {/* Runner Config panel */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--color-brand-card)', border: '1px solid var(--color-brand-border)', padding: '5px 10px', borderRadius: 8 }}>
               <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-text)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Runner Options</span>
-              
+
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, borderLeft: '1px solid var(--color-brand-border)', paddingLeft: 8 }}>
                 <span style={{ fontSize: 10, color: 'var(--color-brand-muted)', fontWeight: 600 }}>THREADS:</span>
-                <input 
+                <input
                   type="number"
                   min="1"
                   max="1000"
@@ -827,25 +819,25 @@ export const DomainCheckerPage: React.FC = () => {
               </div>
             </div>
 
-            <button 
-              className="btn btn--secondary btn--sm" 
+            <button
+              className="btn btn--secondary btn--sm"
               onClick={() => setIsAddModalOpen(true)}
               style={{ display: 'flex', alignItems: 'center', gap: 6 }}
             >
               <FiPlus /> Add Domains
             </button>
-            
-            <button 
-              className="btn btn--primary btn--sm" 
+
+            <button
+              className="btn btn--primary btn--sm"
               onClick={handleCheckCategory}
               style={{ display: 'flex', alignItems: 'center', gap: 6 }}
             >
               <FiPlay /> Test Category ({selectedCategory})
             </button>
 
-            
+
             <div style={{ position: 'relative', display: 'inline-block' }}>
-              <button 
+              <button
                 className="btn btn--secondary btn--sm"
                 onClick={(e) => {
                   const menu = e.currentTarget.nextElementSibling as HTMLElement;
@@ -861,7 +853,7 @@ export const DomainCheckerPage: React.FC = () => {
               >
                 <FiDownload /> Export
               </button>
-              <div 
+              <div
                 style={{
                   display: 'none',
                   position: 'absolute',
@@ -876,13 +868,13 @@ export const DomainCheckerPage: React.FC = () => {
                   width: 140
                 }}
               >
-                <button 
+                <button
                   onClick={exportToTXT}
                   style={{ display: 'block', width: '100%', padding: '8px 12px', border: 'none', background: 'none', textAlign: 'left', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-text)' }}
                 >
                   Export TXT List
                 </button>
-                <button 
+                <button
                   onClick={exportToCSV}
                   style={{ display: 'block', width: '100%', padding: '8px 12px', border: 'none', background: 'none', textAlign: 'left', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-text)', borderTop: '1px solid var(--color-brand-border)' }}
                 >
@@ -896,7 +888,7 @@ export const DomainCheckerPage: React.FC = () => {
         {/* Telemetry Card */}
         <div className="g-card" style={{ padding: 20 }}>
           <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
-            
+
             <div style={{ display: 'flex', width: '100%', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-around', gap: 20 }}>
               {/* Sonar Radar Graphic */}
               <div style={{ position: 'relative', width: 100, height: 100, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.25)', background: 'radial-gradient(circle, rgba(255, 107, 44, 0.05) 0%, rgba(0,0,0,0) 70%)', overflow: 'hidden', flexShrink: 0 }}>
@@ -904,12 +896,12 @@ export const DomainCheckerPage: React.FC = () => {
                 <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.1)', transform: 'scale(0.33)' }} />
                 <div style={{ position: 'absolute', width: '100%', height: '1px', background: 'rgba(255, 107, 44, 0.12)', top: '50%', left: 0 }} />
                 <div style={{ position: 'absolute', height: '100%', width: '1px', background: 'rgba(255, 107, 44, 0.12)', left: '50%', top: 0 }} />
-                
+
                 {/* Blinking center spot */}
                 <div style={{ position: 'absolute', width: 6, height: 6, borderRadius: '50%', background: 'var(--color-brand)', boxShadow: '0 0 10px var(--color-brand)', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 5 }} />
-                
+
                 {/* Sweep ray */}
-                <div 
+                <div
                   className={`clip-radar ${isChecking ? 'animate-radar-sweep' : 'opacity-20'}`}
                   style={{
                     position: 'absolute',
@@ -929,7 +921,7 @@ export const DomainCheckerPage: React.FC = () => {
                 <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 10 }}>
                   {isChecking ? 'DOMAIN PROBING IN PROGRESS...' : 'TELEMETRY SCAN IDLE'}
                 </div>
-                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 16 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 16 }}>
                   <div>
                     <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-text)', fontWeight: 600, textTransform: 'uppercase' }}>Total</span>
                     <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
@@ -1010,9 +1002,9 @@ export const DomainCheckerPage: React.FC = () => {
                 }}
               />
             </div>
-            
+
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <button 
+              <button
                 onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
                 className={`btn btn--sm ${showAdvancedFilters ? 'btn--primary' : 'btn--secondary'}`}
                 style={{ display: 'flex', alignItems: 'center', gap: 6 }}
@@ -1309,7 +1301,7 @@ export const DomainCheckerPage: React.FC = () => {
                 {/* Category Select / Creation */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-text)' }}>Target Category</label>
-                  
+
                   {!isCreatingNewCatInImport ? (
                     <div style={{ display: 'flex', gap: 10 }}>
                       <select
@@ -1329,9 +1321,9 @@ export const DomainCheckerPage: React.FC = () => {
                           <option key={cat} value={cat}>{cat}</option>
                         ))}
                       </select>
-                      <button 
-                        type="button" 
-                        className="btn btn--secondary" 
+                      <button
+                        type="button"
+                        className="btn btn--secondary"
                         onClick={() => setIsCreatingNewCatInImport(true)}
                       >
                         New
@@ -1354,9 +1346,9 @@ export const DomainCheckerPage: React.FC = () => {
                           color: 'var(--color-brand-heading)'
                         }}
                       />
-                      <button 
-                        type="button" 
-                        className="btn btn--secondary" 
+                      <button
+                        type="button"
+                        className="btn btn--secondary"
                         onClick={() => setIsCreatingNewCatInImport(false)}
                       >
                         Select Existing
@@ -1406,7 +1398,7 @@ export const DomainCheckerPage: React.FC = () => {
                     }}
                   />
                 ) : (
-                  <div 
+                  <div
                     onClick={() => fileInputRef.current?.click()}
                     style={{
                       height: 180, border: '2px dashed var(--color-brand-border)',
@@ -1438,18 +1430,18 @@ export const DomainCheckerPage: React.FC = () => {
 
             {/* Actions */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button 
-                type="button" 
-                className="btn btn--secondary btn--sm" 
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm"
                 onClick={() => !isImporting && setIsAddModalOpen(false)}
                 disabled={isImporting}
                 style={{ opacity: isImporting ? 0.6 : 1, cursor: isImporting ? 'not-allowed' : 'pointer' }}
               >
                 Cancel
               </button>
-              <button 
-                type="button" 
-                className="btn btn--primary btn--sm" 
+              <button
+                type="button"
+                className="btn btn--primary btn--sm"
                 onClick={handleImportSubmit}
                 disabled={isImporting}
                 style={{ opacity: isImporting ? 0.6 : 1, cursor: isImporting ? 'not-allowed' : 'pointer' }}
@@ -1507,16 +1499,16 @@ export const DomainCheckerPage: React.FC = () => {
               }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button 
-                type="button" 
-                className="btn btn--secondary btn--sm" 
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm"
                 onClick={() => setIsNewCatModalOpen(false)}
               >
                 Cancel
               </button>
-              <button 
-                type="button" 
-                className="btn btn--primary btn--sm" 
+              <button
+                type="button"
+                className="btn btn--primary btn--sm"
                 onClick={handleCreateCategory}
               >
                 Create

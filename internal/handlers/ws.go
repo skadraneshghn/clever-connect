@@ -16,17 +16,17 @@ import (
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/dns"
 	"clever-connect/internal/domainchecker"
 	"clever-connect/internal/downloader"
 	"clever-connect/internal/filecore"
+	"clever-connect/internal/geo"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/soroush"
 	"clever-connect/internal/spotify"
 	"clever-connect/internal/torrent"
 	"clever-connect/internal/v2ray/scanner"
-	"clever-connect/internal/dns"
-	"clever-connect/internal/geo"
 	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
@@ -110,7 +110,6 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 		}
 	}()
 
-<<<<<<< HEAD
 	// DNS Tester Listener
 	dns.GetEngine().RegisterListener(clientID, func(stats dns.DNSJobStats, event string, details interface{}) {
 		payload := gin.H{
@@ -130,8 +129,6 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 		dns.GetEngine().UnregisterListener(clientID)
 	}()
 
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	domainchecker.GetEngine().RegisterListener(clientID, func(result domainchecker.DomainResult) {
 		payload := gin.H{
 			"type": "DOMAIN_CHECK_RESULT",
@@ -154,7 +151,6 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	})
 	defer domainchecker.GetEngine().UnregisterListener(clientID)
 
-<<<<<<< HEAD
 	// Geo Engine Listener
 	geo.GetEngine().RegisterListener(clientID, func(ip string, reg *models.IPRegistry) {
 		payload := gin.H{
@@ -168,8 +164,6 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	})
 	defer geo.GetEngine().UnregisterListener(clientID)
 
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	// Read loop (to handle inbound actions like scanner:start, scanner:stop)
 	go func() {
 		defer close(doneChan)
@@ -191,10 +185,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			case "scanner:start":
 				var req struct {
 					TargetCIDRs        []string `json:"target_cidrs"`
-<<<<<<< HEAD
 					TargetCDNs         []string `json:"target_cdns"`
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 					SelectedPorts      []int    `json:"selected_ports"`
 					ConcurrencyLimit   int      `json:"concurrency_limit"`
 					MaxRateLimit       float64  `json:"max_rate_limit"`
@@ -259,10 +250,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 
 						scanCfg = scanner.ScanConfig{
 							TargetCIDRs:        req.TargetCIDRs,
-<<<<<<< HEAD
 							TargetCDNs:         req.TargetCDNs,
-=======
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 							SelectedPorts:      req.SelectedPorts,
 							ConcurrencyLimit:   req.ConcurrencyLimit,
 							MaxRateLimit:       req.MaxRateLimit,
@@ -471,7 +459,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 										}
 										batchWg.Done()
 									}()
-									
+
 									// Validate IP address format
 									if net.ParseIP(ipVal) == nil {
 										return
@@ -582,43 +570,43 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 				}
 
 				msg = gin.H{
-					"type":                  "telemetry",
-					"cpu":                   cpu,
-					"memory":                memory,
-					"disk":                  disk,
-					"connsCount":            len(clients),
-					"uploadSpeed":           uploadSpeed,
-					"downloadSpeed":         downloadSpeed,
-					"totalDownload":         totalDownload,
-					"totalUpload":           totalUpload,
-					"clients":               clients,
-					"cpu_cores_percent":     sysStats.CPUCoresPercent,
-					"cpu_mhz":               sysStats.CPUMhz,
-					"mem_total_gb":          sysStats.MemTotalGB,
-					"mem_used_gb":           sysStats.MemUsedGB,
-					"mem_free_gb":           sysStats.MemFreeGB,
-					"swap_total_gb":         sysStats.SwapTotalGB,
-					"swap_used_gb":          sysStats.SwapUsedGB,
-					"swap_percent":          sysStats.SwapPercent,
-					"disk_total_gb":         sysStats.DiskTotalGB,
-					"disk_used_gb":          sysStats.DiskUsedGB,
-					"disk_free_gb":          sysStats.DiskFreeGB,
-					"disk_read_bytes_sec":   sysStats.DiskReadBytesSec,
-					"disk_write_bytes_sec":  sysStats.DiskWriteBytesSec,
-					"net_recv_bytes_sec":    sysStats.NetRecvBytesSec,
-					"net_sent_bytes_sec":    sysStats.NetSentBytesSec,
-					"cpu_temp":              sysStats.CPUTemp,
-					"uptime_seconds":        sysStats.UptimeSeconds,
-					"boot_time":             sysStats.BootTime,
-					"os_platform":           sysStats.OSPlatform,
-					"os_kernel":             sysStats.OSKernel,
-					"app_mem_mb":            sysStats.AppMemMB,
-					"go_version":            runtime.Version(),
-					"os_runtime":            runtime.GOOS,
-					"active_leeches":        activeLeechCount,
-					"active_torrents":       activeTorrentCount,
-					"active_scheds":         activeSchedulerCount,
-					"soroush_tunnel":        soroush.GetStatus(),
+					"type":                 "telemetry",
+					"cpu":                  cpu,
+					"memory":               memory,
+					"disk":                 disk,
+					"connsCount":           len(clients),
+					"uploadSpeed":          uploadSpeed,
+					"downloadSpeed":        downloadSpeed,
+					"totalDownload":        totalDownload,
+					"totalUpload":          totalUpload,
+					"clients":              clients,
+					"cpu_cores_percent":    sysStats.CPUCoresPercent,
+					"cpu_mhz":              sysStats.CPUMhz,
+					"mem_total_gb":         sysStats.MemTotalGB,
+					"mem_used_gb":          sysStats.MemUsedGB,
+					"mem_free_gb":          sysStats.MemFreeGB,
+					"swap_total_gb":        sysStats.SwapTotalGB,
+					"swap_used_gb":         sysStats.SwapUsedGB,
+					"swap_percent":         sysStats.SwapPercent,
+					"disk_total_gb":        sysStats.DiskTotalGB,
+					"disk_used_gb":         sysStats.DiskUsedGB,
+					"disk_free_gb":         sysStats.DiskFreeGB,
+					"disk_read_bytes_sec":  sysStats.DiskReadBytesSec,
+					"disk_write_bytes_sec": sysStats.DiskWriteBytesSec,
+					"net_recv_bytes_sec":   sysStats.NetRecvBytesSec,
+					"net_sent_bytes_sec":   sysStats.NetSentBytesSec,
+					"cpu_temp":             sysStats.CPUTemp,
+					"uptime_seconds":       sysStats.UptimeSeconds,
+					"boot_time":            sysStats.BootTime,
+					"os_platform":          sysStats.OSPlatform,
+					"os_kernel":            sysStats.OSKernel,
+					"app_mem_mb":           sysStats.AppMemMB,
+					"go_version":           runtime.Version(),
+					"os_runtime":           runtime.GOOS,
+					"active_leeches":       activeLeechCount,
+					"active_torrents":      activeTorrentCount,
+					"active_scheds":        activeSchedulerCount,
+					"soroush_tunnel":       soroush.GetStatus(),
 				}
 			}
 
@@ -686,7 +674,7 @@ func (h *WSHandler) ServeWSJobs(c *gin.Context) {
 
 		// Run bidirectional piping
 		errChan := make(chan error, 2)
-		
+
 		// Copy client -> server
 		go func() {
 			for {

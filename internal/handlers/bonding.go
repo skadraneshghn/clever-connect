@@ -161,6 +161,7 @@ func (h *BondingHandler) ListArteries(c *gin.Context) {
 }
 
 // ServeTelemetryWS serves a WebSocket connection for live bonding telemetry.
+// Routes to whichever engine is currently active (selector or bonding).
 func (h *BondingHandler) ServeTelemetryWS(c *gin.Context) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
@@ -173,18 +174,36 @@ func (h *BondingHandler) ServeTelemetryWS(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	engine := selector.GetEngine()
+	// Determine which engine is running and stream from the correct channel
+	bondingEngine := bonding_client.GetBondingEngine()
+	selectorEngine := selector.GetEngine()
 
-	// Read from telemetry channel and write to WS
-	for {
-		select {
-		case status, ok := <-engine.TelemetryChan:
-			if !ok {
-				return
+	if bondingEngine.State() == bonding_client.BondingStateRunning {
+		// Mode B: stream from bonding engine telemetry
+		for {
+			select {
+			case status, ok := <-bondingEngine.TelemetryChan:
+				if !ok {
+					return
+				}
+				if err := conn.WriteJSON(status); err != nil {
+					return
+				}
 			}
-			if err := conn.WriteJSON(status); err != nil {
-				return
+		}
+	} else {
+		// Mode A / default: stream from selector engine telemetry
+		for {
+			select {
+			case status, ok := <-selectorEngine.TelemetryChan:
+				if !ok {
+					return
+				}
+				if err := conn.WriteJSON(status); err != nil {
+					return
+				}
 			}
 		}
 	}
 }
+
