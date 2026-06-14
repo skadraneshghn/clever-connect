@@ -30,12 +30,9 @@ import (
 	rawpebble "github.com/cockroachdb/pebble"
 
 	"github.com/gin-gonic/gin"
-<<<<<<< HEAD
-=======
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/include"
 	boxOption "github.com/sagernet/sing-box/option"
->>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	"crypto/tls"
 	"golang.org/x/time/rate"
 )
