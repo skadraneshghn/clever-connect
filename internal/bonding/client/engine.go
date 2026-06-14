@@ -179,6 +179,9 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 		return fmt.Errorf("failed to start core: %w", err)
 	}
 
+	// Add a pacing delay to allow Xray to bind loopback ports (prevent connection refused on immediate dial)
+	time.Sleep(200 * time.Millisecond)
+
 	// Initialize session + dispatcher
 	e.mu.Lock()
 	e.session = session.NewSession(256)
@@ -645,6 +648,12 @@ func (e *BondingEngine) replaceDeadArtery(ctx context.Context, pathID string) {
 
 	replacement := e.candidatePool[0]
 	e.candidatePool = e.candidatePool[1:]
+
+	// Update activeNodes config
+	var idx int
+	if _, err := fmt.Sscanf(pathID, "artery-%d", &idx); err == nil && idx >= 0 && idx < len(e.activeNodes) {
+		e.activeNodes[idx] = replacement
+	}
 
 	// Reset metrics
 	metrics := control.NewPathMetrics(pathID)

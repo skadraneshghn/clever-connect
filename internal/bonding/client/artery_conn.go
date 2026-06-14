@@ -133,7 +133,7 @@ func (ac *ArteryConn) Connect() error {
 	if ac.pskHex != "" && ac.originID != "" {
 		pskBytes, err := hex.DecodeString(ac.pskHex)
 		if err == nil {
-			ts := time.Now().Unix()
+			ts := time.Now().Unix() / 30
 			message := fmt.Sprintf("%s:%s:%d", ac.originID, ac.tag, ts)
 			mac := hmac.New(sha256.New, pskBytes)
 			mac.Write([]byte(message))

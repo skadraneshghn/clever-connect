@@ -229,9 +229,10 @@ func (c *Combiner) validateToken(token, arteryID string) bool {
 		return false
 	}
 
-	now := time.Now().Unix()
-	for delta := int64(0); delta <= 300; delta += 30 {
-		ts := now - delta
+	window := time.Now().Unix() / 30
+	// Allow client clock to be up to 1 minute ahead (delta = -2) or 5 minutes behind (delta = 10)
+	for delta := int64(-2); delta <= 10; delta++ {
+		ts := window - delta
 		message := fmt.Sprintf("%s:%s:%d", c.originID, arteryID, ts)
 		mac := hmac.New(sha256.New, pskBytes)
 		mac.Write([]byte(message))
