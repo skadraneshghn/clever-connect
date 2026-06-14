@@ -75,7 +75,7 @@ func TestScannerEngineStartStop(t *testing.T) {
 		TopLimit:         10,
 	}
 
-	err = engine.StartScan(context.Background(), cfg)
+	err = engine.StartScan(context.Background(), cfg, false)
 	if err != nil {
 		t.Fatalf("failed to start scan: %v", err)
 	}

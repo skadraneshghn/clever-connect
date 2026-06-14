@@ -575,7 +575,7 @@ export const LeechPage: React.FC = () => {
 									{job.status === 'completed' && (
 										<>
 											<a 
-												href={`/api/files/stream?path=${encodeURIComponent(`${job.save_directory}/${job.filename}`)}&download=true&token=${encodeURIComponent(token || '')}`}
+												href={`/api/files/download?path=${encodeURIComponent(`${job.save_directory}/${job.filename}`)}&token=${encodeURIComponent(token || '')}`}
 												download
 												className="btn btn--sm btn--primary"
 												style={{ display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none', height: 32 }}

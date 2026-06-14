@@ -1,18 +1,22 @@
 package handlers
 
 import (
-	"fmt"
+	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
+	"clever-connect/internal/domainchecker"
 	"clever-connect/internal/downloader"
 	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
@@ -21,6 +25,8 @@ import (
 	"clever-connect/internal/spotify"
 	"clever-connect/internal/torrent"
 	"clever-connect/internal/v2ray/scanner"
+	"clever-connect/internal/dns"
+	"clever-connect/internal/geo"
 	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
@@ -67,13 +73,32 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	telemetryChan := make(chan gin.H, 200)
 
 	scanner.GetEngine().RegisterListener(clientID, func(stats scanner.JobStats, event string, details interface{}) {
-		select {
-		case telemetryChan <- gin.H{
+		payload := gin.H{
 			"type":  "scanner:telemetry",
 			"event": event,
 			"stats": stats,
-			"data":  details,
-		}:
+		}
+
+		if details != nil {
+			if detailMap, ok := details.(gin.H); ok {
+				if dataField, exists := detailMap["data"]; exists {
+					payload["data"] = dataField
+				} else {
+					payload["data"] = details
+				}
+			} else if dataMap, ok := details.(map[string]interface{}); ok {
+				if dataField, exists := dataMap["data"]; exists {
+					payload["data"] = dataField
+				} else {
+					payload["data"] = details
+				}
+			} else {
+				payload["data"] = details
+			}
+		}
+
+		select {
+		case telemetryChan <- payload:
 		default:
 		}
 	})
@@ -84,6 +109,60 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			scanner.GetEngine().CancelActiveScan()
 		}
 	}()
+
+	// DNS Tester Listener
+	dns.GetEngine().RegisterListener(clientID, func(stats dns.DNSJobStats, event string, details interface{}) {
+		payload := gin.H{
+			"type":  "dns:telemetry",
+			"event": event,
+			"stats": stats,
+		}
+		if details != nil {
+			payload["data"] = details
+		}
+		select {
+		case telemetryChan <- payload:
+		default:
+		}
+	})
+	defer func() {
+		dns.GetEngine().UnregisterListener(clientID)
+	}()
+
+	domainchecker.GetEngine().RegisterListener(clientID, func(result domainchecker.DomainResult) {
+		payload := gin.H{
+			"type": "DOMAIN_CHECK_RESULT",
+			"data": gin.H{
+				"id":              result.ID,
+				"domain_name":     result.DomainName,
+				"status":          result.Status,
+				"ip_addresses":    result.IPAddresses,
+				"http_status":     result.HTTPStatus,
+				"latency_ms":      result.LatencyMs,
+				"tls_status":      result.TLSStatus,
+				"tls_expiry_days": result.TLSExpiryDays,
+				"last_checked_at": result.LastCheckedAt,
+			},
+		}
+		select {
+		case telemetryChan <- payload:
+		default:
+		}
+	})
+	defer domainchecker.GetEngine().UnregisterListener(clientID)
+
+	// Geo Engine Listener
+	geo.GetEngine().RegisterListener(clientID, func(ip string, reg *models.IPRegistry) {
+		payload := gin.H{
+			"type": "GEO_RESOLVED",
+			"data": reg,
+		}
+		select {
+		case telemetryChan <- payload:
+		default:
+		}
+	})
+	defer geo.GetEngine().UnregisterListener(clientID)
 
 	// Read loop (to handle inbound actions like scanner:start, scanner:stop)
 	go func() {
@@ -105,21 +184,23 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			switch incoming.Type {
 			case "scanner:start":
 				var req struct {
-					TargetCIDRs      []string `json:"target_cidrs"`
-					SelectedPorts    []int    `json:"selected_ports"`
-					ConcurrencyLimit int      `json:"concurrency_limit"`
-					MaxRateLimit     float64  `json:"max_rate_limit"`
-					NetworkTimeoutMs int      `json:"network_timeout_ms"`
-					ProbeAttempts    int      `json:"probe_attempts"`
-					TargetMode       string   `json:"target_mode"`
-					TargetSNI        string   `json:"target_sni"`
-					WebSocketHost    string   `json:"websocket_host"`
-					WebSocketPath    string   `json:"websocket_path"`
-					RequireWS        bool     `json:"require_ws"`
-					EnableNeighbors  bool     `json:"enable_neighbors"`
-					TopLimit         int      `json:"top_limit"`
-					TotalTargetCount int      `json:"total_target_count"`
-					Retry            bool     `json:"retry"`
+					TargetCIDRs        []string `json:"target_cidrs"`
+					TargetCDNs         []string `json:"target_cdns"`
+					SelectedPorts      []int    `json:"selected_ports"`
+					ConcurrencyLimit   int      `json:"concurrency_limit"`
+					MaxRateLimit       float64  `json:"max_rate_limit"`
+					NetworkTimeoutMs   int      `json:"network_timeout_ms"`
+					ProbeAttempts      int      `json:"probe_attempts"`
+					TargetMode         string   `json:"target_mode"`
+					TargetSNI          string   `json:"target_sni"`
+					WebSocketHost      string   `json:"websocket_host"`
+					WebSocketPath      string   `json:"websocket_path"`
+					RequireWS          bool     `json:"require_ws"`
+					EnableNeighbors    bool     `json:"enable_neighbors"`
+					TopLimit           int      `json:"top_limit"`
+					TotalTargetCount   int      `json:"total_target_count"`
+					Retry              bool     `json:"retry"`
+					ScanDiscoveredOnly bool     `json:"scan_discovered_only"`
 				}
 				if err := json.Unmarshal(incoming.Data, &req); err == nil {
 					var scanCfg scanner.ScanConfig
@@ -128,6 +209,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 						if db.DB != nil && db.DB.First(&saved, 1).Error == nil {
 							scanCfg = scanner.ScanConfig{
 								TargetCIDRs:      []string(saved.TargetCIDRs),
+								TargetCDNs:       []string(saved.TargetCDNs),
 								SelectedPorts:    []int(saved.Ports),
 								ConcurrencyLimit: saved.ConcurrencyLimit,
 								MaxRateLimit:     saved.MaxRateLimit,
@@ -152,6 +234,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 								ProbeAttempts:     req.ProbeAttempts,
 								Ports:             models.IntArray(req.SelectedPorts),
 								TargetCIDRs:       models.StringArray(req.TargetCIDRs),
+								TargetCDNs:        models.StringArray(req.TargetCDNs),
 								TargetMode:        req.TargetMode,
 								TargetSNI:         req.TargetSNI,
 								WebSocketHost:     req.WebSocketHost,
@@ -166,27 +249,29 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 						}
 
 						scanCfg = scanner.ScanConfig{
-							TargetCIDRs:      req.TargetCIDRs,
-							SelectedPorts:    req.SelectedPorts,
-							ConcurrencyLimit: req.ConcurrencyLimit,
-							MaxRateLimit:     req.MaxRateLimit,
-							NetworkTimeout:   time.Duration(req.NetworkTimeoutMs) * time.Millisecond,
-							ProbeAttempts:    req.ProbeAttempts,
-							TargetMode:       req.TargetMode,
-							TargetSNI:        req.TargetSNI,
-							WebSocketHost:    req.WebSocketHost,
-							WebSocketPath:    req.WebSocketPath,
-							RequireWS:        req.RequireWS,
-							EnableNeighbors:  req.EnableNeighbors,
-							TopLimit:         req.TopLimit,
-							TotalTargetCount: req.TotalTargetCount,
+							TargetCIDRs:        req.TargetCIDRs,
+							TargetCDNs:         req.TargetCDNs,
+							SelectedPorts:      req.SelectedPorts,
+							ConcurrencyLimit:   req.ConcurrencyLimit,
+							MaxRateLimit:       req.MaxRateLimit,
+							NetworkTimeout:     time.Duration(req.NetworkTimeoutMs) * time.Millisecond,
+							ProbeAttempts:      req.ProbeAttempts,
+							TargetMode:         req.TargetMode,
+							TargetSNI:          req.TargetSNI,
+							WebSocketHost:      req.WebSocketHost,
+							WebSocketPath:      req.WebSocketPath,
+							RequireWS:          req.RequireWS,
+							EnableNeighbors:    req.EnableNeighbors,
+							TopLimit:           req.TopLimit,
+							TotalTargetCount:   req.TotalTargetCount,
+							ScanDiscoveredOnly: req.ScanDiscoveredOnly,
 						}
 					}
 
 					if scanCfg.NetworkTimeout <= 0 {
 						scanCfg.NetworkTimeout = 5 * time.Second
 					}
-					_ = scanner.GetEngine().StartScan(c.Request.Context(), &scanCfg)
+					_ = scanner.GetEngine().StartScan(c.Request.Context(), &scanCfg, req.Retry)
 				}
 			case "scanner:stop":
 				scanner.GetEngine().CancelActiveScan()
@@ -197,7 +282,228 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 					"event": "scanner.init",
 					"stats": stats,
 				}
-				_ = conn.WriteJSON(resp)
+				select {
+				case telemetryChan <- resp:
+				default:
+				}
+			case "dns:start":
+				var req struct {
+					ConcurrencyLimit  int                  `json:"concurrency_limit"`
+					QPSLimit          int                  `json:"qps_limit"`
+					TimeoutMs         int                  `json:"timeout_ms"`
+					Attempts          int                  `json:"attempts"`
+					CacheBusting      bool                 `json:"cache_busting"`
+					ReferenceDomain   string               `json:"reference_domain"`
+					SelectedProtocols []string             `json:"selected_protocols"`
+					CustomResolvers   []models.DNSResolver `json:"custom_resolvers"`
+					QueryTypes        []string             `json:"query_types"`
+					DNSClass          string               `json:"dns_class"`
+					QueryGenerator    string               `json:"query_generator"`
+					DomainSource      string               `json:"domain_source"`
+					CustomDomains     []string             `json:"custom_domains"`
+					WordlistURL       string               `json:"wordlist_url"`
+					ExpectResponse    string               `json:"expect_response"`
+				}
+				if err := json.Unmarshal(incoming.Data, &req); err == nil {
+					if req.ConcurrencyLimit <= 0 {
+						req.ConcurrencyLimit = 100
+					}
+					if req.TimeoutMs <= 0 {
+						req.TimeoutMs = 3000
+					}
+					if req.Attempts <= 0 {
+						req.Attempts = 3
+					}
+					if req.ReferenceDomain == "" {
+						req.ReferenceDomain = "google.com"
+					}
+					if req.DNSClass == "" {
+						req.DNSClass = "IN"
+					}
+					if req.QueryGenerator == "" {
+						req.QueryGenerator = "random"
+					}
+					if req.DomainSource == "" {
+						req.DomainSource = "default"
+					}
+
+					testerCfg := &models.DNSTesterConfig{
+						ConcurrencyLimit: req.ConcurrencyLimit,
+						QPSLimit:         req.QPSLimit,
+						TimeoutMs:        req.TimeoutMs,
+						Attempts:         req.Attempts,
+						CacheBusting:     req.CacheBusting,
+						ReferenceDomain:  req.ReferenceDomain,
+						QueryTypes:       models.StringArray(req.QueryTypes),
+						DNSClass:         req.DNSClass,
+						QueryGenerator:   req.QueryGenerator,
+						DomainSource:     req.DomainSource,
+						CustomDomains:    models.StringArray(req.CustomDomains),
+						WordlistURL:      req.WordlistURL,
+						ExpectResponse:   req.ExpectResponse,
+					}
+					_ = dns.GetEngine().StartTest(testerCfg, req.CustomResolvers, req.SelectedProtocols)
+				}
+			case "dns:stop":
+				dns.GetEngine().StopTest()
+			case "dns:telemetry":
+				stats := dns.GetEngine().GetLiveStats()
+				resp := gin.H{
+					"type":  "dns:telemetry",
+					"event": "dns.init",
+					"stats": stats,
+				}
+				select {
+				case telemetryChan <- resp:
+				default:
+				}
+			case "dns:trace":
+				var req struct {
+					ResolverIP string `json:"resolver_ip"`
+					Domain     string `json:"domain"`
+				}
+				if err := json.Unmarshal(incoming.Data, &req); err == nil {
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								logger.Error("WS", "Recovered from panic in dns:trace handler", "panic", r)
+							}
+						}()
+						steps, err := dns.GetEngine().TraceDNS(c.Request.Context(), req.Domain, req.ResolverIP)
+						resp := gin.H{
+							"type":  "dns:trace_result",
+							"steps": steps,
+						}
+						if err != nil {
+							resp["error"] = err.Error()
+						}
+						select {
+						case telemetryChan <- resp:
+						default:
+						}
+					}()
+				}
+			case "dns:axfr":
+				var req struct {
+					ResolverIP string `json:"resolver_ip"`
+					Domain     string `json:"domain"`
+				}
+				if err := json.Unmarshal(incoming.Data, &req); err == nil {
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								logger.Error("WS", "Recovered from panic in dns:axfr handler", "panic", r)
+							}
+						}()
+						res, err := dns.GetEngine().TestAXFR(c.Request.Context(), req.Domain, req.ResolverIP)
+						resp := gin.H{
+							"type":   "dns:axfr_result",
+							"result": res,
+						}
+						if err != nil {
+							resp["error"] = err.Error()
+						}
+						select {
+						case telemetryChan <- resp:
+						default:
+						}
+					}()
+				}
+			case "bulk_lookup":
+				var req struct {
+					IPs []string `json:"ips"`
+				}
+				if err := json.Unmarshal(incoming.Data, &req); err == nil {
+					go func(ips []string) {
+						defer func() {
+							if r := recover(); r != nil {
+								logger.Error("WS", "Recovered from panic in bulk_lookup handler", "panic", r)
+							}
+						}()
+						total := len(ips)
+						if total == 0 {
+							return
+						}
+
+						cfg, err := geo.GetIPLookupConfig()
+						if err != nil {
+							logger.Error("WS", "Failed to get config for bulk lookup", "error", err)
+							return
+						}
+
+						var resolvedCount int
+						batchSize := 10
+
+						for i := 0; i < total; i += batchSize {
+							end := i + batchSize
+							if end > total {
+								end = total
+							}
+							batch := ips[i:end]
+
+							var batchWg sync.WaitGroup
+							var batchMu sync.Mutex
+							batchResults := make([]*geo.UnifiedIPResult, 0)
+
+							for _, ip := range batch {
+								ipClean := strings.TrimSpace(ip)
+								if ipClean == "" {
+									continue
+								}
+
+								batchWg.Add(1)
+								go func(ipVal string) {
+									defer func() {
+										if r := recover(); r != nil {
+											logger.Error("WS", "Recovered from panic in bulk_lookup worker", "panic", r)
+										}
+										batchWg.Done()
+									}()
+									
+									// Validate IP address format
+									if net.ParseIP(ipVal) == nil {
+										return
+									}
+
+									// 1. Check cache first
+									if cached, found := geo.QueryIPIntelligenceCache(ipVal); found {
+										batchMu.Lock()
+										batchResults = append(batchResults, cached)
+										batchMu.Unlock()
+										return
+									}
+
+									// 2. Resolve using concurrent aggregator
+									geoRes, err := geo.ConcurrentGeoResolver(context.Background(), ipVal, cfg)
+									if err == nil {
+										geo.SaveIPToCache(geoRes)
+										batchMu.Lock()
+										batchResults = append(batchResults, geoRes)
+										batchMu.Unlock()
+									} else {
+										logger.Warn("WS", "Bulk resolution failed for IP", "ip", ipVal, "error", err)
+									}
+								}(ipClean)
+							}
+							batchWg.Wait()
+
+							resolvedCount += len(batchResults)
+
+							// Stream batch progress back to client
+							progressMsg := gin.H{
+								"type":     "BULK_PROGRESS",
+								"event":    "BULK_PROGRESS",
+								"resolved": resolvedCount,
+								"total":    total,
+								"data":     batchResults,
+							}
+							select {
+							case telemetryChan <- progressMsg:
+							default:
+							}
+						}
+					}(req.IPs)
+				}
 			}
 		}
 	}()
@@ -209,26 +515,13 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	totalDownload := 8120.0
 	totalUpload := 2450.0
 
-	// 250ms Rate-Limited Dispatcher for high-frequency updates
-	rateTicker := time.NewTicker(250 * time.Millisecond)
-	defer rateTicker.Stop()
-
-	var pendingTelemetry gin.H
-	var lastSentTelemetry time.Time
-
 	for {
 		select {
 		case <-doneChan:
 			return
 		case msg := <-telemetryChan:
-			pendingTelemetry = msg
-		case <-rateTicker.C:
-			if pendingTelemetry != nil && time.Since(lastSentTelemetry) >= 250*time.Millisecond {
-				if err := conn.WriteJSON(pendingTelemetry); err != nil {
-					return
-				}
-				pendingTelemetry = nil
-				lastSentTelemetry = time.Now()
+			if err := conn.WriteJSON(msg); err != nil {
+				return
 			}
 		case <-ticker.C:
 			var msg interface{}

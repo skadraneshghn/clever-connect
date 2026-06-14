@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"clever-connect/internal/db"
 	"clever-connect/internal/downloader"
 	"clever-connect/internal/filecore"
+	"clever-connect/internal/geo"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/telegram"
@@ -846,6 +848,11 @@ func (s *Scheduler) registerBuiltinJobs() {
 	s.RegisterJob("telegram_download", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
 		return telegram.RunTelegramDownloadJob(ctx, job, logFn)
 	})
+
+	// Geo IP & CDN scan sweep
+	s.RegisterJob("geo_sweep", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
+		return runGeoSweepJob(ctx, job, logFn)
+	})
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -901,3 +908,129 @@ func (s *Scheduler) GetJobLogs(jobID uint, limit int) []models.SchedulerJobLog {
 		Find(&logs)
 	return logs
 }
+
+func runGeoSweepJob(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
+	logFn("INFO", "Starting Geo IP and CDN scan sweep")
+
+	ipSet := make(map[string]bool)
+
+	// Fetch from ClientSessions
+	var clientIPs []string
+	if err := db.DB.Model(&models.ClientSession{}).Pluck("ip", &clientIPs).Error; err == nil {
+		for _, ip := range clientIPs {
+			ip = strings.TrimSpace(ip)
+			if ip != "" && net.ParseIP(ip) != nil {
+				ipSet[ip] = true
+			}
+		}
+	}
+
+	// Fetch from V2RayNodes
+	var nodeIPs []string
+	if err := db.DB.Model(&models.V2RayNode{}).Pluck("ip", &nodeIPs).Error; err == nil {
+		for _, ip := range nodeIPs {
+			ip = strings.TrimSpace(ip)
+			if ip != "" && net.ParseIP(ip) != nil {
+				ipSet[ip] = true
+			}
+		}
+	}
+
+	// Fetch from V2RaySecurityEvents
+	var secIPs []string
+	if err := db.DB.Model(&models.V2RaySecurityEvent{}).Pluck("ip_address", &secIPs).Error; err == nil {
+		for _, ip := range secIPs {
+			ip = strings.TrimSpace(ip)
+			if ip != "" && net.ParseIP(ip) != nil {
+				ipSet[ip] = true
+			}
+		}
+	}
+
+	// Fetch from Domains
+	var domainIPs []string
+	if err := db.DB.Model(&models.Domain{}).Pluck("ip_addresses", &domainIPs).Error; err == nil {
+		for _, commaIPs := range domainIPs {
+			parts := strings.Split(commaIPs, ",")
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if part != "" && net.ParseIP(part) != nil {
+					ipSet[part] = true
+				}
+			}
+		}
+	}
+
+	logFn("INFO", fmt.Sprintf("Found %d total unique IPs in the system", len(ipSet)))
+
+	// Exclude fresh cache (resolved in last 30 days)
+	var resolvedIPs []string
+	if err := db.DB.Model(&models.IPRegistry{}).
+		Where("last_updated > ?", time.Now().AddDate(0, 0, -30)).
+		Pluck("ip", &resolvedIPs).Error; err == nil {
+		for _, ip := range resolvedIPs {
+			delete(ipSet, ip)
+		}
+	}
+
+	ipsToResolve := make([]string, 0, len(ipSet))
+	for ip := range ipSet {
+		ipsToResolve = append(ipsToResolve, ip)
+	}
+
+	total := len(ipsToResolve)
+	logFn("INFO", fmt.Sprintf("Identified %d IPs that need resolution or re-cache", total))
+
+	if total == 0 {
+		db.DB.Model(job).Update("progress", 100)
+		logFn("INFO", "No IPs to resolve. Job finished.")
+		return nil
+	}
+
+	// Resolve in chunks
+	resolvedCount := 0
+	batchSize := 100
+
+	for i := 0; i < total; i += batchSize {
+		select {
+		case <-ctx.Done():
+			logFn("WARN", "Job cancelled")
+			return context.Canceled
+		default:
+		}
+
+		end := i + batchSize
+		if end > total {
+			end = total
+		}
+
+		batch := ipsToResolve[i:end]
+		logFn("INFO", fmt.Sprintf("Resolving batch chunk %d to %d...", i+1, end))
+
+		for _, ip := range batch {
+			select {
+			case <-ctx.Done():
+				logFn("WARN", "Job cancelled")
+				return context.Canceled
+			default:
+			}
+
+			reg, err := geo.GetEngine().ResolveIP(ip, true)
+			if err != nil {
+				logFn("ERROR", fmt.Sprintf("Failed to resolve IP %s: %v", ip, err))
+			} else {
+				logFn("INFO", fmt.Sprintf("Resolved IP %s -> Country: %s, City: %s, CDN: %t (%s)",
+					ip, reg.CountryName, reg.City, reg.IsCDN, reg.CDNProvider))
+			}
+			resolvedCount++
+		}
+
+		// Update progress
+		progress := (resolvedCount * 100) / total
+		db.DB.Model(job).Update("progress", progress)
+	}
+
+	logFn("INFO", fmt.Sprintf("Successfully finished Geo Sweep Job. Resolved %d IPs.", resolvedCount))
+	return nil
+}
+

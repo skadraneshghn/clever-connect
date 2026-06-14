@@ -1,6 +1,6 @@
-package main
+package scratch
 import "fmt"
-func main() {
+func runScratch() {
     limit := 0
     total := 100
     offset := 0

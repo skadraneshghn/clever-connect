@@ -11,8 +11,9 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
-	"golang.org/x/crypto/bcrypt"
 	sqlite "clever-connect/internal/db/sqlite"
+
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -43,6 +44,14 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			logger.Fatal("DB", "Failed to connect to SQLite", "path", cfg.SQLitePath, "error", err)
 		}
 		logger.Info("DB", "SQLite connection established", "path", cfg.SQLitePath)
+
+		// Prevent "database is locked (SQLITE_BUSY)" by serializing connections and setting WAL mode / timeouts
+		if sqlDB, err := DB.DB(); err == nil {
+			sqlDB.SetMaxOpenConns(1)
+		}
+		DB.Exec("PRAGMA journal_mode=WAL;")
+		DB.Exec("PRAGMA busy_timeout=10000;")
+		DB.Exec("PRAGMA synchronous=NORMAL;")
 	} else {
 		// MySQL Mode (Server panel)
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
@@ -76,6 +85,14 @@ func InitDB(cfg *config.Config) *gorm.DB {
 				logger.Fatal("DB", "Database initialization failed completely", "error", err)
 			}
 			logger.Info("DB", "SQLite fallback connection established", "path", fallbackPath)
+
+			// Prevent "database is locked (SQLITE_BUSY)" by serializing connections and setting WAL mode / timeouts
+			if sqlDB, err := DB.DB(); err == nil {
+				sqlDB.SetMaxOpenConns(1)
+			}
+			DB.Exec("PRAGMA journal_mode=WAL;")
+			DB.Exec("PRAGMA busy_timeout=10000;")
+			DB.Exec("PRAGMA synchronous=NORMAL;")
 		} else {
 			logger.Info("DB", "MySQL connection established",
 				"host", cfg.MySQLHost,
@@ -119,10 +136,21 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&models.V2RayClientFrontingMap{},
 		&models.V2RayClientSetting{},
 		&models.V2RayClientSubscription{},
+		&models.Domain{},
+		&models.ScannerSource{},
+		&models.ScannerConfig{},
+		&models.IPRegistry{},
+		&models.IPLookupConfig{},
+		&models.IPIntelligenceCache{},
+		&models.DomainWhoisCache{},
+		&models.DNSResolver{},
+		&models.DNSTesterConfig{},
+		&models.BondingEngineConfig{},
+		&models.BondingArtery{},
 	); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
-	
+
 	// Ensure the table collation is converted to utf8mb4 to support emoji/symbols in welcome messages
 	if DB.Dialector.Name() == "mysql" {
 		DB.Exec("ALTER TABLE `telegram_configs` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
@@ -135,7 +163,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		if err := migrateDB.AutoMigrate(&models.V2RayScannerConfig{}); err != nil {
 			logger.Fatal("DB", "Client scanner migration failed", "error", err)
 		}
-		
+
 		// Seed default V2RayScannerConfig
 		var scannerCfg models.V2RayScannerConfig
 		if err := DB.First(&scannerCfg).Error; err != nil {
@@ -150,10 +178,32 @@ func InitDB(cfg *config.Config) *gorm.DB {
 				TopLimit:          20,
 				EnableNeighbors:   false,
 				RequireWS:         false,
-				TargetCIDRs:      models.StringArray{},
-				TargetMode:       "http",
-				TargetSNI:        "speed.cloudflare.com",
-				MaxRateLimit:     0,
+				TargetCIDRs:       models.StringArray{},
+				TargetMode:        "http",
+				TargetSNI:         "speed.cloudflare.com",
+				MaxRateLimit:      0,
+			})
+		}
+
+		// Seed default BondingEngineConfig
+		var bondCfg models.BondingEngineConfig
+		if err := DB.First(&bondCfg).Error; err != nil {
+			logger.Info("DB", "Seeding default bonding engine configuration")
+			DB.Create(&models.BondingEngineConfig{
+				IsActive:      false,
+				Mode:          "selector",
+				StripingMode:  "auto",
+				MaxArteries:   5,
+				MinArteries:   2,
+				FrameSize:     4096,
+				SocksPort:     cfg.BondingSocksPort,
+				HTTPPort:      cfg.BondingHTTPPort,
+				EvalWindowMs:  5000,
+				DemoteRTTx:    1.5,
+				PromoteRTTx:   1.2,
+				LossDemotePct: 5.0,
+				CooldownSec:   30,
+				ErrorBudget:   5,
 			})
 		}
 	}
@@ -220,12 +270,96 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			logger.Fatal("DB", "Failed to generate PSK for Soroush tunnel", "error", err)
 		}
 		DB.Create(&models.SoroushTunnelConfig{
-			PSK:                hex.EncodeToString(pskBytes),
-			SocksPort:           4046,
-			EngineMode:          "swarm",
-			MaxWorkers:          5,
-			LoadBalanceAlgo:     "least-latency",
+			PSK:             hex.EncodeToString(pskBytes),
+			SocksPort:       4046,
+			EngineMode:      "swarm",
+			MaxWorkers:      5,
+			LoadBalanceAlgo: "least-latency",
 		})
+	}
+
+	// Seed default ScannerSource
+	var sourceCount int64
+	if DB.Model(&models.ScannerSource{}).Count(&sourceCount); sourceCount == 0 {
+		logger.Info("DB", "Seeding default scanner sources")
+		defaultSources := []models.ScannerSource{
+			{Name: "Cloudflare Official", URL: "https://www.cloudflare.com/ips-v4/", Type: "cidr", IsEnabled: true},
+			{Name: "CM List", URL: "https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt", Type: "cidr", IsEnabled: false},
+			{Name: "AS13335 (Cloudflare)", URL: "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/13335/ipv4-aggregated.txt", Type: "cidr", IsEnabled: false},
+			{Name: "AS209242 (Cloudflare)", URL: "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/209242/ipv4-aggregated.txt", Type: "cidr", IsEnabled: false},
+			{Name: "AS24429 (Alibaba)", URL: "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/24429/ipv4-aggregated.txt", Type: "cidr", IsEnabled: false},
+			{Name: "AS199524 (G-Core)", URL: "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/199524/ipv4-aggregated.txt", Type: "cidr", IsEnabled: false},
+			{Name: "Reverse Proxy IPs", URL: "https://raw.githubusercontent.com/cmliu/ACL4SSR/main/baipiao.txt", Type: "proxyip", IsEnabled: false},
+			{Name: "Foreign Domains", URL: "https://raw.githubusercontent.com/Blacknuno/Nova-Proxy/refs/heads/main/dominos.text", Type: "domain", IsEnabled: false},
+			{Name: "Iranian Domains", URL: "https://raw.githubusercontent.com/Blacknuno/Nova-Proxy/refs/heads/main/IRdominos.text", Type: "domain", IsEnabled: false},
+		}
+		for _, s := range defaultSources {
+			DB.Create(&s)
+		}
+	}
+
+	// Seed default ScannerConfig
+	var configCount int64
+	if DB.Model(&models.ScannerConfig{}).Count(&configCount); configCount == 0 {
+		logger.Info("DB", "Seeding default scanner config")
+		DB.Create(&models.ScannerConfig{
+			DeepTestEnabled:     true,
+			TargetSNI:           "nova2.altramax083.workers.dev",
+			AttemptCount:        3,
+			MinSuccessThreshold: 2,
+		})
+	}
+
+	// Seed default IPLookupConfig
+	var ipLookupCount int64
+	if DB.Model(&models.IPLookupConfig{}).Count(&ipLookupCount); ipLookupCount == 0 {
+		logger.Info("DB", "Seeding default IP lookup configuration")
+		DB.Create(&models.IPLookupConfig{
+			EnableIP2Location:   true,
+			EnableIpApi:         true,
+			EnableIpGeolocation: true,
+			EnableIpWhois:       true,
+			EnableFindIP:        true,
+		})
+	}
+
+	// Seed default DNSTesterConfig
+	var dnsConfigCount int64
+	if DB.Model(&models.DNSTesterConfig{}).Count(&dnsConfigCount); dnsConfigCount == 0 {
+		logger.Info("DB", "Seeding default DNS Tester configuration")
+		DB.Create(&models.DNSTesterConfig{
+			ConcurrencyLimit: 100,
+			QPSLimit:         500,
+			TimeoutMs:        3000,
+			Attempts:         3,
+			CacheBusting:     true,
+			ReferenceDomain:  "google.com",
+			QueryTypes:       models.StringArray{"A", "AAAA"},
+		})
+	}
+
+	// Seed default DNSResolver list
+	var dnsResolverCount int64
+	if DB.Model(&models.DNSResolver{}).Count(&dnsResolverCount); dnsResolverCount == 0 {
+		logger.Info("DB", "Seeding default DNS Resolvers")
+		defaultResolvers := []models.DNSResolver{
+			{IP: "1.1.1.1", Protocol: "udp", ProviderName: "Cloudflare", Category: "general", SupportUDP: true},
+			{IP: "1.0.0.1", Protocol: "udp", ProviderName: "Cloudflare", Category: "general", SupportUDP: true},
+			{IP: "8.8.8.8", Protocol: "udp", ProviderName: "Google", Category: "general", SupportUDP: true},
+			{IP: "8.8.4.4", Protocol: "udp", ProviderName: "Google", Category: "general", SupportUDP: true},
+			{IP: "9.9.9.9", Protocol: "udp", ProviderName: "Quad9", Category: "security", SupportUDP: true, SupportTCP: true, SupportDoT: true},
+			{IP: "149.112.112.112", Protocol: "udp", ProviderName: "Quad9", Category: "security", SupportUDP: true},
+			{IP: "94.140.14.140", Protocol: "udp", ProviderName: "AdGuard Default", Category: "security", SupportUDP: true},
+			{IP: "94.140.14.14", Protocol: "udp", ProviderName: "AdGuard Ad-Blocking", Category: "security", SupportUDP: true},
+			{IP: "208.67.222.222", Protocol: "udp", ProviderName: "OpenDNS", Category: "general", SupportUDP: true},
+			{IP: "1.1.1.1", Protocol: "dot", ProviderName: "Cloudflare DoT", Category: "general", SupportDoT: true},
+			{IP: "8.8.8.8", Protocol: "dot", ProviderName: "Google DoT", Category: "general", SupportDoT: true},
+			{IP: "cloudflare-dns.com", Protocol: "doh", ProviderName: "Cloudflare DoH", Category: "general", SupportDoH: true},
+			{IP: "dns.google", Protocol: "doh", ProviderName: "Google DoH", Category: "general", SupportDoH: true},
+		}
+		for _, resolver := range defaultResolvers {
+			DB.Create(&resolver)
+		}
 	}
 
 	// Seed Admin User
@@ -233,7 +367,6 @@ func InitDB(cfg *config.Config) *gorm.DB {
 
 	return DB
 }
-
 
 func seedAdmin(cfg *config.Config) {
 	var admin models.User

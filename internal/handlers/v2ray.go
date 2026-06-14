@@ -631,6 +631,25 @@ func (h *V2RayHandler) DeleteFailedClientConfigs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "deleted_failed", "count": count})
 }
 
+// DeleteDiscoveredClientConfigs handles DELETE /api/v2ray/client/configs/discovered
+func (h *V2RayHandler) DeleteDiscoveredClientConfigs(c *gin.Context) {
+	// Stop client core if any discovered node is active
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+	for _, cfg := range configs {
+		if cfg.IsActive && len(cfg.Name) >= 11 && cfg.Name[:11] == "Discovered-" {
+			_ = core.StopClientCore()
+			break
+		}
+	}
+
+	count, err := pebble.DeleteDiscoveredClientConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted_discovered", "count": count})
+}
+
 // DeleteSelectedClientConfigs handles POST /api/v2ray/client/configs/delete-selected
 func (h *V2RayHandler) DeleteSelectedClientConfigs(c *gin.Context) {
 	var req struct {
@@ -1381,34 +1400,32 @@ func (h *V2RayHandler) TestMassProfiles(c *gin.Context) {
 
 // ScanCDN handles POST /api/v2ray/client/scan-cdn
 func (h *V2RayHandler) ScanCDN(c *gin.Context) {
-	var opts scanner.CDNConfigsOptions
-	if err := c.ShouldBindJSON(&opts); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	state, err := scanner.StartScan(opts)
-	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, state.Snapshot())
+	c.JSON(http.StatusOK, gin.H{
+		"phase":       3,
+		"ping_total":  0,
+		"ping_done":   0,
+		"speed_total": 0,
+		"speed_done":  0,
+		"rows":        []string{},
+		"finished":    true,
+	})
 }
 
 // GetScanStatus handles GET /api/v2ray/client/scan-cdn/status
 func (h *V2RayHandler) GetScanStatus(c *gin.Context) {
-	state := scanner.GetActiveScan()
-	if state == nil {
-		c.JSON(http.StatusOK, gin.H{"status": "idle"})
-		return
-	}
-	c.JSON(http.StatusOK, state.Snapshot())
+	c.JSON(http.StatusOK, gin.H{
+		"phase":       3,
+		"ping_total":  0,
+		"ping_done":   0,
+		"speed_total": 0,
+		"speed_done":  0,
+		"rows":        []string{},
+		"finished":    true,
+	})
 }
 
 // StopScan handles POST /api/v2ray/client/scan-cdn/stop
 func (h *V2RayHandler) StopScan(c *gin.Context) {
-	scanner.CancelActiveScan()
 	c.JSON(http.StatusOK, gin.H{"status": "stopped"})
 }
 
@@ -1541,7 +1558,7 @@ func (h *V2RayHandler) StartNetworkScannerSweep(c *gin.Context) {
 	}
 
 	engine := scanner.GetEngine()
-	if err := engine.StartScan(context.Background(), cfg); err != nil {
+	if err := engine.StartScan(context.Background(), cfg, req.Retry); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
@@ -1566,6 +1583,57 @@ func (h *V2RayHandler) GetNetworkScannerLiveTelemetry(c *gin.Context) {
 		"failed":     stats.Failed,
 		"in_flight":  stats.InFlight,
 	})
+}
+
+// GetScannerConfig handles GET /api/v2ray/scanner/config
+func (h *V2RayHandler) GetScannerConfig(c *gin.Context) {
+	var cfg models.V2RayScannerConfig
+	if err := db.DB.First(&cfg, 1).Error; err != nil {
+		// Return default settings if not exists
+		cfg = models.V2RayScannerConfig{
+			ConcurrencyLimit:  100,
+			TotalTargetCount:  1000,
+			NetworkTimeoutSec: 5,
+			ProbeAttempts:     1,
+			Ports:             models.IntArray{443, 2053, 2083, 2087, 2096, 8443},
+			TargetCIDRs:       models.StringArray{"108.162.192.0/18", "103.21.244.0/22"},
+			TargetCDNs:        models.StringArray{},
+			TargetMode:        "http",
+			TopLimit:          20,
+			EnableNeighbors:   false,
+			RequireWS:         false,
+		}
+		cfg.ID = 1
+		db.DB.Save(&cfg)
+	}
+	c.JSON(http.StatusOK, cfg)
+}
+
+// ResetScannerConfig handles POST /api/v2ray/scanner/config/reset
+func (h *V2RayHandler) ResetScannerConfig(c *gin.Context) {
+	cfg := models.V2RayScannerConfig{
+		ConcurrencyLimit:  100,
+		TotalTargetCount:  1000,
+		NetworkTimeoutSec: 5,
+		ProbeAttempts:     1,
+		Ports:             models.IntArray{443, 2053, 2083, 2087, 2096, 8443},
+		TargetCIDRs:       models.StringArray{"108.162.192.0/18", "103.21.244.0/22"},
+		TargetCDNs:        models.StringArray{},
+		TargetMode:        "http",
+		TopLimit:          20,
+		EnableNeighbors:   false,
+		RequireWS:         false,
+		WebSocketHost:     "",
+		WebSocketPath:     "",
+		TargetSNI:         "",
+		MaxRateLimit:      0,
+	}
+	cfg.ID = 1
+	if err := db.DB.Save(&cfg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, cfg)
 }
 
 // GetNetworkScannerWebSocket handles GET /api/v2ray/scanner/ws
@@ -1929,3 +1997,65 @@ func (h *V2RayHandler) SaveCoreTemplate(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"status": "saved"})
 }
+
+// ListScannerSources handles GET /api/v2ray/scanner/sources
+func (h *V2RayHandler) ListScannerSources(c *gin.Context) {
+	var sources []models.ScannerSource
+	if err := db.DB.Find(&sources).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, sources)
+}
+
+// CreateScannerSource handles POST /api/v2ray/scanner/sources
+func (h *V2RayHandler) CreateScannerSource(c *gin.Context) {
+	var src models.ScannerSource
+	if err := c.ShouldBindJSON(&src); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := db.DB.Create(&src).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, src)
+}
+
+// UpdateScannerSource handles PUT /api/v2ray/scanner/sources/:id
+func (h *V2RayHandler) UpdateScannerSource(c *gin.Context) {
+	id := c.Param("id")
+	var src models.ScannerSource
+	if err := db.DB.First(&src, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Source not found"})
+		return
+	}
+
+	var req models.ScannerSource
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	src.Name = req.Name
+	src.URL = req.URL
+	src.Type = req.Type
+	src.IsEnabled = req.IsEnabled
+
+	if err := db.DB.Save(&src).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, src)
+}
+
+// DeleteScannerSource handles DELETE /api/v2ray/scanner/sources/:id
+func (h *V2RayHandler) DeleteScannerSource(c *gin.Context) {
+	id := c.Param("id")
+	if err := db.DB.Delete(&models.ScannerSource{}, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+

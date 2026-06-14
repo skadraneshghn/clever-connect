@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,14 @@ type Config struct {
 	// Seed Admin
 	AdminUsername string
 	AdminPassword string
+
+	// DMB Bonding Engine
+	BondingSocksPort   int
+	BondingHTTPPort    int
+	BondingPSKHex      string
+	BondingCombinerURL string
+	BondingMaxArteries int
+	BondingFrameSize   int
 }
 
 func LoadConfig() *Config {
@@ -79,6 +88,13 @@ func LoadConfig() *Config {
 		JWTSecret:           []byte(jwtSecret),
 		WSHeartbeatInterval: wsInterval,
 		ServerURL:           serverURL,
+		// DMB Bonding Engine
+		BondingSocksPort:   getEnvInt("BONDING_SOCKS_PORT", 10646),
+		BondingHTTPPort:    getEnvInt("BONDING_HTTP_PORT", 10545),
+		BondingPSKHex:      getEnv("BONDING_PSK_HEX", ""),
+		BondingCombinerURL: getEnv("BONDING_COMBINER_URL", ""),
+		BondingMaxArteries: getEnvInt("BONDING_MAX_ARTERIES", 5),
+		BondingFrameSize:   getEnvInt("BONDING_FRAME_SIZE", 4096),
 		ServerAuthToken:     serverAuthToken,
 		SQLitePath:          getEnv("SQLITE_DB_PATH", resolveDefaultClientDBPath()),
 		MySQLUser:           getEnv("MYSQL_USER", "root"),
@@ -138,6 +154,18 @@ func getEnv(key, defaultVal string) string {
 		return defaultVal
 	}
 	return val
+}
+
+func getEnvInt(key string, defaultVal int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultVal
+	}
+	return n
 }
 
 func resolveDefaultClientDBPath() string {

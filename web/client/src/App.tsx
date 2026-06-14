@@ -25,6 +25,10 @@ const V2RayClientPage = lazy(() => import('./pages/V2RayClientPage').then(m => (
 const V2RayCorePage = lazy(() => import('./pages/V2RayCorePage').then(m => ({ default: m.V2RayCorePage })));
 const V2RayRoutingPage = lazy(() => import('./pages/V2RayRoutingPage').then(m => ({ default: m.V2RayRoutingPage })));
 const NetworkToolsPage = lazy(() => import('./pages/NetworkToolsPage').then(m => ({ default: m.NetworkToolsPage })));
+const DomainCheckerPage = lazy(() => import('./pages/DomainCheckerPage').then(m => ({ default: m.DomainCheckerPage })));
+const IPDomainCheckerPage = lazy(() => import('./pages/IPDomainCheckerPage').then(m => ({ default: m.IPDomainCheckerPage })));
+const DNSTesterPage = lazy(() => import('./pages/DNSTesterPage').then(m => ({ default: m.DNSTesterPage })));
+const V2RayMultipathPage = lazy(() => import('./pages/V2RayMultipathPage').then(m => ({ default: m.V2RayMultipathPage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -65,7 +69,11 @@ const ProtectedLayout: React.FC = () => {
     'v2ray-nodes': ['V2Ray', 'Nodes Manager'],
     'v2ray-core': ['V2Ray', 'Core Configuration'],
     'v2ray-routing': ['V2Ray', 'Routing Rules'],
-    'v2ray-scanner': ['V2Ray', 'Scanner Engine'],
+    'v2ray-scanner': ['Network Tools', 'Scanner Engine'],
+    'domain-checker': ['Network Tools', 'Domain Checker'],
+    'ip-domain-checker': ['Network Tools', 'IP & Domain Checker'],
+    'dns-tester': ['Network Tools', 'DNS Tester'],
+    'v2ray-multipath': ['V2Ray', 'Multipath Engine'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -139,6 +147,10 @@ const router = createBrowserRouter([
       { path: 'v2ray-core', element: <V2RayCorePage /> },
       { path: 'v2ray-routing', element: <V2RayRoutingPage /> },
       { path: 'v2ray-scanner', element: <NetworkToolsPage /> },
+      { path: 'domain-checker', element: <DomainCheckerPage /> },
+      { path: 'ip-domain-checker', element: <IPDomainCheckerPage /> },
+      { path: 'dns-tester', element: <DNSTesterPage /> },
+      { path: 'v2ray-multipath', element: <V2RayMultipathPage /> },
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },
