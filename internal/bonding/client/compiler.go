@@ -3,12 +3,8 @@ package client
 import (
 	"encoding/json"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 
 	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/logger"
@@ -60,40 +56,23 @@ func mergeArteryWithBase(artery models.V2RayClientConfig, base *models.V2RayClie
 }
 
 // CompileBondingClientConfig generates a multi-inbound xray config with one
-// dokodemo-door inbound per artery, each routed to a specific outbound.
-// Each artery gets a fixed destination pointing to the combiner.
+// SOCKS5 inbound per artery, each strictly routed to its own outbound proxy node.
+//
+// Flow (Mode B):
+//
+//	Go ArteryConn (SOCKS5 client)
+//	     │  SOCKS5 CONNECT ondata.ir:80
+//	     ▼
+//	127.0.0.1:21001  (xray SOCKS5 inbound "artery-0-in")
+//	     │  routed via routing rules → outbound "artery-0"
+//	     ▼
+//	VLESS/Reality/... CDN Edge Node
+//	     │
+//	     ▼
+//	Clever Cloud combiner WebSocket endpoint
 func CompileBondingClientConfig(nodes []models.V2RayClientConfig, combinerAddr string, basePort int, socksPort int, httpPort int) (string, error) {
 	if len(nodes) == 0 {
 		return "", fmt.Errorf("no nodes provided for bonding client config")
-	}
-
-	// Parse combiner address to extract host and port for dokodemo-door settings
-	rawAddr := combinerAddr
-	if !strings.Contains(rawAddr, "://") {
-		rawAddr = "ws://" + rawAddr
-	}
-	u, err := url.Parse(rawAddr)
-	if err != nil {
-		return "", fmt.Errorf("invalid combiner URL: %w", err)
-	}
-
-	host, portStr, err := net.SplitHostPort(u.Host)
-	var port int = 443
-	if err != nil {
-		// No port specified, use host as is and default port based on scheme
-		host = u.Host
-		if u.Scheme == "wss" || u.Scheme == "https" {
-			port = 443
-		} else if u.Scheme == "ws" || u.Scheme == "http" {
-			port = 80
-		} else {
-			port = 443 // fallback
-		}
-	} else {
-		parsedPort, err := strconv.Atoi(portStr)
-		if err == nil {
-			port = parsedPort
-		}
 	}
 
 	if socksPort <= 0 {
@@ -138,10 +117,7 @@ func CompileBondingClientConfig(nodes []models.V2RayClientConfig, combinerAddr s
 		},
 	}
 
-	// User-facing inbounds: SOCKS5 and HTTP proxy (these are NOT used by the
-	// bonding frontend directly — the Go SOCKS5/HTTP server handles user traffic
-	// and dispatches framed data to the dokodemo-door ports below).
-	// We keep them here as fallback if the Go frontend isn't running.
+	// xray API inbound for gRPC stats management
 	config.Inbounds = []compiler.InboundConfig{
 		{
 			Listen:   "127.0.0.1",
@@ -154,7 +130,10 @@ func CompileBondingClientConfig(nodes []models.V2RayClientConfig, combinerAddr s
 		},
 	}
 
-	// One dokodemo-door inbound per artery, each with fixed destination = combiner
+	// One SOCKS5 inbound per artery.
+	// The Go ArteryConn dials: proxy.SOCKS5("tcp", "127.0.0.1:2100x").Dial(combinerHost)
+	// xray receives a SOCKS5 CONNECT request for the real combiner host and
+	// routes it through the matching outbound (the scanned proxy node).
 	var routingRules []compiler.RoutingRule
 
 	// API routing rule first
@@ -170,18 +149,18 @@ func CompileBondingClientConfig(nodes []models.V2RayClientConfig, combinerAddr s
 
 		mergedNode := mergeArteryWithBase(node, baseTemplate)
 
-		// Dokodemo-door inbound: accepts raw TCP on local port, forwards to outbound
+		// SOCKS5 inbound: Go client performs standard SOCKS5 CONNECT to the
+		// real combiner host. xray forwards through the artery outbound.
 		config.Inbounds = append(config.Inbounds, compiler.InboundConfig{
 			Listen:   "127.0.0.1",
 			Port:     localPort,
-			Protocol: "dokodemo-door",
+			Protocol: "socks",
 			Settings: map[string]interface{}{
-				"address":  host,
-				"port":     port,
-				"network":  "tcp",
+				"auth": "noauth",
+				"udp":  false,
+				"ip":   "127.0.0.1",
 			},
 			Tag: fmt.Sprintf("artery-%d-in", i),
-			// Sniffing OFF — we send pre-framed binary data, not HTTP
 		})
 
 		// One outbound per artery using existing compiler with merged config
