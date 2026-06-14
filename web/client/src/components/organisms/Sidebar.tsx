@@ -22,6 +22,7 @@ const navItems = [
     children: [
       { id: 'v2ray-dashboard', label: 'Realtime Dashboard' },
       { id: 'v2ray-nodes', label: 'Nodes Manager' },
+      { id: 'v2ray-multipath', label: 'Multipath Engine' },
       { id: 'v2ray-core', label: 'Core Configuration' },
       { id: 'v2ray-routing', label: 'Routing Rules' }
     ]
@@ -30,7 +31,13 @@ const navItems = [
     id: 'network-tools-section', label: 'Network Tools', icon: FiZap,
     children: [
       { id: 'v2ray-scanner', label: 'Scanner Engine' },
+<<<<<<< HEAD
+      { id: 'domain-checker', label: 'Domain Checker' },
+      { id: 'ip-domain-checker', label: 'IP & Domain Checker' },
+      { id: 'dns-tester', label: 'DNS Tester' }
+=======
       { id: 'domain-checker', label: 'Domain Checker' }
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
     ]
   },
   {

@@ -12,6 +12,7 @@ import {
 	FiLoader,
 	FiSettings,
 } from 'react-icons/fi';
+import { IPResolveBadge } from '../../../components/atoms/IPResolveBadge';
 
 interface SubscriptionsCardProps {
 	isLoading: boolean;
@@ -74,6 +75,49 @@ interface SubscriptionsCardProps {
 	testSingleProfileAdvanced: (id: number, testType: string, url?: string) => void;
 	selectedCore: string;
 }
+
+const isIP = (str: string) => {
+	const ipv4Regex = /^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+	const ipv6Regex = /^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
+	return ipv4Regex.test(str) || ipv6Regex.test(str);
+};
+
+const getProtocolBadge = (proto: string) => {
+	const name = (proto || '').toUpperCase();
+	let bg = 'var(--color-brand-light)';
+	let color = 'var(--color-brand)';
+	if (name === 'VLESS') {
+		bg = 'rgba(99, 102, 241, 0.15)';
+		color = 'var(--color-brand-indigo)';
+	} else if (name === 'VMESS') {
+		bg = 'rgba(59, 130, 246, 0.15)';
+		color = 'var(--color-brand-blue)';
+	} else if (name === 'TROJAN') {
+		bg = 'rgba(232, 90, 28, 0.15)';
+		color = 'var(--color-brand)';
+	} else if (name === 'SS' || name === 'SHADOWSOCKS') {
+		bg = 'rgba(34, 197, 94, 0.15)';
+		color = 'var(--color-brand-green)';
+	} else if (!name) {
+		return <span style={{ color: 'var(--color-brand-muted)' }}>-</span>;
+	}
+	return (
+		<span
+			style={{
+				padding: '3px 8px',
+				borderRadius: 6,
+				background: bg,
+				color: color,
+				fontSize: 10,
+				fontWeight: 700,
+				letterSpacing: '0.5px',
+				display: 'inline-block'
+			}}
+		>
+			{name}
+		</span>
+	);
+};
 
 export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 	isLoading,
@@ -1311,22 +1355,20 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 											<td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>
 												{p.name}
 											</td>
-											<td style={{ padding: '10px 12px', textTransform: 'uppercase' }}>
-												<span
-													style={{
-														padding: '2px 6px',
-														borderRadius: 4,
-														background: '#e0f2fe',
-														color: '#0369a1',
-														fontSize: 10,
-														fontWeight: 700,
-													}}
-												>
-													{p.protocol}
-												</span>
+											<td style={{ padding: '10px 12px' }}>
+												{getProtocolBadge(p.protocol)}
 											</td>
-											<td style={{ padding: '10px 12px', color: 'var(--color-brand-text)' }}>
-												{p.address}:{p.port}
+											<td style={{ padding: '10px 12px' }}>
+												{isIP(p.address) ? (
+													<span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+														<IPResolveBadge ip={p.address} />
+														<span style={{ color: 'var(--color-brand-muted)', opacity: 0.8 }}>:{p.port}</span>
+													</span>
+												) : (
+													<span style={{ color: 'var(--color-brand-text)', fontFamily: 'monospace' }}>
+														{p.address}:{p.port}
+													</span>
+												)}
 											</td>
 											<td 
 												style={{ padding: '10px 12px', cursor: 'pointer' }}

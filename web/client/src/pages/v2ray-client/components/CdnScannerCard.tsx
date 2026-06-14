@@ -1,5 +1,6 @@
 import React from 'react';
 import { FiWifi, FiHelpCircle } from 'react-icons/fi';
+import { IPResolveBadge } from '../../../components/atoms/IPResolveBadge';
 
 interface CdnScannerCardProps {
   isLoading: boolean;
@@ -150,7 +151,9 @@ export const CdnScannerCard: React.FC<CdnScannerCardProps> = ({
                   <tbody>
                     {cdnScanStatus.top_results.map((res: any, idx: number) => (
                       <tr key={idx} style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
-                        <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{res.ip}</td>
+                        <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>
+                          <IPResolveBadge ip={res.ip} />
+                        </td>
                         <td style={{ padding: '6px 8px', color: 'var(--color-brand-green)', fontWeight: 700 }}>
                           {res.ping_ms}ms
                         </td>

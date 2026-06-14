@@ -1,5 +1,6 @@
 import React from 'react';
 import { FiWifi, FiHelpCircle } from 'react-icons/fi';
+import { IPResolveBadge } from '../../../components/atoms/IPResolveBadge';
 
 interface DeviceDiscoveryCardProps {
   isDiscovering: boolean;
@@ -52,7 +53,7 @@ export const DeviceDiscoveryCard: React.FC<DeviceDiscoveryCardProps> = ({
             <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
               <div>
                 <span style={{ color: 'var(--color-brand-heading)', fontWeight: 600, fontFamily: 'Fira Code' }}>
-                  {d.ip}
+                  <IPResolveBadge ip={d.ip} />
                 </span>
                 {d.hostname && <span style={{ color: 'var(--color-brand-muted)', marginLeft: 6 }}>({d.hostname})</span>}
               </div>

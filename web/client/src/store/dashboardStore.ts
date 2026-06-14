@@ -12,7 +12,7 @@ export interface VPNNode {
   accounts: number;
   scheduledIn: string;
   scheduledOut: string;
-  balance: string; // traffic limit / allowance remaining
+  balance: string;
 }
 
 interface BandwidthData {
@@ -30,44 +30,96 @@ interface DashboardState {
   latency: number;
   wsConnected: boolean;
   logs: string[];
-  connectNode: (node: VPNNode) => Promise<void>;
-  disconnectNode: () => Promise<void>;
-  deleteAllNodes: () => Promise<void>;
-  initWebSocket: (token: string) => () => void;
   
   // Real-time gRPC Stats
   activeConns: number;
   totalUplink: number;
   totalDownlink: number;
   trafficHistory: { time: string; upload: number; download: number }[];
+  
+  // Feature Stats
+  schedulerStats: any;
+  domainStats: any;
+
+  // Actions
+  fetchRealNodes: () => Promise<void>;
+  checkClientStatus: () => Promise<void>;
+  connectNode: (node: VPNNode) => Promise<void>;
+  disconnectNode: () => Promise<void>;
+  deleteAllNodes: () => Promise<void>;
+  initWebSocket: (token: string) => () => void;
   connectStream: () => void;
   disconnectStream: () => void;
+  fetchSchedulerStats: () => Promise<void>;
+  fetchDomainStats: () => Promise<void>;
 }
+
+const mapConfigToNode = (cfg: any): VPNNode => {
+  const nameLower = cfg.name.toLowerCase();
+  let flag = '🌐';
+  let country = 'Global';
+  
+  if (nameLower.includes('singapore') || nameLower.includes('sgd') || nameLower.includes('sg')) {
+    flag = '🇸🇬';
+    country = 'Singapore';
+  } else if (nameLower.includes('germany') || nameLower.includes('de') || nameLower.includes('frankfurt') || nameLower.includes('eur')) {
+    flag = '🇩🇪';
+    country = 'Germany';
+  } else if (nameLower.includes('united kingdom') || nameLower.includes('uk') || nameLower.includes('london') || nameLower.includes('gbp') || nameLower.includes('gb')) {
+    flag = '🇬🇧';
+    country = 'United Kingdom';
+  } else if (nameLower.includes('united states') || nameLower.includes('us') || nameLower.includes('usa') || nameLower.includes('usd') || nameLower.includes('new york')) {
+    flag = '🇺🇸';
+    country = 'United States';
+  } else if (nameLower.includes('australia') || nameLower.includes('aud') || nameLower.includes('sydney') || nameLower.includes('au')) {
+    flag = '🇦🇺';
+    country = 'Australia';
+  } else if (nameLower.includes('iran') || nameLower.includes('ir')) {
+    flag = '🇮🇷';
+    country = 'Iran';
+  } else if (nameLower.includes('finland') || nameLower.includes('fi')) {
+    flag = '🇫🇮';
+    country = 'Finland';
+  } else if (nameLower.includes('netherlands') || nameLower.includes('nl')) {
+    flag = '🇳🇱';
+    country = 'Netherlands';
+  } else if (nameLower.includes('france') || nameLower.includes('fr')) {
+    flag = '🇫🇷';
+    country = 'France';
+  }
+  
+  return {
+    id: String(cfg.ID),
+    name: cfg.name,
+    country: country,
+    flag: flag,
+    ip: cfg.address,
+    ping: cfg.latency_ms > 0 ? Number(cfg.latency_ms) : 0,
+    active: cfg.is_active,
+    accounts: 1,
+    scheduledIn: '',
+    scheduledOut: '',
+    balance: `${cfg.protocol.toUpperCase()} / ${cfg.network.toUpperCase()}`
+  };
+};
 
 export const useDashboardStore = create<DashboardState>((set, get) => {
   let ws: WebSocket | null = null;
   let wsStats: WebSocket | null = null;
-  let mockInterval: any = null;
 
   return {
     connectionState: 'disconnected',
     selectedNode: null,
-    nodes: [
-      { id: '1', name: 'SGD - Singapore Premium', country: 'Singapore', flag: '🇸🇬', ip: '139.59.241.12', ping: 42, active: true, accounts: 2, scheduledIn: '3.2 GB', scheduledOut: '1.1 GB', balance: '18.4 GB' },
-      { id: '2', name: 'EUR - Frankfurt HighSpeed', country: 'Germany', flag: '🇩🇪', ip: '46.101.200.89', ping: 124, active: true, accounts: 1, scheduledIn: '5.8 GB', scheduledOut: '2.4 GB', balance: '21.9 GB' },
-      { id: '3', name: 'GBP - London Secure', country: 'United Kingdom', flag: '🇬🇧', ip: '178.62.90.104', ping: 145, active: false, accounts: 1, scheduledIn: '2.1 GB', scheduledOut: '780 MB', balance: '12.9 GB' },
-      { id: '4', name: 'USD - New York Fiber', country: 'United States', flag: '🇺🇸', ip: '104.248.50.31', ping: 180, active: true, accounts: 3, scheduledIn: '5.6 GB', scheduledOut: '2.4 GB', balance: '24.8 GB' },
-      { id: '5', name: 'AUD - Sydney Edge', country: 'Australia', flag: '🇦🇺', ip: '13.211.45.160', ping: 220, active: false, accounts: 1, scheduledIn: '1.9 GB', scheduledOut: '650 MB', balance: '8.1 GB' }
-    ],
+    nodes: [],
     bandwidthHistory: Array.from({ length: 30 }, (_, i) => ({
       time: new Date(Date.now() - (30 - i) * 2000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
       upload: 0,
       download: 0
     })),
-    totalUsage: { upload: 2450, download: 8120 }, // in MB
+    totalUsage: { upload: 0, download: 0 },
     latency: 0,
     wsConnected: false,
-    logs: ['[System] Client ready. Select a node to establish connection.'],
+    logs: ['[System] CleverConnect Client Ready. Loading nodes and statistics...'],
 
     // Real-time gRPC Stats
     activeConns: 0,
@@ -75,104 +127,129 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
     totalDownlink: 0,
     trafficHistory: [],
 
-    connectStream: () => {
-      if (wsStats) return;
-      
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host;
+    // Feature Stats
+    schedulerStats: null,
+    domainStats: null,
+
+    fetchRealNodes: async () => {
       const token = localStorage.getItem('cc_client_token') || '';
-      
-      wsStats = new WebSocket(`${protocol}//${host}/ws/stats?token=${token}`);
-
-      wsStats.onopen = () => set({ wsConnected: true });
-      wsStats.onclose = () => set({ wsConnected: false });
-
-      wsStats.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          const now = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-          set((state) => {
-            const newHistory = [...state.trafficHistory, {
-              time: now,
-              upload: data.uplinkSpeed / 1024, 
-              download: data.downlinkSpeed / 1024,
-            }].slice(-60);
-
-            return {
-              activeConns: data.activeConns,
-              totalUplink: data.totalUplink,
-              totalDownlink: data.totalDownlink,
-              trafficHistory: newHistory,
-            };
-          });
-        } catch (err) {}
-      };
+      try {
+        const res = await fetch('/api/v2ray/client/configs?limit=1000', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const configs = data.data || [];
+          const mapped = configs.map(mapConfigToNode);
+          set({ nodes: mapped });
+          
+          const active = configs.find((c: any) => c.is_active);
+          const isRunning = get().connectionState === 'connected';
+          if (active && isRunning) {
+            set({ selectedNode: mapConfigToNode(active) });
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch real nodes:', err);
+      }
     },
 
-    disconnectStream: () => {
-      if (wsStats) {
-        wsStats.close();
-        wsStats = null;
-      }
+    checkClientStatus: async () => {
+      const token = localStorage.getItem('cc_client_token') || '';
+      try {
+        const res = await fetch('/api/v2ray/client/status', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.is_running) {
+            const configsRes = await fetch('/api/v2ray/client/configs?limit=1000', {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (configsRes.ok) {
+              const configsData = await configsRes.json();
+              const configs = configsData.data || [];
+              const active = configs.find((c: any) => c.is_active);
+              if (active) {
+                set({
+                  connectionState: 'connected',
+                  selectedNode: mapConfigToNode(active)
+                });
+                get().connectStream();
+              } else {
+                set({ connectionState: 'connected' });
+              }
+            }
+          } else {
+            set({ connectionState: 'disconnected', selectedNode: null });
+            get().disconnectStream();
+          }
+        }
+      } catch (err) {}
     },
 
     connectNode: async (node) => {
       set({ connectionState: 'connecting', selectedNode: node });
-      set((state) => ({ logs: [...state.logs.slice(-49), `[System] Resolving IP ${node.ip}...`, `[System] Handshaking via TLS...`] }));
+      set((state) => ({ logs: [...state.logs.slice(-49), `[System] Activating profile: ${node.name}...`] }));
 
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const token = localStorage.getItem('cc_client_token') || '';
+      try {
+        const activeRes = await fetch(`/api/v2ray/client/configs/${node.id}/active`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!activeRes.ok) {
+          throw new Error('Failed to activate node profile');
+        }
 
-      set({ connectionState: 'connected', latency: node.ping });
-      set((state) => ({
-        logs: [
-          ...state.logs.slice(-49),
-          `[System] Connection established successfully to ${node.name}!`,
-          `[System] Tunned via Secure TLS Protocol. MTU 1420.`
-        ]
-      }));
+        set((state) => ({ logs: [...state.logs.slice(-49), `[System] Bootstrapping V2Ray core...`] }));
 
-      // Setup mock data updates if WS is not active
-      if (!get().wsConnected) {
-        if (mockInterval) clearInterval(mockInterval);
-        mockInterval = setInterval(() => {
-          const downloadSpeed = Math.floor(Math.random() * 80) + 10; // MB/s
-          const uploadSpeed = Math.floor(Math.random() * 20) + 2;
+        const startRes = await fetch('/api/v2ray/client/start', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!startRes.ok) {
+          const data = await startRes.json();
+          throw new Error(data.error || 'Failed to start proxy core');
+        }
 
-          set((state) => {
-            const newHistory = [
-              ...state.bandwidthHistory.slice(1),
-              {
-                time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-                upload: uploadSpeed,
-                download: downloadSpeed
-              }
-            ];
+        set({ connectionState: 'connected', latency: node.ping });
+        set((state) => ({
+          logs: [
+            ...state.logs.slice(-49),
+            `[System] V2Ray tunnel successfully established to ${node.name}!`,
+            `[System] Telemetry stream initialized.`
+          ]
+        }));
 
-            return {
-              bandwidthHistory: newHistory,
-              totalUsage: {
-                upload: state.totalUsage.upload + uploadSpeed / 10,
-                download: state.totalUsage.download + downloadSpeed / 10
-              },
-              latency: node.ping + Math.floor(Math.random() * 10) - 5
-            };
-          });
-        }, 2000);
+        get().connectStream();
+        await get().fetchRealNodes();
+      } catch (err: any) {
+        set({ connectionState: 'disconnected', selectedNode: null });
+        set((state) => ({
+          logs: [...state.logs.slice(-49), `[Error] Connection failed: ${err.message}`]
+        }));
       }
     },
 
     disconnectNode: async () => {
-      if (mockInterval) {
-        clearInterval(mockInterval);
-        mockInterval = null;
+      const token = localStorage.getItem('cc_client_token') || '';
+      try {
+        set((state) => ({ logs: [...state.logs.slice(-49), '[System] Shutting down V2Ray core...'] }));
+        const res = await fetch('/api/v2ray/client/stop', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) {
+          throw new Error('Failed to stop core');
+        }
+        set({ connectionState: 'disconnected', selectedNode: null, latency: 0 });
+        set((state) => ({ logs: [...state.logs.slice(-49), '[System] V2Ray proxy core offline.'] }));
+        get().disconnectStream();
+        await get().fetchRealNodes();
+      } catch (err: any) {
+        set((state) => ({ logs: [...state.logs.slice(-49), `[Error] Stop core failed: ${err.message}`] }));
       }
-      const nodeName = get().selectedNode?.name || 'Node';
-      set({ connectionState: 'disconnected', selectedNode: null, latency: 0 });
-      set((state) => ({
-        logs: [...state.logs.slice(-49), `[System] Connection closed to ${nodeName}.`],
-        bandwidthHistory: state.bandwidthHistory.map((h) => ({ ...h, upload: 0, download: 0 }))
-      }));
     },
 
     deleteAllNodes: async () => {
@@ -188,13 +265,93 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
         
         set({ nodes: [], selectedNode: null, connectionState: 'disconnected', latency: 0 });
         set((state) => ({ logs: [...state.logs.slice(-49), '[System] All gateway nodes have been purged.'] }));
-        if (mockInterval) {
-          clearInterval(mockInterval);
-          mockInterval = null;
-        }
+        get().disconnectStream();
       } catch (err) {
         console.error('Failed to delete nodes:', err);
       }
+    },
+
+    connectStream: () => {
+      if (wsStats) return;
+      
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      const token = localStorage.getItem('cc_client_token') || '';
+      
+      wsStats = new WebSocket(`${protocol}//${host}/ws/stats?token=${token}`);
+
+      wsStats.onopen = () => {};
+      wsStats.onclose = () => {};
+
+      wsStats.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const now = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+          set((state) => {
+            const upSpeedKb = data.uplinkSpeed / 1024;
+            const downSpeedKb = data.downlinkSpeed / 1024;
+
+            const newHistory = [...state.trafficHistory, {
+              time: now,
+              upload: Number(upSpeedKb.toFixed(1)), 
+              download: Number(downSpeedKb.toFixed(1)),
+            }].slice(-30);
+
+            // Also keep standard bandwidthHistory updated
+            const newBandwidthHistory = [...state.bandwidthHistory.slice(1), {
+              time: now,
+              upload: Number((upSpeedKb / 1024).toFixed(2)), // MB/s
+              download: Number((downSpeedKb / 1024).toFixed(2)) // MB/s
+            }];
+
+            return {
+              activeConns: data.activeConns,
+              totalUplink: data.totalUplink,
+              totalDownlink: data.totalDownlink,
+              trafficHistory: newHistory,
+              bandwidthHistory: newBandwidthHistory,
+              totalUsage: {
+                upload: data.totalUplink / (1024 * 1024), // to MB
+                download: data.totalDownlink / (1024 * 1024) // to MB
+              }
+            };
+          });
+        } catch (err) {}
+      };
+    },
+
+    disconnectStream: () => {
+      if (wsStats) {
+        wsStats.close();
+        wsStats = null;
+      }
+    },
+
+    fetchSchedulerStats: async () => {
+      const token = localStorage.getItem('cc_client_token') || '';
+      try {
+        const res = await fetch('/api/scheduler/stats', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const stats = await res.json();
+          set({ schedulerStats: stats });
+        }
+      } catch (err) {}
+    },
+
+    fetchDomainStats: async () => {
+      const token = localStorage.getItem('cc_client_token') || '';
+      try {
+        const res = await fetch('/api/domains?limit=1', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          set({ domainStats: data.stats || null });
+        }
+      } catch (err) {}
     },
 
     initWebSocket: (token) => {
@@ -207,7 +364,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
 
           ws.onopen = () => {
             set({ wsConnected: true });
-            set((state) => ({ logs: [...state.logs.slice(-49), '[System] WebSocket channel established. Real-time updates enabled.'] }));
+            set((state) => ({ logs: [...state.logs.slice(-49), '[System] Web telemetry channel open.'] }));
           };
 
           ws.onmessage = (event) => {
@@ -215,22 +372,27 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
               const data = JSON.parse(event.data);
               if (data.type === 'bandwidth') {
                 set((state) => {
-                  const newHistory = [
-                    ...state.bandwidthHistory.slice(1),
-                    {
-                      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-                      upload: data.upload,
-                      download: data.download
-                    }
-                  ];
-                  return {
-                    bandwidthHistory: newHistory,
-                    totalUsage: {
-                      upload: data.totalUpload,
-                      download: data.totalDownload
-                    },
-                    latency: data.latency || state.latency
-                  };
+                  const isRunning = state.connectionState === 'connected';
+                  // Only use mock bandwidth if not running or stats WS not active
+                  if (!isRunning) {
+                    const newHistory = [
+                      ...state.bandwidthHistory.slice(1),
+                      {
+                        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                        upload: data.upload,
+                        download: data.download
+                      }
+                    ];
+                    return {
+                      bandwidthHistory: newHistory,
+                      totalUsage: {
+                        upload: data.totalUpload,
+                        download: data.totalDownload
+                      },
+                      latency: data.latency || state.latency
+                    };
+                  }
+                  return {};
                 });
               } else if (data.type === 'log') {
                 set((state) => ({ logs: [...state.logs.slice(-49), data.message] }));
@@ -242,12 +404,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
 
           ws.onclose = () => {
             set({ wsConnected: false });
-            set((state) => ({ logs: [...state.logs.slice(-49), '[Warning] WebSocket closed. Running on autonomous mock fallback.'] }));
-            // Retry connection after 5 seconds
             setTimeout(() => {
-              if (get().connectionState === 'connected') {
-                connect();
-              }
+              connect();
             }, 5000);
           };
         } catch (e) {
@@ -261,10 +419,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => {
         if (ws) {
           ws.close();
           ws = null;
-        }
-        if (mockInterval) {
-          clearInterval(mockInterval);
-          mockInterval = null;
         }
       };
     }

@@ -352,3 +352,23 @@ func DeleteFailedClientConfigs() (int, error) {
 	return count, err
 }
 
+// DeleteDiscoveredClientConfigs deletes all configs with name starting with "Discovered-"
+func DeleteDiscoveredClientConfigs() (int, error) {
+	if DB == nil {
+		return 0, fmt.Errorf("pebble database is not initialized")
+	}
+	configs, _ := ListClientConfigs(ConfigFilter{}, 0, 0)
+	count := 0
+	batch := DB.NewBatch()
+	for _, cfg := range configs {
+		if len(cfg.Name) >= 11 && cfg.Name[:11] == "Discovered-" {
+			key := []byte(fmt.Sprintf("%d", cfg.ID))
+			batch.Delete(key, pebble.Sync)
+			count++
+		}
+	}
+	err := batch.Commit(pebble.Sync)
+	batch.Close()
+	return count, err
+}
+

@@ -1,14 +1,17 @@
 package handlers
 
 import (
-	"fmt"
+	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"clever-connect/internal/config"
@@ -22,6 +25,8 @@ import (
 	"clever-connect/internal/spotify"
 	"clever-connect/internal/torrent"
 	"clever-connect/internal/v2ray/scanner"
+	"clever-connect/internal/dns"
+	"clever-connect/internal/geo"
 	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
@@ -105,6 +110,28 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 		}
 	}()
 
+<<<<<<< HEAD
+	// DNS Tester Listener
+	dns.GetEngine().RegisterListener(clientID, func(stats dns.DNSJobStats, event string, details interface{}) {
+		payload := gin.H{
+			"type":  "dns:telemetry",
+			"event": event,
+			"stats": stats,
+		}
+		if details != nil {
+			payload["data"] = details
+		}
+		select {
+		case telemetryChan <- payload:
+		default:
+		}
+	})
+	defer func() {
+		dns.GetEngine().UnregisterListener(clientID)
+	}()
+
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	domainchecker.GetEngine().RegisterListener(clientID, func(result domainchecker.DomainResult) {
 		payload := gin.H{
 			"type": "DOMAIN_CHECK_RESULT",
@@ -127,6 +154,22 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	})
 	defer domainchecker.GetEngine().UnregisterListener(clientID)
 
+<<<<<<< HEAD
+	// Geo Engine Listener
+	geo.GetEngine().RegisterListener(clientID, func(ip string, reg *models.IPRegistry) {
+		payload := gin.H{
+			"type": "GEO_RESOLVED",
+			"data": reg,
+		}
+		select {
+		case telemetryChan <- payload:
+		default:
+		}
+	})
+	defer geo.GetEngine().UnregisterListener(clientID)
+
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	// Read loop (to handle inbound actions like scanner:start, scanner:stop)
 	go func() {
 		defer close(doneChan)
@@ -148,6 +191,10 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			case "scanner:start":
 				var req struct {
 					TargetCIDRs        []string `json:"target_cidrs"`
+<<<<<<< HEAD
+					TargetCDNs         []string `json:"target_cdns"`
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 					SelectedPorts      []int    `json:"selected_ports"`
 					ConcurrencyLimit   int      `json:"concurrency_limit"`
 					MaxRateLimit       float64  `json:"max_rate_limit"`
@@ -171,6 +218,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 						if db.DB != nil && db.DB.First(&saved, 1).Error == nil {
 							scanCfg = scanner.ScanConfig{
 								TargetCIDRs:      []string(saved.TargetCIDRs),
+								TargetCDNs:       []string(saved.TargetCDNs),
 								SelectedPorts:    []int(saved.Ports),
 								ConcurrencyLimit: saved.ConcurrencyLimit,
 								MaxRateLimit:     saved.MaxRateLimit,
@@ -195,6 +243,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 								ProbeAttempts:     req.ProbeAttempts,
 								Ports:             models.IntArray(req.SelectedPorts),
 								TargetCIDRs:       models.StringArray(req.TargetCIDRs),
+								TargetCDNs:        models.StringArray(req.TargetCDNs),
 								TargetMode:        req.TargetMode,
 								TargetSNI:         req.TargetSNI,
 								WebSocketHost:     req.WebSocketHost,
@@ -210,6 +259,10 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 
 						scanCfg = scanner.ScanConfig{
 							TargetCIDRs:        req.TargetCIDRs,
+<<<<<<< HEAD
+							TargetCDNs:         req.TargetCDNs,
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 							SelectedPorts:      req.SelectedPorts,
 							ConcurrencyLimit:   req.ConcurrencyLimit,
 							MaxRateLimit:       req.MaxRateLimit,
@@ -241,7 +294,228 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 					"event": "scanner.init",
 					"stats": stats,
 				}
-				_ = conn.WriteJSON(resp)
+				select {
+				case telemetryChan <- resp:
+				default:
+				}
+			case "dns:start":
+				var req struct {
+					ConcurrencyLimit  int                  `json:"concurrency_limit"`
+					QPSLimit          int                  `json:"qps_limit"`
+					TimeoutMs         int                  `json:"timeout_ms"`
+					Attempts          int                  `json:"attempts"`
+					CacheBusting      bool                 `json:"cache_busting"`
+					ReferenceDomain   string               `json:"reference_domain"`
+					SelectedProtocols []string             `json:"selected_protocols"`
+					CustomResolvers   []models.DNSResolver `json:"custom_resolvers"`
+					QueryTypes        []string             `json:"query_types"`
+					DNSClass          string               `json:"dns_class"`
+					QueryGenerator    string               `json:"query_generator"`
+					DomainSource      string               `json:"domain_source"`
+					CustomDomains     []string             `json:"custom_domains"`
+					WordlistURL       string               `json:"wordlist_url"`
+					ExpectResponse    string               `json:"expect_response"`
+				}
+				if err := json.Unmarshal(incoming.Data, &req); err == nil {
+					if req.ConcurrencyLimit <= 0 {
+						req.ConcurrencyLimit = 100
+					}
+					if req.TimeoutMs <= 0 {
+						req.TimeoutMs = 3000
+					}
+					if req.Attempts <= 0 {
+						req.Attempts = 3
+					}
+					if req.ReferenceDomain == "" {
+						req.ReferenceDomain = "google.com"
+					}
+					if req.DNSClass == "" {
+						req.DNSClass = "IN"
+					}
+					if req.QueryGenerator == "" {
+						req.QueryGenerator = "random"
+					}
+					if req.DomainSource == "" {
+						req.DomainSource = "default"
+					}
+
+					testerCfg := &models.DNSTesterConfig{
+						ConcurrencyLimit: req.ConcurrencyLimit,
+						QPSLimit:         req.QPSLimit,
+						TimeoutMs:        req.TimeoutMs,
+						Attempts:         req.Attempts,
+						CacheBusting:     req.CacheBusting,
+						ReferenceDomain:  req.ReferenceDomain,
+						QueryTypes:       models.StringArray(req.QueryTypes),
+						DNSClass:         req.DNSClass,
+						QueryGenerator:   req.QueryGenerator,
+						DomainSource:     req.DomainSource,
+						CustomDomains:    models.StringArray(req.CustomDomains),
+						WordlistURL:      req.WordlistURL,
+						ExpectResponse:   req.ExpectResponse,
+					}
+					_ = dns.GetEngine().StartTest(testerCfg, req.CustomResolvers, req.SelectedProtocols)
+				}
+			case "dns:stop":
+				dns.GetEngine().StopTest()
+			case "dns:telemetry":
+				stats := dns.GetEngine().GetLiveStats()
+				resp := gin.H{
+					"type":  "dns:telemetry",
+					"event": "dns.init",
+					"stats": stats,
+				}
+				select {
+				case telemetryChan <- resp:
+				default:
+				}
+			case "dns:trace":
+				var req struct {
+					ResolverIP string `json:"resolver_ip"`
+					Domain     string `json:"domain"`
+				}
+				if err := json.Unmarshal(incoming.Data, &req); err == nil {
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								logger.Error("WS", "Recovered from panic in dns:trace handler", "panic", r)
+							}
+						}()
+						steps, err := dns.GetEngine().TraceDNS(c.Request.Context(), req.Domain, req.ResolverIP)
+						resp := gin.H{
+							"type":  "dns:trace_result",
+							"steps": steps,
+						}
+						if err != nil {
+							resp["error"] = err.Error()
+						}
+						select {
+						case telemetryChan <- resp:
+						default:
+						}
+					}()
+				}
+			case "dns:axfr":
+				var req struct {
+					ResolverIP string `json:"resolver_ip"`
+					Domain     string `json:"domain"`
+				}
+				if err := json.Unmarshal(incoming.Data, &req); err == nil {
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								logger.Error("WS", "Recovered from panic in dns:axfr handler", "panic", r)
+							}
+						}()
+						res, err := dns.GetEngine().TestAXFR(c.Request.Context(), req.Domain, req.ResolverIP)
+						resp := gin.H{
+							"type":   "dns:axfr_result",
+							"result": res,
+						}
+						if err != nil {
+							resp["error"] = err.Error()
+						}
+						select {
+						case telemetryChan <- resp:
+						default:
+						}
+					}()
+				}
+			case "bulk_lookup":
+				var req struct {
+					IPs []string `json:"ips"`
+				}
+				if err := json.Unmarshal(incoming.Data, &req); err == nil {
+					go func(ips []string) {
+						defer func() {
+							if r := recover(); r != nil {
+								logger.Error("WS", "Recovered from panic in bulk_lookup handler", "panic", r)
+							}
+						}()
+						total := len(ips)
+						if total == 0 {
+							return
+						}
+
+						cfg, err := geo.GetIPLookupConfig()
+						if err != nil {
+							logger.Error("WS", "Failed to get config for bulk lookup", "error", err)
+							return
+						}
+
+						var resolvedCount int
+						batchSize := 10
+
+						for i := 0; i < total; i += batchSize {
+							end := i + batchSize
+							if end > total {
+								end = total
+							}
+							batch := ips[i:end]
+
+							var batchWg sync.WaitGroup
+							var batchMu sync.Mutex
+							batchResults := make([]*geo.UnifiedIPResult, 0)
+
+							for _, ip := range batch {
+								ipClean := strings.TrimSpace(ip)
+								if ipClean == "" {
+									continue
+								}
+
+								batchWg.Add(1)
+								go func(ipVal string) {
+									defer func() {
+										if r := recover(); r != nil {
+											logger.Error("WS", "Recovered from panic in bulk_lookup worker", "panic", r)
+										}
+										batchWg.Done()
+									}()
+									
+									// Validate IP address format
+									if net.ParseIP(ipVal) == nil {
+										return
+									}
+
+									// 1. Check cache first
+									if cached, found := geo.QueryIPIntelligenceCache(ipVal); found {
+										batchMu.Lock()
+										batchResults = append(batchResults, cached)
+										batchMu.Unlock()
+										return
+									}
+
+									// 2. Resolve using concurrent aggregator
+									geoRes, err := geo.ConcurrentGeoResolver(context.Background(), ipVal, cfg)
+									if err == nil {
+										geo.SaveIPToCache(geoRes)
+										batchMu.Lock()
+										batchResults = append(batchResults, geoRes)
+										batchMu.Unlock()
+									} else {
+										logger.Warn("WS", "Bulk resolution failed for IP", "ip", ipVal, "error", err)
+									}
+								}(ipClean)
+							}
+							batchWg.Wait()
+
+							resolvedCount += len(batchResults)
+
+							// Stream batch progress back to client
+							progressMsg := gin.H{
+								"type":     "BULK_PROGRESS",
+								"event":    "BULK_PROGRESS",
+								"resolved": resolvedCount,
+								"total":    total,
+								"data":     batchResults,
+							}
+							select {
+							case telemetryChan <- progressMsg:
+							default:
+							}
+						}
+					}(req.IPs)
+				}
 			}
 		}
 	}()

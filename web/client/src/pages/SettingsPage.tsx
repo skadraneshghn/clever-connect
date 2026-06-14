@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { FiSliders, FiSun, FiMoon, FiMonitor, FiType, FiEye, FiCheck } from 'react-icons/fi';
+import { FiSliders, FiSun, FiMoon, FiMonitor, FiType, FiEye, FiCheck, FiGlobe } from 'react-icons/fi';
 import { Card } from '../components/molecules/Card';
 import { useAuthStore } from '../store/authStore';
+import { useLookupStore } from '../store/lookupStore';
+import type { ApiKeysConfig } from '../store/lookupStore';
 
 const fonts = [
   { id: 'inter', name: 'Inter', description: 'Clean modern sans-serif, standard interface optimization.', cssClass: 'font-inter' },
@@ -17,11 +19,59 @@ const themes = [
 
 export const SettingsPage: React.FC = () => {
   const { token } = useAuthStore();
+  const { apiConfig, fetchApiConfig, saveApiConfig, testConnection } = useLookupStore();
   const [selectedFont, setSelectedFont] = useState(() => localStorage.getItem('cc_font') || 'inter');
   const [selectedTheme, setSelectedTheme] = useState(() => localStorage.getItem('cc_theme') || 'light');
   const [faviconFile, setFaviconFile] = useState<File | null>(null);
   const [uploadingFavicon, setUploadingFavicon] = useState(false);
   const [faviconMsg, setFaviconMsg] = useState('');
+
+  const [localApiKeys, setLocalApiKeys] = useState<ApiKeysConfig | null>(null);
+  const [testStatus, setTestStatus] = useState<Record<string, { loading: boolean; valid?: boolean; error?: string }>>({});
+  const [saveStatus, setSaveStatus] = useState('');
+
+  useEffect(() => {
+    fetchApiConfig();
+  }, [fetchApiConfig]);
+
+  useEffect(() => {
+    if (apiConfig) {
+      setLocalApiKeys({ ...apiConfig });
+    }
+  }, [apiConfig]);
+
+  const handleSaveApiKeys = async () => {
+    if (!localApiKeys) return;
+    setSaveStatus('Saving...');
+    const success = await saveApiConfig(localApiKeys);
+    if (success) {
+      setSaveStatus('✅ Saved successfully!');
+      setTimeout(() => setSaveStatus(''), 3000);
+    } else {
+      setSaveStatus('❌ Failed to save configurations.');
+    }
+  };
+
+  const handleTestKey = async (service: string, key: string) => {
+    setTestStatus(prev => ({ ...prev, [service]: { loading: true } }));
+    const result = await testConnection(service, key);
+    setTestStatus(prev => ({
+      ...prev,
+      [service]: {
+        loading: false,
+        valid: result.valid,
+        error: result.error
+      }
+    }));
+  };
+
+  const renderTestStatus = (status: { loading: boolean; valid?: boolean; error?: string }) => {
+    if (status.loading) return null;
+    if (status.valid) {
+      return <div style={{ fontSize: 11, color: '#10b981', marginTop: 4, fontWeight: 600 }}>✅ Connection Success! API key is valid.</div>;
+    }
+    return <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4, fontWeight: 500 }}>❌ Connection Failed: {status.error}</div>;
+  };
 
   const handleFaviconUpload = async () => {
     if (!faviconFile) return;
@@ -192,6 +242,246 @@ export const SettingsPage: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* API Keys Settings Card */}
+          {localApiKeys && (
+            <div className="g-card animate-slide-in">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                <FiGlobe style={{ color: 'var(--color-brand)', fontSize: 18 }} />
+                <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>IP & Domain Intelligence APIs</span>
+              </div>
+              <p style={{ fontSize: 11, color: 'var(--color-brand-text)', marginBottom: 16 }}>
+                Configure API keys and toggles for third-party intelligence services. Toggled active endpoints will be queried concurrently.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {/* IP2Location */}
+                <div style={{ borderBottom: '1px solid var(--color-brand-border)', paddingBottom: 16 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>IP2Location.io (Primary / WHOIS)</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={localApiKeys.enable_ip2location}
+                        onChange={e => setLocalApiKeys({ ...localApiKeys, enable_ip2location: e.target.checked })}
+                        style={{ accentColor: 'var(--color-brand)' }}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>Enable</span>
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <input
+                      type="password"
+                      placeholder="Enter IP2Location.io API Key"
+                      value={localApiKeys.ip2location_key || ''}
+                      onChange={e => setLocalApiKeys({ ...localApiKeys, ip2location_key: e.target.value })}
+                      style={{
+                        flex: 1,
+                        fontSize: 12,
+                        padding: '8px 12px',
+                        borderRadius: 8,
+                        border: '1px solid var(--color-brand-border)',
+                        background: 'var(--color-brand-bg)',
+                        color: 'var(--color-brand-heading)'
+                      }}
+                    />
+                    <button
+                      className="btn btn--sm"
+                      onClick={() => handleTestKey('ip2location', localApiKeys.ip2location_key)}
+                      disabled={testStatus['ip2location']?.loading || !localApiKeys.ip2location_key}
+                      style={{ height: 38 }}
+                    >
+                      {testStatus['ip2location']?.loading ? 'Testing...' : 'Test'}
+                    </button>
+                  </div>
+                  {testStatus['ip2location'] && renderTestStatus(testStatus['ip2location'])}
+                </div>
+
+                {/* IP-API */}
+                <div style={{ borderBottom: '1px solid var(--color-brand-border)', paddingBottom: 16 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>IP-API.com (Pro Key / Free default)</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={localApiKeys.enable_ip_api}
+                        onChange={e => setLocalApiKeys({ ...localApiKeys, enable_ip_api: e.target.checked })}
+                        style={{ accentColor: 'var(--color-brand)' }}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>Enable</span>
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <input
+                      type="password"
+                      placeholder="Enter IP-API.com Key (Optional for Free)"
+                      value={localApiKeys.ip_api_key || ''}
+                      onChange={e => setLocalApiKeys({ ...localApiKeys, ip_api_key: e.target.value })}
+                      style={{
+                        flex: 1,
+                        fontSize: 12,
+                        padding: '8px 12px',
+                        borderRadius: 8,
+                        border: '1px solid var(--color-brand-border)',
+                        background: 'var(--color-brand-bg)',
+                        color: 'var(--color-brand-heading)'
+                      }}
+                    />
+                    <button
+                      className="btn btn--sm"
+                      onClick={() => handleTestKey('ip_api', localApiKeys.ip_api_key)}
+                      disabled={testStatus['ip_api']?.loading || !localApiKeys.ip_api_key}
+                      style={{ height: 38 }}
+                    >
+                      {testStatus['ip_api']?.loading ? 'Testing...' : 'Test'}
+                    </button>
+                  </div>
+                  {testStatus['ip_api'] && renderTestStatus(testStatus['ip_api'])}
+                </div>
+
+                {/* IPGeolocation.io */}
+                <div style={{ borderBottom: '1px solid var(--color-brand-border)', paddingBottom: 16 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>IPGeolocation.io</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={localApiKeys.enable_ip_geolocation}
+                        onChange={e => setLocalApiKeys({ ...localApiKeys, enable_ip_geolocation: e.target.checked })}
+                        style={{ accentColor: 'var(--color-brand)' }}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>Enable</span>
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <input
+                      type="password"
+                      placeholder="Enter IPGeolocation.io API Key"
+                      value={localApiKeys.ip_geolocation_key || ''}
+                      onChange={e => setLocalApiKeys({ ...localApiKeys, ip_geolocation_key: e.target.value })}
+                      style={{
+                        flex: 1,
+                        fontSize: 12,
+                        padding: '8px 12px',
+                        borderRadius: 8,
+                        border: '1px solid var(--color-brand-border)',
+                        background: 'var(--color-brand-bg)',
+                        color: 'var(--color-brand-heading)'
+                      }}
+                    />
+                    <button
+                      className="btn btn--sm"
+                      onClick={() => handleTestKey('ipgeolocation', localApiKeys.ip_geolocation_key)}
+                      disabled={testStatus['ipgeolocation']?.loading || !localApiKeys.ip_geolocation_key}
+                      style={{ height: 38 }}
+                    >
+                      {testStatus['ipgeolocation']?.loading ? 'Testing...' : 'Test'}
+                    </button>
+                  </div>
+                  {testStatus['ipgeolocation'] && renderTestStatus(testStatus['ipgeolocation'])}
+                </div>
+
+                {/* IPWhois.io */}
+                <div style={{ borderBottom: '1px solid var(--color-brand-border)', paddingBottom: 16 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>IPWhois.io / IPWhois.app</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={localApiKeys.enable_ip_whois}
+                        onChange={e => setLocalApiKeys({ ...localApiKeys, enable_ip_whois: e.target.checked })}
+                        style={{ accentColor: 'var(--color-brand)' }}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>Enable</span>
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <input
+                      type="password"
+                      placeholder="Enter IPWhois.pro Key (Optional for Free)"
+                      value={localApiKeys.ip_whois_key || ''}
+                      onChange={e => setLocalApiKeys({ ...localApiKeys, ip_whois_key: e.target.value })}
+                      style={{
+                        flex: 1,
+                        fontSize: 12,
+                        padding: '8px 12px',
+                        borderRadius: 8,
+                        border: '1px solid var(--color-brand-border)',
+                        background: 'var(--color-brand-bg)',
+                        color: 'var(--color-brand-heading)'
+                      }}
+                    />
+                    <button
+                      className="btn btn--sm"
+                      onClick={() => handleTestKey('ipwhois', localApiKeys.ip_whois_key)}
+                      disabled={testStatus['ipwhois']?.loading || !localApiKeys.ip_whois_key}
+                      style={{ height: 38 }}
+                    >
+                      {testStatus['ipwhois']?.loading ? 'Testing...' : 'Test'}
+                    </button>
+                  </div>
+                  {testStatus['ipwhois'] && renderTestStatus(testStatus['ipwhois'])}
+                </div>
+
+                {/* FindIP.net */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>FindIP.net</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={localApiKeys.enable_find_ip}
+                        onChange={e => setLocalApiKeys({ ...localApiKeys, enable_find_ip: e.target.checked })}
+                        style={{ accentColor: 'var(--color-brand)' }}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>Enable</span>
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <input
+                      type="password"
+                      placeholder="Enter FindIP.net API Token"
+                      value={localApiKeys.find_ip_key || ''}
+                      onChange={e => setLocalApiKeys({ ...localApiKeys, find_ip_key: e.target.value })}
+                      style={{
+                        flex: 1,
+                        fontSize: 12,
+                        padding: '8px 12px',
+                        borderRadius: 8,
+                        border: '1px solid var(--color-brand-border)',
+                        background: 'var(--color-brand-bg)',
+                        color: 'var(--color-brand-heading)'
+                      }}
+                    />
+                    <button
+                      className="btn btn--sm"
+                      onClick={() => handleTestKey('findip', localApiKeys.find_ip_key)}
+                      disabled={testStatus['findip']?.loading || !localApiKeys.find_ip_key}
+                      style={{ height: 38 }}
+                    >
+                      {testStatus['findip']?.loading ? 'Testing...' : 'Test'}
+                    </button>
+                  </div>
+                  {testStatus['findip'] && renderTestStatus(testStatus['findip'])}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 20, display: 'flex', gap: 10, alignItems: 'center' }}>
+                <button
+                  className="btn btn--sm btn--primary"
+                  onClick={handleSaveApiKeys}
+                  style={{ height: 38, whiteSpace: 'nowrap' }}
+                >
+                  Save API Configurations
+                </button>
+                {saveStatus && (
+                  <span style={{ fontSize: 12, color: saveStatus.startsWith('✅') ? '#10b981' : '#ef4444' }}>
+                    {saveStatus}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Font Selector Card */}
           <div className="g-card">

@@ -6,6 +6,8 @@ import {
   FiPlusCircle, FiXCircle
 } from 'react-icons/fi';
 import { useAuthStore } from '../store/authStore';
+import { IPResolveBadge } from '../components/atoms/IPResolveBadge';
+import { useGeoStore } from '../store/geoStore';
 
 interface ScannedCandidate {
   ip: string;
@@ -13,6 +15,9 @@ interface ScannedCandidate {
   protocol: string;
   latencyMs: number;
   speedMbps: number;
+  packetLoss: number;
+  cdnProvider: string;
+  popLocation: string;
   status: 'healthy' | 'failed' | 'in_flight';
   time: string;
 }
@@ -110,6 +115,10 @@ export const NetworkToolsPage: React.FC = () => {
   const [newSourceName, setNewSourceName] = useState('');
   const [newSourceUrl, setNewSourceUrl] = useState('');
   const [newSourceType, setNewSourceType] = useState<'cidr' | 'proxyip' | 'domain'>('cidr');
+<<<<<<< HEAD
+  const [selectedCDNs, setSelectedCDNs] = useState<string[]>([]);
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 
   // Collapsible configuration panels
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
@@ -178,6 +187,9 @@ export const NetworkToolsPage: React.FC = () => {
     socket.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        if (msg.type === 'GEO_RESOLVED' && msg.data) {
+          useGeoStore.getState().updateGeoInfo(msg.data);
+        }
         if (msg.type === 'scanner:telemetry') {
           if (msg.stats) {
             setStats({
@@ -215,8 +227,11 @@ export const NetworkToolsPage: React.FC = () => {
                   port: c.port,
                   protocol: c.protocol || 'ws',
                   latencyMs: c.latency_ms || c.latencyMs || 0,
-                  speedMbps: c.speed_mbps || c.speedMbps || 0.0,
-                  status: (c.latency_ms || c.latencyMs) > 0 ? 'healthy' : 'failed',
+                  speedMbps: c.download_speed_mbps || c.speed_mbps || c.speedMbps || 0.0,
+                  packetLoss: c.packet_loss !== undefined ? c.packet_loss : 0,
+                  cdnProvider: c.cdn_provider || '',
+                  popLocation: c.pop_location || '',
+                  status: (c.latency_ms || c.latencyMs) > 0 ? (c.packet_loss === 100 ? 'failed' : 'healthy') : 'failed',
                   time: new Date().toLocaleTimeString(),
                 },
                 ...filtered,
@@ -263,8 +278,11 @@ export const NetworkToolsPage: React.FC = () => {
             port: item.port,
             protocol: item.network || 'tcp',
             latencyMs: item.latency_ms || item.latency || 0,
-            speedMbps: item.speed_mbps || item.speed || 0.0,
-            status: item.latency_ms > 0 ? 'healthy' : 'failed',
+            speedMbps: item.download_speed_mbps || item.speed_mbps || item.speed || 0.0,
+            packetLoss: item.packet_loss || 0,
+            cdnProvider: item.cdn_provider || '',
+            popLocation: item.pop_location || '',
+            status: item.latency_ms > 0 ? (item.packet_loss === 100 ? 'failed' : 'healthy') : 'failed',
             time: 'Saved',
           }));
         setCandidates(parsed);
@@ -518,6 +536,7 @@ export const NetworkToolsPage: React.FC = () => {
       type: 'scanner:start',
       data: {
         target_cidrs: cidrs,
+        target_cdns: selectedCDNs,
         selected_ports: ports,
         concurrency_limit: Number(concurrencyLimit),
         max_rate_limit: Number(maxRateLimit),
@@ -539,6 +558,117 @@ export const NetworkToolsPage: React.FC = () => {
     ws.send(JSON.stringify(payload));
   };
 
+<<<<<<< HEAD
+  const fetchScannerConfig = async () => {
+    try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/scanner/config', {
+        headers: { 'Authorization': `Bearer ${activeToken}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ports) {
+          const common = COMMON_PORTS.map(p => p.value).filter(p => data.ports.includes(p));
+          setSelectedPortsList(common);
+          const custom = data.ports.filter((p: number) => !COMMON_PORTS.map(cp => cp.value).includes(p));
+          setCustomPorts(custom.join(', '));
+        }
+        if (data.target_cidrs) {
+          setTargetCidrs(data.target_cidrs.join('\n'));
+        }
+        if (data.target_cdns) {
+          setSelectedCDNs(data.target_cdns);
+        }
+        if (data.concurrency_limit) {
+          setConcurrencyLimit(data.concurrency_limit);
+        }
+        if (data.max_rate_limit !== undefined) {
+          setMaxRateLimit(data.max_rate_limit);
+        }
+        if (data.network_timeout_sec) {
+          setNetworkTimeoutMs(data.network_timeout_sec * 1000);
+        }
+        if (data.probe_attempts) {
+          setProbeAttempts(data.probe_attempts);
+        }
+        if (data.target_mode) {
+          setTargetMode(data.target_mode);
+        }
+        if (data.target_sni) {
+          setTargetSni(data.target_sni);
+        }
+        if (data.websocket_host) {
+          setWebsocketHost(data.websocket_host);
+        }
+        if (data.websocket_path) {
+          setWebsocketPath(data.websocket_path);
+        }
+        if (data.require_ws !== undefined) {
+          setRequireWs(data.require_ws);
+        }
+        if (data.enable_neighbors !== undefined) {
+          setEnableNeighbors(data.enable_neighbors);
+        }
+        if (data.top_limit) {
+          setTopLimit(data.top_limit);
+        }
+        if (data.total_target_count !== undefined) {
+          setTotalTargetCount(data.total_target_count);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch scanner config', err);
+    }
+  };
+
+  const handleResetSettings = async () => {
+    if (!confirm('Are you sure you want to reset all scanner settings to default values?')) {
+      return;
+    }
+    try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/scanner/config/reset', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${activeToken}` }
+      });
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'Scanner settings successfully reset to default.' });
+        fetchScannerConfig();
+      } else {
+        setMessage({ type: 'error', text: 'Failed to reset settings.' });
+      }
+    } catch (err) {
+      console.error('Failed to reset scanner settings', err);
+    }
+  };
+
+  const handleCleanupDiscoveredHealthy = async () => {
+    if (!confirm('Are you sure you want to delete ALL scanner-discovered healthy results completely from the database?')) {
+      return;
+    }
+    try {
+      const activeToken = token || localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/configs/discovered', {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${activeToken}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMessage({ type: 'success', text: `Cleaned up ${data.count || 0} discovered nodes.` });
+        fetchSavedConfigs();
+      } else {
+        setMessage({ type: 'error', text: 'Failed to delete discovered nodes.' });
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: 'Network error during healthy candidate deletion.' });
+    }
+  };
+
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
   const handleCleanupDiscovered = async () => {
     if (!confirm('Are you sure you want to clean up all failed candidates from the database?')) {
       return;
@@ -625,6 +755,10 @@ export const NetworkToolsPage: React.FC = () => {
   useEffect(() => {
     fetchSavedConfigs();
     fetchSources();
+<<<<<<< HEAD
+    fetchScannerConfig();
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
   }, []);
 
   const handleAddSourceSubmit = (e: React.FormEvent) => {
@@ -788,6 +922,77 @@ export const NetworkToolsPage: React.FC = () => {
         {/* Left Column: Config Panel (span 5) */}
         <div className="col-span-12 lg:col-span-5" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           
+<<<<<<< HEAD
+          {/* Card: Target CDN Filtering */}
+          <div className="g-card" style={{ padding: 20 }}>
+            <h3 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', margin: 0, marginBottom: 14 }}>
+              TARGET CDN REGISTRY FILTERING
+            </h3>
+            <p style={{ fontSize: 11, color: 'var(--color-brand-text)', marginBottom: 12 }}>
+              Select target CDNs to sweep their official offline IP registry ranges. If selected, other sources are bypassed.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 12px' }}>
+              {[
+                { id: 'cloudflare', name: 'Cloudflare' },
+                { id: 'cloudfront', name: 'AWS CloudFront' },
+                { id: 'fastly', name: 'Fastly' },
+                { id: 'bunny', name: 'Bunny CDN' },
+                { id: 'cdn77', name: 'CDN77' },
+                { id: 'gcore', name: 'Gcore' },
+                { id: 'akamai', name: 'Akamai' },
+                { id: 'google', name: 'Google Cloud CDN' },
+                { id: 'azure', name: 'Microsoft Azure' }
+              ].map((cdn) => {
+                const isChecked = selectedCDNs.includes(cdn.name);
+                return (
+                  <label
+                    key={cdn.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      border: isChecked ? '1px solid var(--color-brand)' : '1px solid var(--color-brand-border)',
+                      background: isChecked ? 'var(--color-brand-light)' : 'var(--color-brand-card)',
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => {
+                        if (isChecked) {
+                          setSelectedCDNs(selectedCDNs.filter((c) => c !== cdn.name));
+                        } else {
+                          setSelectedCDNs([...selectedCDNs, cdn.name]);
+                        }
+                      }}
+                      style={{ accentColor: 'var(--color-brand)', cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                      {cdn.name}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            {selectedCDNs.length > 0 && (
+              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setSelectedCDNs([])}
+                  style={{ background: 'none', border: 'none', color: 'var(--color-brand-red)', fontSize: 10, fontWeight: 600, cursor: 'pointer' }}
+                >
+                  Clear CDN Filters
+                </button>
+              </div>
+            )}
+          </div>
+
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
           {/* Card 1: Port Configuration */}
           <div className="g-card" style={{ padding: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
@@ -1231,10 +1436,17 @@ export const NetworkToolsPage: React.FC = () => {
               ) : (
                 <>
                   <div style={{ display: 'flex', gap: 8 }}>
+<<<<<<< HEAD
+                    <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 2, justifyContent: 'center', padding: '10px' }}>
+                      <FiPlay style={{ marginRight: 6 }} /> Start Sweep
+                    </button>
+                    <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Rerun last configuration scan parameters" style={{ flex: 1, justifyContent: 'center', padding: '10px' }}>
+=======
                     <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 1, justifyContent: 'center', padding: '10px' }}>
                       <FiPlay style={{ marginRight: 6 }} /> Start Sweep
                     </button>
                     <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Rerun last configuration scan parameters" style={{ padding: '10px' }}>
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                       Retry Last
                     </button>
                   </div>
@@ -1256,6 +1468,27 @@ export const NetworkToolsPage: React.FC = () => {
                       <FiTrash2 style={{ marginRight: 6 }} /> Clean Failed
                     </button>
                   </div>
+<<<<<<< HEAD
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button 
+                      className="btn btn--secondary" 
+                      onClick={handleCleanupDiscoveredHealthy} 
+                      style={{ flex: 1, justifyContent: 'center', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                      title="Delete ALL scanner-discovered healthy results completely from database"
+                    >
+                      <FiTrash2 style={{ marginRight: 6 }} /> Delete Healthy
+                    </button>
+                    <button 
+                      className="btn btn--secondary" 
+                      onClick={handleResetSettings} 
+                      style={{ flex: 1, justifyContent: 'center' }}
+                      title="Reset all scanner settings to default values"
+                    >
+                      <FiRefreshCw style={{ marginRight: 6 }} /> Reset Settings
+                    </button>
+                  </div>
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                 </>
               )}
             </div>
@@ -1333,6 +1566,72 @@ export const NetworkToolsPage: React.FC = () => {
             </div>
           </div>
 
+<<<<<<< HEAD
+          {/* Card: CDN Benchmarking Chart */}
+          {candidates.filter(c => c.status === 'healthy' && c.cdnProvider).length > 0 && (
+            <div className="g-card" style={{ padding: 20 }}>
+              <h3 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', margin: 0, marginBottom: 14 }}>
+                CDN PERFORMANCE BENCHMARKING
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {(() => {
+                  const groups: { [key: string]: { count: number; totalLat: number; totalSpeed: number } } = {};
+                  candidates.forEach(c => {
+                    if (c.status === 'healthy' && c.cdnProvider) {
+                      if (!groups[c.cdnProvider]) {
+                        groups[c.cdnProvider] = { count: 0, totalLat: 0, totalSpeed: 0 };
+                      }
+                      groups[c.cdnProvider].count++;
+                      groups[c.cdnProvider].totalLat += c.latencyMs;
+                      groups[c.cdnProvider].totalSpeed += c.speedMbps;
+                    }
+                  });
+
+                  const data = Object.keys(groups).map(name => ({
+                    name,
+                    count: groups[name].count,
+                    avgLat: groups[name].totalLat / groups[name].count,
+                    avgSpeed: groups[name].totalSpeed / groups[name].count
+                  })).sort((a, b) => b.avgSpeed - a.avgSpeed);
+
+                  const maxSpeed = Math.max(...data.map(d => d.avgSpeed), 1);
+                  const maxLat = Math.max(...data.map(d => d.avgLat), 1);
+
+                  return data.map((d, index) => (
+                    <div key={d.name} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 14px', borderRadius: 8, background: 'var(--color-brand-card)', border: '1px solid var(--color-brand-border)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
+                          {index + 1}. {d.name} <span style={{ fontSize: 10, color: 'var(--color-brand-text)', fontWeight: 500 }}>({d.count} nodes)</span>
+                        </span>
+                        <div style={{ display: 'flex', gap: 12, fontSize: 11, fontWeight: 600 }}>
+                          <span style={{ color: 'var(--color-brand)' }}>{d.avgSpeed.toFixed(2)} MB/s</span>
+                          <span style={{ color: 'var(--color-brand-muted)' }}>|</span>
+                          <span style={{ color: 'var(--color-brand-green)' }}>{Math.round(d.avgLat)} ms</span>
+                        </div>
+                      </div>
+                      
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ width: 45, fontSize: 9, fontWeight: 600, color: 'var(--color-brand-text)' }}>SPEED:</span>
+                        <div style={{ flex: 1, height: 8, background: 'var(--color-brand-bg)', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-brand-border)' }}>
+                          <div style={{ width: `${(d.avgSpeed / maxSpeed) * 100}%`, height: '100%', background: 'linear-gradient(90deg, var(--color-brand) 0%, var(--color-brand-blue) 100%)', borderRadius: 4 }} />
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ width: 45, fontSize: 9, fontWeight: 600, color: 'var(--color-brand-text)' }}>PING:</span>
+                        <div style={{ flex: 1, height: 8, background: 'var(--color-brand-bg)', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-brand-border)' }}>
+                          <div style={{ width: `${(d.avgLat / maxLat) * 100}%`, height: '100%', background: 'linear-gradient(90deg, #10b981 0%, #f59e0b 100%)', borderRadius: 4 }} />
+                        </div>
+                      </div>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </div>
+          )}
+
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
           {/* Card 2: Discovered Candidates Table */}
           <div className="g-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', minHeight: 320, maxHeight: 420 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
@@ -1426,8 +1725,14 @@ export const NetworkToolsPage: React.FC = () => {
                   <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Endpoint IP</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Port</th>
+<<<<<<< HEAD
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>CDN Provider / POP</th>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Latency</th>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Packet Loss</th>
+=======
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Mode</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Latency</th>
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Speed</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Status</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600, textAlign: 'right' }}>Actions</th>
@@ -1436,7 +1741,11 @@ export const NetworkToolsPage: React.FC = () => {
                 <tbody>
                   {filteredCandidates.length === 0 ? (
                     <tr>
+<<<<<<< HEAD
+                      <td colSpan={8} style={{ padding: 30, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+=======
                       <td colSpan={7} style={{ padding: 30, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                         <FiFileText size={20} style={{ marginBottom: 8, opacity: 0.3, display: 'inline-block' }} />
                         <div>No candidates found.</div>
                       </td>
@@ -1444,18 +1753,57 @@ export const NetworkToolsPage: React.FC = () => {
                   ) : (
                     filteredCandidates.map((c, idx) => (
                       <tr key={idx} style={{ borderBottom: '1px solid var(--color-brand-border)', verticalAlign: 'middle' }}>
+<<<<<<< HEAD
+                        <td style={{ padding: '8px 6px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                          <IPResolveBadge ip={c.ip} />
+                        </td>
+                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-heading)' }}>{c.port}</td>
+                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-heading)' }}>
+                          {c.cdnProvider ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-indigo)' }}>{c.cdnProvider}</span>
+                              {c.popLocation && (
+                                <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 4px', background: 'var(--color-brand-light)', border: '1px solid var(--color-brand-border)', borderRadius: 4, color: 'var(--color-brand)' }}>
+                                  {c.popLocation}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span style={{ color: 'var(--color-brand-muted)', fontSize: 11 }}>-</span>
+                          )}
+=======
                         <td style={{ padding: '8px 6px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>{c.ip}</td>
                         <td style={{ padding: '8px 6px', color: 'var(--color-brand-heading)' }}>{c.port}</td>
                         <td style={{ padding: '8px 6px', color: 'var(--color-brand-muted)' }}>
                           <span style={{ fontSize: 9, padding: '2px 5px', background: 'var(--color-brand-light)', border: '1px solid var(--color-brand-border)', borderRadius: 4, textTransform: 'uppercase' }}>
                             {c.protocol}
                           </span>
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                         </td>
                         <td style={{ padding: '8px 6px', fontWeight: 600, color: c.latencyMs > 0 ? 'var(--color-brand-green)' : 'var(--color-brand-red)' }}>
                           {c.latencyMs > 0 ? `${c.latencyMs} ms` : '-'}
                         </td>
+<<<<<<< HEAD
+                        <td style={{ padding: '8px 6px' }}>
+                          {c.status === 'in_flight' ? (
+                            <span style={{ color: 'var(--color-brand-muted)', fontSize: 11 }}>Testing...</span>
+                          ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div style={{ flex: 1, minWidth: 40, height: 6, background: 'var(--color-brand-bg)', borderRadius: 3, overflow: 'hidden', border: '1px solid var(--color-brand-border)' }}>
+                                <div style={{ width: `${c.packetLoss}%`, height: '100%', background: c.packetLoss > 50 ? 'var(--color-brand-red)' : c.packetLoss > 0 ? '#f59e0b' : 'var(--color-brand-green)' }} />
+                              </div>
+                              <span style={{ fontSize: 10, fontWeight: 600, color: c.packetLoss > 0 ? 'var(--color-brand-red)' : 'var(--color-brand-text)' }}>
+                                {c.packetLoss}%
+                              </span>
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-blue)', fontWeight: 600 }}>
+                          {c.speedMbps > 0 ? `${c.speedMbps.toFixed(2)} MB/s` : '-'}
+=======
                         <td style={{ padding: '8px 6px', color: 'var(--color-brand-blue)', fontWeight: 600 }}>
                           {c.speedMbps > 0 ? `${c.speedMbps.toFixed(2)} Mbps` : '-'}
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                         </td>
                         <td style={{ padding: '8px 6px' }}>
                           <span style={{

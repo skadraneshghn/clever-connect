@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"clever-connect/internal/bonding/selector"
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
 	"clever-connect/internal/db/pebble"
@@ -22,6 +23,8 @@ import (
 	"clever-connect/internal/torrent"
 	"clever-connect/internal/v2ray/sub"
 	"clever-connect/internal/v2ray/traffic"
+	"clever-connect/internal/v2ray/scanner"
+	"clever-connect/internal/geo"
 	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
@@ -49,6 +52,20 @@ func main() {
 	// Initialize Database
 	database := db.InitDB(cfg)
 	_ = database // keep reference
+
+	// Initialize Geo Geolocation & CDN Engine
+	if err := geo.GetEngine().Init("data"); err != nil {
+		logger.Error("GeoEngine", "Failed to initialize Geo IP Engine", "error", err)
+	} else {
+		defer geo.GetEngine().Close()
+	}
+
+	// Initialize CDN IP Registry
+	if err := scanner.InitCDNRegistry("data"); err != nil {
+		logger.Error("CDNRegistry", "Failed to initialize CDN IP Registry", "error", err)
+	} else {
+		logger.Info("CDNRegistry", "CDN IP Registry initialized successfully")
+	}
 
 	// Initialize PebbleDB for V2Ray Client Configs
 	if err := pebble.InitPebble("data/pebble_nodes"); err != nil {
@@ -100,6 +117,20 @@ func main() {
 		// Start client V2Ray subscription auto-update background worker
 		go sub.StartSubscriptionUpdater(context.Background())
 	}
+
+	// Auto-start DMB Bonding Engine (Selector/Failover) if configured
+	if cfg.AppMode == "client" {
+		var bondCfg models.BondingEngineConfig
+		if err := db.DB.First(&bondCfg).Error; err == nil && bondCfg.IsActive {
+			logger.Info("Bonding", "Auto-starting DMB Engine", "mode", bondCfg.Mode)
+			engine := selector.GetEngine()
+			if err := engine.StartEngine(&bondCfg); err != nil {
+				logger.Error("Bonding", "Failed to auto-start DMB Engine", "error", err)
+			}
+		}
+	}
+
+	// (Combiner auto-start deferred to after handler creation below)
 
 	// Auto-start Telegram bot engine if configured and active
 	if cfg.AppMode == "server" {
@@ -170,6 +201,18 @@ func main() {
 	soroushHandler := handlers.NewSoroushHandler(cfg)
 	v2rayHandler := handlers.NewV2RayHandler(cfg)
 	domainHandler := handlers.NewDomainHandler(cfg)
+<<<<<<< HEAD
+	geoHandler := handlers.NewGeoHandler(cfg)
+	dnsHandler := handlers.NewDNSHandler(cfg)
+	bondingHandler := handlers.NewBondingHandler(cfg)
+	combinerHandler := handlers.NewCombinerHandler(cfg)
+
+	// Auto-start combiner if configured (after handler creation)
+	if cfg.AppMode == "server" {
+		combinerHandler.AutoStartCombiner()
+	}
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 
 	// API Group
 	api := router.Group("/api")
@@ -227,6 +270,7 @@ func main() {
 			protected.PUT("/v2ray/client/configs/:id", v2rayHandler.UpdateClientConfig)
 			protected.DELETE("/v2ray/client/configs/all", v2rayHandler.DeleteAllClientConfigs)
 			protected.DELETE("/v2ray/client/configs/failed", v2rayHandler.DeleteFailedClientConfigs)
+			protected.DELETE("/v2ray/client/configs/discovered", v2rayHandler.DeleteDiscoveredClientConfigs)
 			protected.DELETE("/v2ray/client/configs/:id", v2rayHandler.DeleteClientConfig)
 			protected.POST("/v2ray/client/configs/delete-selected", v2rayHandler.DeleteSelectedClientConfigs)
 			protected.POST("/v2ray/client/configs/:id/active", v2rayHandler.SetActiveClientConfig)
@@ -272,6 +316,8 @@ func main() {
 			protected.POST("/v2ray/scanner/start", v2rayHandler.StartNetworkScannerSweep)
 			protected.POST("/v2ray/scanner/stop", v2rayHandler.StopNetworkScannerSweep)
 			protected.GET("/v2ray/scanner/stats", v2rayHandler.GetNetworkScannerLiveTelemetry)
+			protected.GET("/v2ray/scanner/config", v2rayHandler.GetScannerConfig)
+			protected.POST("/v2ray/scanner/config/reset", v2rayHandler.ResetScannerConfig)
 			protected.GET("/v2ray/scanner/ws", v2rayHandler.GetNetworkScannerWebSocket)
 			protected.GET("/v2ray/scanner/sources", v2rayHandler.ListScannerSources)
 			protected.POST("/v2ray/scanner/sources", v2rayHandler.CreateScannerSource)
@@ -281,6 +327,14 @@ func main() {
 			protected.POST("/v2ray/firewall/block", v2rayHandler.BlockFirewallIP)
 			protected.POST("/v2ray/mcp", v2rayHandler.HandleMCP)
 			protected.Any("/v2ray/webdav/*filepath", v2rayHandler.ServeWebDAV)
+
+			// DMB Bonding Engine API
+			protected.GET("/v2ray/bonding/config", bondingHandler.GetConfig)
+			protected.POST("/v2ray/bonding/config", bondingHandler.SaveConfig)
+			protected.POST("/v2ray/bonding/start", bondingHandler.StartEngine)
+			protected.POST("/v2ray/bonding/stop", bondingHandler.StopEngine)
+			protected.GET("/v2ray/bonding/status", bondingHandler.GetStatus)
+			protected.GET("/v2ray/bonding/arteries", bondingHandler.ListArteries)
 
 			// System monitoring route
 			protected.GET("/system/stats", handlers.GetSystemStats)
@@ -294,6 +348,30 @@ func main() {
 			protected.DELETE("/domains/:id", domainHandler.DeleteSingle)
 			protected.POST("/domains/delete", domainHandler.DeleteBulk)
 
+<<<<<<< HEAD
+			// Geo Geolocation & CDN Endpoints
+			protected.POST("/geo/resolve", geoHandler.Resolve)
+			protected.GET("/settings/apikeys", geoHandler.GetAPIKeys)
+			protected.POST("/settings/apikeys", geoHandler.SaveAPIKeys)
+			protected.POST("/settings/test-key", geoHandler.TestAPIKey)
+			protected.POST("/network/lookup", geoHandler.PerformLookup)
+
+			protected.GET("/dns/resolvers", dnsHandler.ListResolvers)
+			protected.POST("/dns/resolvers", dnsHandler.AddResolver)
+			protected.POST("/dns/resolvers/bulk", dnsHandler.AddResolverBulk)
+			protected.GET("/dns/resolvers/bulk/progress", dnsHandler.GetBulkProgress)
+			protected.DELETE("/dns/resolvers/:id", dnsHandler.DeleteResolver)
+			protected.POST("/dns/resolvers/batch-delete", dnsHandler.BatchDeleteResolvers)
+			protected.POST("/dns/resolvers/fetch-public", dnsHandler.FetchPublicResolvers)
+			protected.POST("/dns/resolvers/:id/test", dnsHandler.TestSingleResolver)
+			protected.GET("/dns/config", dnsHandler.GetConfig)
+			protected.POST("/dns/config", dnsHandler.SaveConfig)
+			protected.POST("/dns/config/reset", dnsHandler.ResetConfig)
+			protected.GET("/dns/metrics", dnsHandler.GetMetrics)
+			protected.POST("/dns/core/apply", dnsHandler.ApplyActiveResolver)
+
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 			// File Manager API Endpoints
 			protected.GET("/files/list", fileHandler.ListDirectory)
 			protected.GET("/files/search", fileHandler.SearchFiles)
@@ -393,6 +471,13 @@ func main() {
 			protected.POST("/soroush/test-token", soroushHandler.TestTokenFetch)
 			protected.GET("/soroush/sync", soroushHandler.SyncConfig)
 			protected.POST("/soroush/sync", soroushHandler.IngestSync)
+
+			// DMB Combiner Server API (server mode only)
+			protected.GET("/bonding/combiner/config", combinerHandler.GetCombinerConfig)
+			protected.POST("/bonding/combiner/config", combinerHandler.SaveCombinerConfig)
+			protected.POST("/bonding/combiner/start", combinerHandler.StartCombiner)
+			protected.POST("/bonding/combiner/stop", combinerHandler.StopCombiner)
+			protected.GET("/bonding/combiner/status", combinerHandler.GetCombinerStatus)
 		}
 	}
 
@@ -402,6 +487,9 @@ func main() {
 	router.GET("/ws/logs", handlers.AuthMiddleware(cfg.JWTSecret), handlers.ServeLogWS)
 	router.GET("/ws/stats", handlers.AuthMiddleware(cfg.JWTSecret), handlers.HandleStatsStream)
 	router.GET("/ws/v2ray/test", handlers.AuthMiddleware(cfg.JWTSecret), v2rayHandler.ServeWSV2RayTest)
+	router.GET("/ws/v2ray/bonding/telemetry", handlers.AuthMiddleware(cfg.JWTSecret), bondingHandler.ServeTelemetryWS)
+	// Combiner WS is unauthenticated via JWT — uses PSK token in query param
+	router.GET("/ws/bonding/combiner", combinerHandler.ServeCombinerWS)
 
 	// Static Assets & SPA Fallback Serving
 	var embedFS fs.FS

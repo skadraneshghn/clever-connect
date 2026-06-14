@@ -631,6 +631,25 @@ func (h *V2RayHandler) DeleteFailedClientConfigs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "deleted_failed", "count": count})
 }
 
+// DeleteDiscoveredClientConfigs handles DELETE /api/v2ray/client/configs/discovered
+func (h *V2RayHandler) DeleteDiscoveredClientConfigs(c *gin.Context) {
+	// Stop client core if any discovered node is active
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+	for _, cfg := range configs {
+		if cfg.IsActive && len(cfg.Name) >= 11 && cfg.Name[:11] == "Discovered-" {
+			_ = core.StopClientCore()
+			break
+		}
+	}
+
+	count, err := pebble.DeleteDiscoveredClientConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted_discovered", "count": count})
+}
+
 // DeleteSelectedClientConfigs handles POST /api/v2ray/client/configs/delete-selected
 func (h *V2RayHandler) DeleteSelectedClientConfigs(c *gin.Context) {
 	var req struct {
@@ -1564,6 +1583,57 @@ func (h *V2RayHandler) GetNetworkScannerLiveTelemetry(c *gin.Context) {
 		"failed":     stats.Failed,
 		"in_flight":  stats.InFlight,
 	})
+}
+
+// GetScannerConfig handles GET /api/v2ray/scanner/config
+func (h *V2RayHandler) GetScannerConfig(c *gin.Context) {
+	var cfg models.V2RayScannerConfig
+	if err := db.DB.First(&cfg, 1).Error; err != nil {
+		// Return default settings if not exists
+		cfg = models.V2RayScannerConfig{
+			ConcurrencyLimit:  100,
+			TotalTargetCount:  1000,
+			NetworkTimeoutSec: 5,
+			ProbeAttempts:     1,
+			Ports:             models.IntArray{443, 2053, 2083, 2087, 2096, 8443},
+			TargetCIDRs:       models.StringArray{"108.162.192.0/18", "103.21.244.0/22"},
+			TargetCDNs:        models.StringArray{},
+			TargetMode:        "http",
+			TopLimit:          20,
+			EnableNeighbors:   false,
+			RequireWS:         false,
+		}
+		cfg.ID = 1
+		db.DB.Save(&cfg)
+	}
+	c.JSON(http.StatusOK, cfg)
+}
+
+// ResetScannerConfig handles POST /api/v2ray/scanner/config/reset
+func (h *V2RayHandler) ResetScannerConfig(c *gin.Context) {
+	cfg := models.V2RayScannerConfig{
+		ConcurrencyLimit:  100,
+		TotalTargetCount:  1000,
+		NetworkTimeoutSec: 5,
+		ProbeAttempts:     1,
+		Ports:             models.IntArray{443, 2053, 2083, 2087, 2096, 8443},
+		TargetCIDRs:       models.StringArray{"108.162.192.0/18", "103.21.244.0/22"},
+		TargetCDNs:        models.StringArray{},
+		TargetMode:        "http",
+		TopLimit:          20,
+		EnableNeighbors:   false,
+		RequireWS:         false,
+		WebSocketHost:     "",
+		WebSocketPath:     "",
+		TargetSNI:         "",
+		MaxRateLimit:      0,
+	}
+	cfg.ID = 1
+	if err := db.DB.Save(&cfg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, cfg)
 }
 
 // GetNetworkScannerWebSocket handles GET /api/v2ray/scanner/ws

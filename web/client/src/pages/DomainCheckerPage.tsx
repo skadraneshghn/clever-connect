@@ -8,6 +8,11 @@ import {
 } from 'react-icons/fi';
 import { useDomainStore } from '../store/domainStore';
 import { useAuthStore } from '../store/authStore';
+<<<<<<< HEAD
+import { IPResolveBadge } from '../components/atoms/IPResolveBadge';
+import { useGeoStore } from '../store/geoStore';
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 
 const StatusBadge = ({ status }: { status: string }) => {
   switch (status) {
@@ -97,7 +102,20 @@ const DomainRow = React.memo(({
         <StatusBadge status={domain.status} />
       </td>
       <td style={{ padding: '10px 12px', color: 'var(--color-brand-text)' }}>
+<<<<<<< HEAD
+        {domain.ip_addresses ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {domain.ip_addresses.split(',').map((ip: string) => {
+              const cleanIp = ip.trim();
+              return cleanIp ? <IPResolveBadge key={cleanIp} ip={cleanIp} /> : null;
+            })}
+          </div>
+        ) : (
+          '-'
+        )}
+=======
         {domain.ip_addresses || '-'}
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
       </td>
       <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, color: getLatencyColor(domain.latency_ms) }}>
         {domain.latency_ms > 0 ? `${domain.latency_ms}ms` : '-'}
@@ -316,6 +334,12 @@ export const DomainCheckerPage: React.FC = () => {
             return next;
           });
         }
+<<<<<<< HEAD
+        if (msg.type === 'GEO_RESOLVED' && msg.data) {
+          useGeoStore.getState().updateGeoInfo(msg.data);
+        }
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
       } catch (err) {
         // ignore
       }

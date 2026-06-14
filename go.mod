@@ -21,9 +21,9 @@ require (
 	github.com/livekit/protocol v1.46.6
 	github.com/livekit/server-sdk-go/v2 v2.16.6
 	github.com/mholt/archives v0.1.5
+	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/pion/webrtc/v4 v4.2.11
 	github.com/quic-go/quic-go v0.59.0
-	github.com/refraction-networking/utls v1.8.2
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/sagernet/sing-box v1.13.2
 	github.com/shirou/gopsutil/v3 v3.24.5
@@ -80,6 +80,7 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/anytls/sing-anytls v0.0.11 // indirect
 	github.com/apernet/quic-go v0.57.2-0.20260111184307-eec823306178 // indirect
+	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/beevik/ntp v1.5.0 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
@@ -129,6 +130,7 @@ require (
 	github.com/ema/qdisc v1.0.0 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/florianl/go-nfqueue/v2 v2.0.2 // indirect
+	github.com/freshcn/qqwry v1.0.2 // indirect
 	github.com/frostbyte73/core v0.1.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
@@ -183,6 +185,7 @@ require (
 	github.com/huandu/xstrings v1.3.2 // indirect
 	github.com/illumos/go-kstat v0.0.0-20210513183136-173c9b0a9973 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20260220084031-5adc3eb26f91 // indirect
+	github.com/ip2location/ip2location-go/v9 v9.8.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.0 // indirect
@@ -243,6 +246,7 @@ require (
 	github.com/ogen-go/ogen v1.10.0 // indirect
 	github.com/openai/openai-go/v3 v3.24.0 // indirect
 	github.com/opencontainers/selinux v1.13.1 // indirect
+	github.com/oschwald/maxminddb-golang v1.13.1 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
@@ -264,6 +268,7 @@ require (
 	github.com/pires/go-proxyproto v0.11.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
+	github.com/pquerna/ffjson v0.0.0-20190930134022-aa0246cd15f7 // indirect
 	github.com/prometheus-community/go-runit v0.1.0 // indirect
 	github.com/prometheus-community/pro-bing v0.4.0 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
@@ -275,6 +280,7 @@ require (
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/redis/go-redis/v9 v9.17.2 // indirect
+	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/rs/dnscache v0.0.0-20211102005908-e0241e321417 // indirect
@@ -330,6 +336,8 @@ require (
 	github.com/sagernet/tailscale v1.92.4-sing-box-1.13-mod.6.0.20260303140313-3bcf9a4b9349 // indirect
 	github.com/sagernet/wireguard-go v0.0.2-beta.1.0.20260224074747-506b7631853c // indirect
 	github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854 // indirect
+	github.com/saracen/go7z v0.0.0-20191010121135-9c09b6bd7fda // indirect
+	github.com/saracen/solidblock v0.0.0-20190426153529-45df20abab6f // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
 	github.com/sorairolake/lzip-go v0.3.8 // indirect
@@ -363,6 +371,8 @@ require (
 	github.com/xhit/go-str2duration/v2 v2.1.0 // indirect
 	github.com/xrash/smetrics v0.0.0-20250705151800-55b8f293f342 // indirect
 	github.com/xtls/reality v0.0.0-20251116175510-cd53f7d50237 // indirect
+	github.com/yinheli/mahonia v0.0.0-20131226213531-0eef680515cc // indirect
+	github.com/yinheli/qqwry v0.0.0-20160229183603-f50680010f4a // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
@@ -398,6 +408,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gvisor.dev/gvisor v0.0.0-20260122175437-89a5d21be8f0 // indirect
 	howett.net/plist v1.0.1 // indirect
+	lukechampine.com/uint128 v1.2.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

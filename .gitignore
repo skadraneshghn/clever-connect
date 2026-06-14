@@ -53,3 +53,4 @@ pnpm-lock.yaml
 .DS_Store
 Thumbs.db
 core/sing-box/sing-box
+main
