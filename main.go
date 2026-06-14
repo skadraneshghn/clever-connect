@@ -187,6 +187,18 @@ func main() {
 
 	router.GET("/swagger", handlers.ServeSwagger)
 
+	// /generate_204 — public captive-portal probe endpoint (no auth required).
+	// Returns HTTP 204 No Content with zero body, exactly like https://www.google.com/generate_204.
+	// Use this to verify a V2Ray/Xray config can reach this server panel:
+	//   curl -x socks5://127.0.0.1:10808 https://<server>/generate_204
+	//   → HTTP/1.1 204 No Content  ✓  tunnel works end-to-end
+	router.GET("/generate_204", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+	router.HEAD("/generate_204", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
 	// Setup API Route Handlers
 	authHandler := handlers.NewAuthHandler(cfg)
 	wsHandler := handlers.NewWSHandler(cfg)

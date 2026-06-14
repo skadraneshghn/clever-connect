@@ -130,13 +130,13 @@ func (h *V2RayHandler) ServeWSV2RayTest(c *gin.Context) {
 	}
 }
 
-// TestConfigDirect handles POST /api/v2ray/client/test-config-direct
 func (h *V2RayHandler) TestConfigDirect(c *gin.Context) {
 	var req struct {
 		Config     models.V2RayClientConfig `json:"config"`
 		TestType   string                   `json:"test_type"`
 		Core       string                   `json:"core"`
 		TimeoutSec int                      `json:"timeout_sec"`
+		URL        string                   `json:"url"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -153,6 +153,7 @@ func (h *V2RayHandler) TestConfigDirect(c *gin.Context) {
 		TestType: req.TestType,
 		Core:     req.Core,
 		Timeout:  timeout,
+		URL:      req.URL,
 	}
 
 	if opts.TestType == "" {

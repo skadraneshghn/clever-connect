@@ -2,8 +2,9 @@ package client
 
 import (
 	"context"
-	"io"
-	"net"
+	"fmt"
+	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,16 +16,32 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ArteryConn wraps a WebSocket connection to the combiner through one
-// xray dokodemo-door artery. It handles frame writing, reading, and reconnection.
+// ArteryConn wraps a WebSocket connection to the Clever Cloud combiner
+// tunnelled through one local xray dokodemo-door artery.
+//
+// Flow (Mode B):
+//
+//	Go dispatcher
+//	     │  (WebSocket binary frames)
+//	     ▼
+//	127.0.0.1:21001  (xray dokodemo-door)
+//	     │  (transparent TCP relay)
+//	     ▼
+//	Clever Cloud combiner (WebSocket endpoint /ws/bonding/combiner)
+//	     │  (dials final destination)
+//	     ▼
+//	Internet
 type ArteryConn struct {
 	mu sync.Mutex
 
-	tag       string // "artery-0", "artery-1", ...
-	localPort int    // dokodemo-door port (21001, 21002, ...)
+	tag       string // "artery-0", "artery-1", …
+	localPort int    // dokodemo-door local port (21001, 21002, …)
 	wsConn    *websocket.Conn
-	tcpConn   net.Conn
 	alive     bool
+
+	// Combiner WebSocket path and optional PSK token
+	combinerPath string
+	pskToken     string
 
 	// Reconnect settings
 	maxBackoff time.Duration
@@ -34,35 +51,83 @@ type ArteryConn struct {
 // NewArteryConn creates a new artery connection wrapper.
 func NewArteryConn(tag string, localPort int) *ArteryConn {
 	return &ArteryConn{
-		tag:        tag,
-		localPort:  localPort,
-		alive:      false,
-		maxBackoff: 30 * time.Second,
-		baseDelay:  500 * time.Millisecond,
+		tag:          tag,
+		localPort:    localPort,
+		alive:        false,
+		combinerPath: "/ws/bonding/combiner",
+		maxBackoff:   30 * time.Second,
+		baseDelay:    500 * time.Millisecond,
 	}
 }
 
-// Connect establishes a TCP connection to the local dokodemo-door port.
+// SetCombinerPath sets the combiner WebSocket path (default: /ws/bonding/combiner).
+func (ac *ArteryConn) SetCombinerPath(path string) {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	if path != "" {
+		ac.combinerPath = path
+	}
+}
+
+// SetPSKToken stores the HMAC token for combiner authentication.
+func (ac *ArteryConn) SetPSKToken(token string) {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	ac.pskToken = token
+}
+
+// Connect establishes a WebSocket connection through the local dokodemo-door port.
+// The dokodemo-door transparently relays the TCP stream to the combiner server,
+// which upgrades it to WebSocket.
 func (ac *ArteryConn) Connect() error {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 
-	if ac.tcpConn != nil {
-		_ = ac.tcpConn.Close()
+	if ac.wsConn != nil {
+		_ = ac.wsConn.Close()
+		ac.wsConn = nil
 	}
 
-	addr := net.JoinHostPort("127.0.0.1", itoa(ac.localPort))
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	// Build the WebSocket URL targeting the local dokodemo-door port.
+	// The dokodemo-door relays this to the actual combiner server.
+	u := url.URL{
+		Scheme: "ws",
+		Host:   fmt.Sprintf("127.0.0.1:%d", ac.localPort),
+		Path:   ac.combinerPath,
+	}
+
+	// Add artery ID and optional token for combiner authentication
+	q := u.Query()
+	q.Set("artery", ac.tag)
+	if ac.pskToken != "" {
+		q.Set("token", ac.pskToken)
+	}
+	u.RawQuery = q.Encode()
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+	}
+
+	// The Host header must match what the combiner expects.
+	// Since dokodemo-door is transparent, the combiner sees the real WS upgrade.
+	reqHeader := http.Header{}
+	reqHeader.Set("User-Agent", "CleverConnect-BondingClient/1.0")
+
+	conn, resp, err := dialer.Dial(u.String(), reqHeader)
 	if err != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
 		ac.alive = false
-		return err
+		return fmt.Errorf("websocket dial to %s failed (HTTP %d): %w", u.String(), status, err)
 	}
 
-	ac.tcpConn = conn
+	ac.wsConn = conn
 	ac.alive = true
 
-	logger.Info("Bonding", "Artery connected",
-		"tag", ac.tag, "port", ac.localPort)
+	logger.Info("Bonding", "Artery WebSocket connected",
+		"tag", ac.tag, "port", ac.localPort, "path", ac.combinerPath)
 	return nil
 }
 
@@ -97,24 +162,34 @@ func (ac *ArteryConn) ConnectWithBackoff(ctx context.Context) error {
 	}
 }
 
-// WriteFrame sends a frame through this artery's TCP connection.
+// WriteFrame sends a frame as a WebSocket binary message through this artery.
 // Thread-safe.
 func (ac *ArteryConn) WriteFrame(f *frame.Frame) error {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 
-	if ac.tcpConn == nil || !ac.alive {
-		return io.ErrClosedPipe
+	if ac.wsConn == nil || !ac.alive {
+		return fmt.Errorf("artery %s: connection not established", ac.tag)
 	}
 
-	return frame.WriteFrame(ac.tcpConn, f)
+	data, err := f.Encode()
+	if err != nil {
+		return fmt.Errorf("artery %s: frame encode error: %w", ac.tag, err)
+	}
+
+	_ = ac.wsConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := ac.wsConn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		ac.alive = false
+		return fmt.Errorf("artery %s: websocket write error: %w", ac.tag, err)
+	}
+	return nil
 }
 
-// ReadFrameLoop reads frames from this artery and dispatches them to the session.
+// ReadFrameLoop reads WebSocket binary messages from this artery and dispatches them.
 // Runs as a goroutine; exits on error or context cancellation.
 func (ac *ArteryConn) ReadFrameLoop(ctx context.Context, sess *session.Session, pingCB func(float64)) {
 	ac.mu.Lock()
-	conn := ac.tcpConn
+	conn := ac.wsConn
 	ac.mu.Unlock()
 
 	if conn == nil {
@@ -128,9 +203,9 @@ func (ac *ArteryConn) ReadFrameLoop(ctx context.Context, sess *session.Session, 
 		default:
 		}
 
-		f, err := frame.ReadFrame(conn)
+		_, message, err := conn.ReadMessage()
 		if err != nil {
-			if err != io.EOF {
+			if ctx.Err() == nil {
 				logger.Warn("Bonding", "Artery read error",
 					"tag", ac.tag, "error", err)
 			}
@@ -140,7 +215,14 @@ func (ac *ArteryConn) ReadFrameLoop(ctx context.Context, sess *session.Session, 
 			return
 		}
 
-		// Handle PING/PONG for RTT measurement
+		f, err := frame.Decode(message)
+		if err != nil {
+			logger.Warn("Bonding", "Failed to decode frame from artery",
+				"tag", ac.tag, "error", err)
+			continue
+		}
+
+		// Handle PING for RTT measurement (server reflects PING back)
 		if f.Type == frame.TypePING {
 			rtt := extractPingRTT(f.Payload)
 			if rtt > 0 && pingCB != nil {
@@ -172,11 +254,11 @@ func (ac *ArteryConn) Close() {
 	defer ac.mu.Unlock()
 
 	ac.alive = false
-	if ac.tcpConn != nil {
-		_ = ac.tcpConn.Close()
-		ac.tcpConn = nil
-	}
 	if ac.wsConn != nil {
+		_ = ac.wsConn.WriteMessage(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "engine stopped"),
+		)
 		_ = ac.wsConn.Close()
 		ac.wsConn = nil
 	}
@@ -192,12 +274,12 @@ func (ac *ArteryConn) LocalPort() int {
 	return ac.localPort
 }
 
-// extractPingRTT extracts the RTT from a PONG frame's payload (client-side).
+// extractPingRTT extracts the RTT from a PING echo frame's payload.
+// The payload format is [nonce:4B][sendTimeNs:8B].
 func extractPingRTT(payload []byte) float64 {
 	if len(payload) < 12 {
 		return 0
 	}
-	// The payload format is [nonce:4B][sendTimeNs:8B]
 	sendTimeNs := uint64(0)
 	for i := 4; i < 12; i++ {
 		sendTimeNs = sendTimeNs<<8 | uint64(payload[i])
@@ -209,7 +291,7 @@ func extractPingRTT(payload []byte) float64 {
 	return float64(nowNs-sendTimeNs) / 1e6 // ns → ms
 }
 
-// Simple int to string helper to avoid importing strconv just for this.
+// Simple int-to-string helper (avoids importing strconv just for this).
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -227,7 +309,6 @@ func itoa(n int) string {
 	if neg {
 		buf = append(buf, '-')
 	}
-	// reverse
 	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
 		buf[i], buf[j] = buf[j], buf[i]
 	}
@@ -235,10 +316,10 @@ func itoa(n int) string {
 }
 
 // streamIDCounter is a global monotonic counter for client-originated stream IDs.
-// Odd numbers for client-initiated streams.
+// Client uses odd numbers (1, 3, 5, …) to avoid collision with server-originated streams.
 var streamIDCounter uint32
 
-// nextStreamID allocates the next stream ID.
+// nextStreamID allocates the next client-side stream ID.
 func nextStreamID() uint32 {
-	return atomic.AddUint32(&streamIDCounter, 2) - 1 // 1, 3, 5, 7, ...
+	return atomic.AddUint32(&streamIDCounter, 2) - 1 // 1, 3, 5, 7, …
 }
