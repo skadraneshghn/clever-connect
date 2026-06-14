@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -17,36 +18,40 @@ import (
 	"clever-connect/internal/logger"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/net/proxy"
 )
 
-// ArteryConn wraps a WebSocket connection to the Clever Cloud combiner
-// tunnelled through one local xray dokodemo-door artery.
+// ArteryConn wraps a WebSocket connection to the Clever Cloud combiner,
+// tunnelled through one local xray SOCKS5 artery.
 //
 // Flow (Mode B):
 //
 //	Go dispatcher
 //	     │  (WebSocket binary frames)
 //	     ▼
-//	127.0.0.1:21001  (xray dokodemo-door)
-//	     │  (transparent TCP relay)
+//	ArteryConn.Connect()
+//	     │  SOCKS5 CONNECT to 127.0.0.1:2100x
 //	     ▼
-//	Clever Cloud combiner (WebSocket endpoint /ws/bonding/combiner)
-//	     │  (dials final destination)
+//	xray SOCKS5 inbound (port 21001, 21002, ...)
+//	     │  routes via "artery-N" outbound rule
 //	     ▼
-//	Internet
+//	CDN Edge Node (VLESS/REALITY proxy)
+//	     │  VLESS/Reality tunnel
+//	     ▼
+//	Clever Cloud combiner WebSocket endpoint /ws/bonding/combiner
 type ArteryConn struct {
 	mu sync.Mutex
 
 	tag       string // "artery-0", "artery-1", …
-	localPort int    // dokodemo-door local port (21001, 21002, …)
+	localPort int    // xray SOCKS5 local port (21001, 21002, …)
 	wsConn    *websocket.Conn
 	alive     bool
 
-	// Combiner WebSocket path and optional PSK token
-	combinerPath string
-	pskToken     string
-	pskHex       string
-	originID     string
+	// Full combiner WebSocket URL (e.g. ws://ondata.ir/ws/bonding/combiner)
+	combinerURL string
+	// PSK credentials for HMAC token generation
+	pskHex   string
+	originID string
 
 	// Reconnect settings
 	maxBackoff time.Duration
@@ -56,32 +61,39 @@ type ArteryConn struct {
 // NewArteryConn creates a new artery connection wrapper.
 func NewArteryConn(tag string, localPort int) *ArteryConn {
 	return &ArteryConn{
-		tag:          tag,
-		localPort:    localPort,
-		alive:        false,
-		combinerPath: "/ws/bonding/combiner",
-		maxBackoff:   30 * time.Second,
-		baseDelay:    500 * time.Millisecond,
+		tag:         tag,
+		localPort:   localPort,
+		alive:       false,
+		combinerURL: "",
+		maxBackoff:  30 * time.Second,
+		baseDelay:   500 * time.Millisecond,
 	}
 }
 
-// SetCombinerPath sets the combiner WebSocket path (default: /ws/bonding/combiner).
-func (ac *ArteryConn) SetCombinerPath(path string) {
+// SetCombinerURL sets the full combiner WebSocket URL
+// (e.g. "ws://ondata.ir/ws/bonding/combiner").
+func (ac *ArteryConn) SetCombinerURL(rawURL string) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
-	if path != "" {
-		ac.combinerPath = path
+	if rawURL != "" {
+		ac.combinerURL = rawURL
 	}
 }
 
-// SetPSKToken stores the HMAC token for combiner authentication.
+// SetCombinerPath is kept for backward compatibility; prefer SetCombinerURL.
+func (ac *ArteryConn) SetCombinerPath(path string) {
+	// no-op: path is derived from combinerURL
+}
+
+// SetPSKToken is kept for backward compatibility.
 func (ac *ArteryConn) SetPSKToken(token string) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
-	ac.pskToken = token
+	// static tokens are superseded by dynamic HMAC generation
+	_ = token
 }
 
-// SetAuthCredentials sets the PSK and Client Origin ID for token generation.
+// SetAuthCredentials sets the PSK and Client Origin ID for HMAC token generation.
 func (ac *ArteryConn) SetAuthCredentials(pskHex string, originID string) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
@@ -89,9 +101,14 @@ func (ac *ArteryConn) SetAuthCredentials(pskHex string, originID string) {
 	ac.originID = originID
 }
 
-// Connect establishes a WebSocket connection through the local dokodemo-door port.
-// The dokodemo-door transparently relays the TCP stream to the combiner server,
-// which upgrades it to WebSocket.
+// Connect establishes a WebSocket connection to the REAL combiner URL, routing
+// the TCP stream through the local xray SOCKS5 proxy on ac.localPort.
+//
+// The SOCKS5 dialer sends a CONNECT command to xray:
+//
+//	"Please connect me to ondata.ir:80"
+//
+// xray routes that through the artery outbound (CDN edge node → combiner).
 func (ac *ArteryConn) Connect() error {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
@@ -101,16 +118,18 @@ func (ac *ArteryConn) Connect() error {
 		ac.wsConn = nil
 	}
 
-	// Build the WebSocket URL targeting the local dokodemo-door port.
-	// The dokodemo-door relays this to the actual combiner server.
-	u := url.URL{
-		Scheme: "ws",
-		Host:   fmt.Sprintf("127.0.0.1:%d", ac.localPort),
-		Path:   ac.combinerPath,
+	if ac.combinerURL == "" {
+		return fmt.Errorf("artery %s: combiner URL not set", ac.tag)
 	}
 
-	// Generate fresh HMAC token if PSK and OriginID are provided
-	token := ac.pskToken
+	// Parse the real combiner URL to build the dial target with auth query params.
+	parsed, err := url.Parse(ac.combinerURL)
+	if err != nil {
+		return fmt.Errorf("artery %s: invalid combiner URL %q: %w", ac.tag, ac.combinerURL, err)
+	}
+
+	// Generate fresh HMAC token from PSK + OriginID (short-lived, matches server window)
+	token := ""
 	if ac.pskHex != "" && ac.originID != "" {
 		pskBytes, err := hex.DecodeString(ac.pskHex)
 		if err == nil {
@@ -122,38 +141,51 @@ func (ac *ArteryConn) Connect() error {
 		}
 	}
 
-	// Add artery ID and optional token for combiner authentication
-	q := u.Query()
+	// Append artery tag + optional auth token to the query string.
+	q := parsed.Query()
 	q.Set("artery", ac.tag)
 	if token != "" {
 		q.Set("token", token)
 	}
-	u.RawQuery = q.Encode()
+	parsed.RawQuery = q.Encode()
+	targetURL := parsed.String()
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
+	// Route through the local xray SOCKS5 proxy (artery-N-in inbound).
+	// This is the KEY fix: we are NOT dialing 127.0.0.1 as the destination —
+	// we are using it only as a SOCKS5 gateway.
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", ac.localPort)
+	baseDialer := &net.Dialer{Timeout: 15 * time.Second}
+	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, baseDialer)
+	if err != nil {
+		return fmt.Errorf("artery %s: failed to create SOCKS5 dialer for %s: %w", ac.tag, socksAddr, err)
 	}
 
-	// The Host header must match what the combiner expects.
-	// Since dokodemo-door is transparent, the combiner sees the real WS upgrade.
+	wsDialer := websocket.Dialer{
+		HandshakeTimeout: 15 * time.Second,
+		NetDial: func(network, addr string) (net.Conn, error) {
+			return socksDialer.Dial(network, addr)
+		},
+	}
+
 	reqHeader := http.Header{}
 	reqHeader.Set("User-Agent", "CleverConnect-BondingClient/1.0")
 
-	conn, resp, err := dialer.Dial(u.String(), reqHeader)
+	conn, resp, err := wsDialer.Dial(targetURL, reqHeader)
 	if err != nil {
 		status := 0
 		if resp != nil {
 			status = resp.StatusCode
 		}
 		ac.alive = false
-		return fmt.Errorf("websocket dial to %s failed (HTTP %d): %w", u.String(), status, err)
+		return fmt.Errorf("artery %s: websocket dial to %s via SOCKS5 %s failed (HTTP %d): %w",
+			ac.tag, targetURL, socksAddr, status, err)
 	}
 
 	ac.wsConn = conn
 	ac.alive = true
 
 	logger.Info("Bonding", "Artery WebSocket connected",
-		"tag", ac.tag, "port", ac.localPort, "path", ac.combinerPath)
+		"tag", ac.tag, "socks_port", ac.localPort, "target", targetURL)
 	return nil
 }
 
@@ -295,7 +327,7 @@ func (ac *ArteryConn) Tag() string {
 	return ac.tag
 }
 
-// LocalPort returns the dokodemo-door port.
+// LocalPort returns the xray SOCKS5 artery port.
 func (ac *ArteryConn) LocalPort() int {
 	return ac.localPort
 }

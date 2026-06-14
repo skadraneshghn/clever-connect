@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -188,20 +187,17 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 	e.arteries = make([]*ArteryConn, 0, len(e.activeNodes))
 	basePort := 21001
 
-	// Parse combiner address to extract the websocket path
-	combinerPath := "/ws/bonding/combiner"
-	rawURL := cfg.CombinerURL
-	if !strings.Contains(rawURL, "://") {
-		rawURL = "ws://" + rawURL
-	}
-	if parsedURL, err := url.Parse(rawURL); err == nil && parsedURL.Path != "" {
-		combinerPath = parsedURL.Path
+	// Normalize the combiner URL: ensure it has a scheme so the SOCKS5 dialer
+	// can correctly parse the host/port for the WebSocket upgrade.
+	combinerURL := cfg.CombinerURL
+	if !strings.Contains(combinerURL, "://") {
+		combinerURL = "ws://" + combinerURL
 	}
 
 	for i := range e.activeNodes {
 		tag := fmt.Sprintf("artery-%d", i)
 		ac := NewArteryConn(tag, basePort+i)
-		ac.SetCombinerPath(combinerPath)
+		ac.SetCombinerURL(combinerURL)      // full remote URL e.g. ws://ondata.ir/ws/bonding/combiner
 		ac.SetAuthCredentials(cfg.PSKHex, cfg.OriginID)
 		e.arteries = append(e.arteries, ac)
 	}
