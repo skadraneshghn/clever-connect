@@ -30,6 +30,12 @@ import (
 	rawpebble "github.com/cockroachdb/pebble"
 
 	"github.com/gin-gonic/gin"
+<<<<<<< HEAD
+=======
+	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/include"
+	boxOption "github.com/sagernet/sing-box/option"
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	"crypto/tls"
 	"golang.org/x/time/rate"
 )
@@ -269,7 +275,10 @@ type JobStats struct {
 // ScanConfig defines the operational bounds for a live network verification sweep
 type ScanConfig struct {
 	TargetCIDRs        []string      `json:"target_cidrs"`
+<<<<<<< HEAD
 	TargetCDNs         []string      `json:"target_cdns"`
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	SelectedPorts      []int         `json:"selected_ports"`
 	ConcurrencyLimit   int           `json:"concurrency_limit"`
 	MaxRateLimit       float64       `json:"max_rate_limit"`
@@ -496,6 +505,7 @@ func (s *ScannerEngine) runScanLoop(ctx context.Context, cfg *ScanConfig) {
 		s.mu.Unlock()
 		s.broadcast("scanner.phase", s.stats.Phase)
 
+<<<<<<< HEAD
 		if len(cfg.TargetCDNs) > 0 {
 			s.broadcast("scanner.log", fmt.Sprintf("Filtering sweep to selected CDNs: %v", cfg.TargetCDNs))
 			for _, targetCDN := range cfg.TargetCDNs {
@@ -553,6 +563,18 @@ func (s *ScannerEngine) runScanLoop(ctx context.Context, cfg *ScanConfig) {
 			} else {
 				s.broadcast("scanner.log", fmt.Sprintf("Ingested %d subnets and %d direct endpoints.", len(cidrs), len(directIPs)))
 			}
+=======
+		s.broadcast("scanner.log", "Ingesting scan sources...")
+		cidrs, directIPs, err = FetchEnabledSourcesConcurrently(ctx)
+		if err != nil {
+			s.broadcast("scanner.log", fmt.Sprintf("Warning: Source ingestion failed: %v. Using defaults.", err))
+			cidrs = cfg.TargetCIDRs
+			if len(cidrs) == 0 {
+				cidrs = DefaultCloudflareRanges
+			}
+		} else {
+			s.broadcast("scanner.log", fmt.Sprintf("Ingested %d subnets and %d direct endpoints.", len(cidrs), len(directIPs)))
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 		}
 	}
 
@@ -689,6 +711,51 @@ func (s *ScannerEngine) runScanLoop(ctx context.Context, cfg *ScanConfig) {
 					time.Sleep(jitter)
 				}
 
+<<<<<<< HEAD
+=======
+				atomic.AddInt64(&s.stats.InFlight, 1)
+				_, err := probeTCP(ctx, job.ip, job.port, 2*time.Second)
+				atomic.AddInt64(&s.stats.InFlight, -1)
+
+				if err == nil {
+					select {
+					case <-ctx.Done():
+						return
+					case phase2Chan <- job:
+					}
+				} else {
+					atomic.AddInt64(&s.stats.Tested, 1)
+					atomic.AddInt64(&s.stats.Failed, 1)
+				}
+			}
+		}()
+	}
+
+	go func() {
+		phase1WG.Wait()
+		close(phase2Chan)
+	}()
+
+	// Phase 2: Cryptographic Deep Test
+	s.mu.Lock()
+	s.stats.Phase = "Phase 2: Cryptographic Deep Test"
+	s.mu.Unlock()
+	s.broadcast("scanner.phase", s.stats.Phase)
+
+	var phase2WG sync.WaitGroup
+	discoveredConfigs := make([]models.V2RayClientConfig, 0)
+	var discoveredMu sync.Mutex
+
+	for i := 0; i < phase2Concurrency; i++ {
+		phase2WG.Add(1)
+		go func() {
+			defer phase2WG.Done()
+			for job := range phase2Chan {
+				if ctx.Err() != nil {
+					return
+				}
+
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 				atomic.AddInt64(&s.stats.InFlight, 1)
 				_, err := probeTCP(ctx, job.ip, job.port, 2*time.Second)
 				atomic.AddInt64(&s.stats.InFlight, -1)
@@ -886,6 +953,7 @@ func (s *ScannerEngine) runScanLoop(ctx context.Context, cfg *ScanConfig) {
 					sni = selectRandomSNI(defaultEdgeSNIs)
 				}
 
+<<<<<<< HEAD
 				// 2. Identify CDN provider and POP location
 				cdnProvider, popLocation, _ := probeCdnPop(ctx, job.ip, job.port, sni, cfg.NetworkTimeout)
 
@@ -901,14 +969,108 @@ func (s *ScannerEngine) runScanLoop(ctx context.Context, cfg *ScanConfig) {
 					cdnProvider: cdnProvider,
 					popLocation: popLocation,
 				}:
+=======
+				// 1. 3-Strike TLS handshake verification
+				tlsLatency, tlsErr := probeTLS3Strike(ctx, job.ip, job.port, sni, cfg.NetworkTimeout)
+				ok := tlsErr == nil
+				var finalLatency time.Duration = tlsLatency
+
+				// 2. HTTP 1-byte read test to bypass TCP blackholes
+				if ok {
+					httpLatency, httpErr := probeHTTP1Byte(ctx, job.ip, job.port, sni, cfg.NetworkTimeout, cfg.WebSocketPath)
+					if httpErr != nil {
+						ok = false
+					} else {
+						finalLatency = httpLatency
+					}
+				}
+
+				atomic.AddInt64(&s.stats.InFlight, -1)
+				atomic.AddInt64(&s.stats.Tested, 1)
+
+				latencyMs := int(finalLatency.Milliseconds())
+				var speed float64
+
+				if ok {
+					if baseConfig != nil {
+						l, sp, errProxy := testProxyThroughput(ctx, *baseConfig, job.ip.String(), job.port)
+						if errProxy == nil {
+							latencyMs = l
+							speed = sp
+						} else {
+							s.broadcast("scanner.log", fmt.Sprintf("Proxy validation failed for %s:%d: %v. Raw latency used.", job.ip.String(), job.port, errProxy))
+						}
+					}
+
+					atomic.AddInt64(&s.stats.Healthy, 1)
+
+					if baseConfig != nil {
+						newCfg := *baseConfig
+						newCfg.ID = 0
+						newCfg.Address = job.ip.String()
+						newCfg.Port = job.port
+						newCfg.LatencyMs = latencyMs
+						newCfg.Name = fmt.Sprintf("Discovered-Edge-%s:%d", job.ip.String(), job.port)
+						newCfg.IsActive = false
+						newCfg.Priority = 100
+
+						if err := pebble.SaveClientConfig(&newCfg); err != nil {
+							s.broadcast("scanner.log", fmt.Sprintf("Failed to save clean node %s:%d: %v", job.ip.String(), job.port, err))
+						} else {
+							s.broadcast("scanner.log", fmt.Sprintf("Auto-provisioned clean node: %s:%d (Latency: %d ms | Throughput: %.2f Mbps)", job.ip.String(), job.port, latencyMs, speed))
+							
+							// Trigger Hot-Reload of Core
+							appCfg := config.LoadConfig()
+							if appCfg != nil {
+								if appCfg.AppMode == "server" {
+									_ = traffic.ReloadCoreConfig()
+								} else if appCfg.AppMode == "client" {
+									_ = reloadClientCore()
+								}
+							}
+						}
+
+						discoveredMu.Lock()
+						discoveredConfigs = append(discoveredConfigs, newCfg)
+						discoveredMu.Unlock()
+					}
+
+					s.broadcast("scanner.candidate", gin.H{
+						"stats": s.GetLiveStats(),
+						"event": "scanner.candidate",
+						"data": gin.H{
+							"ip":         job.ip.String(),
+							"port":       job.port,
+							"protocol":   cfg.TargetMode,
+							"latency_ms": latencyMs,
+							"speed_mbps": speed,
+						},
+					})
+				} else {
+					atomic.AddInt64(&s.stats.Failed, 1)
+					s.broadcast("scanner.candidate", gin.H{
+						"stats": s.GetLiveStats(),
+						"event": "scanner.candidate",
+						"data": gin.H{
+							"ip":         job.ip.String(),
+							"port":       job.port,
+							"protocol":   cfg.TargetMode,
+							"latency_ms": 0,
+							"speed_mbps": 0.0,
+						},
+					})
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 				}
 			}
 		}()
 	}
 
 	phase2WG.Wait()
+<<<<<<< HEAD
 	close(speedTestChan)
 	speedTestWG.Wait()
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 
 	// Rescan cleanup mode: delete failed saved discovered nodes
 	if cfg.ScanDiscoveredOnly && len(directIPs) > 0 {
@@ -1445,6 +1607,155 @@ func socks5DialContext(ctx context.Context, proxyAddr, targetAddr string) (net.C
 	return conn, nil
 }
 // testProxyThroughput is implemented in telemetry_helpers.go
+
+// reloadClientCore compiles and hot-reloads the client core engine using the active configuration.
+func reloadClientCore() error {
+	if !core.IsClientRunning() {
+		return nil
+	}
+
+	// Fetch active config
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+	var activeConfig *models.V2RayClientConfig
+	for _, cfg := range configs {
+		if cfg.IsActive {
+			activeCopy := cfg
+			activeConfig = &activeCopy
+			break
+		}
+	}
+	if activeConfig == nil {
+		return fmt.Errorf("no active configuration found in pebble db")
+	}
+
+	// Fetch settings
+	var socksPort, httpPort int
+	socksPort = 10808
+	httpPort = 10809
+	evasion := true
+
+	if db.DB != nil {
+		var socksPortSetting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "socks_port").First(&socksPortSetting).Error; err == nil {
+			socksPort, _ = strconv.Atoi(socksPortSetting.Value)
+		}
+		var httpPortSetting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "http_port").First(&httpPortSetting).Error; err == nil {
+			httpPort, _ = strconv.Atoi(httpPortSetting.Value)
+		}
+		var evasionSetting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "evasion_enabled").First(&evasionSetting).Error; err == nil {
+			evasion = evasionSetting.Value == "true"
+		}
+	}
+
+	socksPortPublic := core.FindAvailablePort(socksPort)
+	socksPortInternal := core.FindAvailablePort(socksPortPublic+1000, socksPortPublic)
+	httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic, socksPortInternal)
+	httpPortInternal := core.FindAvailablePort(httpPortPublic+1000, socksPortPublic, socksPortInternal, httpPortPublic)
+
+	configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortInternal, httpPortInternal, evasion, "")
+	if err != nil {
+		return fmt.Errorf("failed to compile client config: %w", err)
+	}
+
+	tempPath := filepath.Join(os.TempDir(), "xray_client.json")
+	_ = os.WriteFile(tempPath, configBytes, 0644)
+
+	_ = core.StopClientCore()
+	if err := core.StartClientCore(tempPath); err != nil {
+		return fmt.Errorf("failed to start client core: %w", err)
+	}
+
+	core.StartLocalProxyEngine(socksPortPublic, socksPortInternal, httpPortPublic, httpPortInternal)
+	return nil
+}
+
+// probeTLS3Strike verifies a TLS handshake to the target IP:port, attempting up to 3 times.
+func probeTLS3Strike(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration) (time.Duration, error) {
+	var lastErr error
+	var latency time.Duration
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+
+	for attempt := 0; attempt < 3; attempt++ {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+
+		t0 := time.Now()
+		dialer := &net.Dialer{Timeout: timeout}
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+		})
+
+		_ = tlsConn.SetDeadline(time.Now().Add(timeout))
+		err = tlsConn.HandshakeContext(ctx)
+		if err != nil {
+			_ = tlsConn.Close()
+			lastErr = err
+			continue
+		}
+
+		latency = time.Since(t0)
+		_ = tlsConn.Close()
+		return latency, nil
+	}
+	return 0, fmt.Errorf("tls handshake failed after 3 attempts: %w", lastErr)
+}
+
+// probeHTTP1Byte writes a minimal HTTP GET request and verifies at least 1 byte of response is received.
+func probeHTTP1Byte(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, path string) (time.Duration, error) {
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	t0 := time.Now()
+
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	var reqConn net.Conn = conn
+	if port == 443 || port == 8443 {
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+		})
+		_ = tlsConn.SetDeadline(time.Now().Add(timeout))
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return 0, err
+		}
+		reqConn = tlsConn
+	}
+
+	_ = reqConn.SetDeadline(time.Now().Add(timeout))
+
+	if path == "" {
+		path = "/"
+	}
+	reqStr := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, sni)
+	_, err = reqConn.Write([]byte(reqStr))
+	if err != nil {
+		return 0, err
+	}
+
+	buf := make([]byte, 1)
+	_, err = io.ReadFull(reqConn, buf)
+	if err != nil {
+		return 0, err
+	}
+
+	return time.Since(t0), nil
+}
 
 // reloadClientCore compiles and hot-reloads the client core engine using the active configuration.
 func reloadClientCore() error {

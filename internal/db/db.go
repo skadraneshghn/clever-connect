@@ -139,6 +139,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&models.Domain{},
 		&models.ScannerSource{},
 		&models.ScannerConfig{},
+<<<<<<< HEAD
 		&models.IPRegistry{},
 		&models.IPLookupConfig{},
 		&models.IPIntelligenceCache{},
@@ -147,6 +148,8 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&models.DNSTesterConfig{},
 		&models.BondingEngineConfig{},
 		&models.BondingArtery{},
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
@@ -310,6 +313,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		})
 	}
 
+<<<<<<< HEAD
 	// Seed default IPLookupConfig
 	var ipLookupCount int64
 	if DB.Model(&models.IPLookupConfig{}).Count(&ipLookupCount); ipLookupCount == 0 {
@@ -362,6 +366,8 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		}
 	}
 
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	// Seed Admin User
 	seedAdmin(cfg)
 

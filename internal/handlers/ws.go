@@ -110,6 +110,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 		}
 	}()
 
+<<<<<<< HEAD
 	// DNS Tester Listener
 	dns.GetEngine().RegisterListener(clientID, func(stats dns.DNSJobStats, event string, details interface{}) {
 		payload := gin.H{
@@ -129,6 +130,8 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 		dns.GetEngine().UnregisterListener(clientID)
 	}()
 
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	domainchecker.GetEngine().RegisterListener(clientID, func(result domainchecker.DomainResult) {
 		payload := gin.H{
 			"type": "DOMAIN_CHECK_RESULT",
@@ -151,6 +154,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	})
 	defer domainchecker.GetEngine().UnregisterListener(clientID)
 
+<<<<<<< HEAD
 	// Geo Engine Listener
 	geo.GetEngine().RegisterListener(clientID, func(ip string, reg *models.IPRegistry) {
 		payload := gin.H{
@@ -164,6 +168,8 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 	})
 	defer geo.GetEngine().UnregisterListener(clientID)
 
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 	// Read loop (to handle inbound actions like scanner:start, scanner:stop)
 	go func() {
 		defer close(doneChan)
@@ -185,7 +191,10 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 			case "scanner:start":
 				var req struct {
 					TargetCIDRs        []string `json:"target_cidrs"`
+<<<<<<< HEAD
 					TargetCDNs         []string `json:"target_cdns"`
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 					SelectedPorts      []int    `json:"selected_ports"`
 					ConcurrencyLimit   int      `json:"concurrency_limit"`
 					MaxRateLimit       float64  `json:"max_rate_limit"`
@@ -250,7 +259,10 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 
 						scanCfg = scanner.ScanConfig{
 							TargetCIDRs:        req.TargetCIDRs,
+<<<<<<< HEAD
 							TargetCDNs:         req.TargetCDNs,
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 							SelectedPorts:      req.SelectedPorts,
 							ConcurrencyLimit:   req.ConcurrencyLimit,
 							MaxRateLimit:       req.MaxRateLimit,

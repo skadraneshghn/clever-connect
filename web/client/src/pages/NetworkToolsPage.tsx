@@ -115,7 +115,10 @@ export const NetworkToolsPage: React.FC = () => {
   const [newSourceName, setNewSourceName] = useState('');
   const [newSourceUrl, setNewSourceUrl] = useState('');
   const [newSourceType, setNewSourceType] = useState<'cidr' | 'proxyip' | 'domain'>('cidr');
+<<<<<<< HEAD
   const [selectedCDNs, setSelectedCDNs] = useState<string[]>([]);
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
 
   // Collapsible configuration panels
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
@@ -555,6 +558,7 @@ export const NetworkToolsPage: React.FC = () => {
     ws.send(JSON.stringify(payload));
   };
 
+<<<<<<< HEAD
   const fetchScannerConfig = async () => {
     try {
       const activeToken = token || localStorage.getItem('cc_client_token') || '';
@@ -663,6 +667,8 @@ export const NetworkToolsPage: React.FC = () => {
     }
   };
 
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
   const handleCleanupDiscovered = async () => {
     if (!confirm('Are you sure you want to clean up all failed candidates from the database?')) {
       return;
@@ -749,7 +755,10 @@ export const NetworkToolsPage: React.FC = () => {
   useEffect(() => {
     fetchSavedConfigs();
     fetchSources();
+<<<<<<< HEAD
     fetchScannerConfig();
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
   }, []);
 
   const handleAddSourceSubmit = (e: React.FormEvent) => {
@@ -913,6 +922,7 @@ export const NetworkToolsPage: React.FC = () => {
         {/* Left Column: Config Panel (span 5) */}
         <div className="col-span-12 lg:col-span-5" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           
+<<<<<<< HEAD
           {/* Card: Target CDN Filtering */}
           <div className="g-card" style={{ padding: 20 }}>
             <h3 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', margin: 0, marginBottom: 14 }}>
@@ -981,6 +991,8 @@ export const NetworkToolsPage: React.FC = () => {
             )}
           </div>
 
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
           {/* Card 1: Port Configuration */}
           <div className="g-card" style={{ padding: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
@@ -1424,10 +1436,17 @@ export const NetworkToolsPage: React.FC = () => {
               ) : (
                 <>
                   <div style={{ display: 'flex', gap: 8 }}>
+<<<<<<< HEAD
                     <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 2, justifyContent: 'center', padding: '10px' }}>
                       <FiPlay style={{ marginRight: 6 }} /> Start Sweep
                     </button>
                     <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Rerun last configuration scan parameters" style={{ flex: 1, justifyContent: 'center', padding: '10px' }}>
+=======
+                    <button className="btn btn--primary" onClick={() => handleStartScan(false)} style={{ flex: 1, justifyContent: 'center', padding: '10px' }}>
+                      <FiPlay style={{ marginRight: 6 }} /> Start Sweep
+                    </button>
+                    <button className="btn btn--secondary" onClick={() => handleStartScan(true)} title="Rerun last configuration scan parameters" style={{ padding: '10px' }}>
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                       Retry Last
                     </button>
                   </div>
@@ -1449,6 +1468,7 @@ export const NetworkToolsPage: React.FC = () => {
                       <FiTrash2 style={{ marginRight: 6 }} /> Clean Failed
                     </button>
                   </div>
+<<<<<<< HEAD
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button 
                       className="btn btn--secondary" 
@@ -1467,6 +1487,8 @@ export const NetworkToolsPage: React.FC = () => {
                       <FiRefreshCw style={{ marginRight: 6 }} /> Reset Settings
                     </button>
                   </div>
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                 </>
               )}
             </div>
@@ -1544,6 +1566,7 @@ export const NetworkToolsPage: React.FC = () => {
             </div>
           </div>
 
+<<<<<<< HEAD
           {/* Card: CDN Benchmarking Chart */}
           {candidates.filter(c => c.status === 'healthy' && c.cdnProvider).length > 0 && (
             <div className="g-card" style={{ padding: 20 }}>
@@ -1607,6 +1630,8 @@ export const NetworkToolsPage: React.FC = () => {
             </div>
           )}
 
+=======
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
           {/* Card 2: Discovered Candidates Table */}
           <div className="g-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', minHeight: 320, maxHeight: 420 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
@@ -1700,9 +1725,14 @@ export const NetworkToolsPage: React.FC = () => {
                   <tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Endpoint IP</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Port</th>
+<<<<<<< HEAD
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>CDN Provider / POP</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Latency</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Packet Loss</th>
+=======
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Mode</th>
+                    <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Latency</th>
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Speed</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600 }}>Status</th>
                     <th style={{ padding: '8px 6px', color: 'var(--color-brand-muted)', fontWeight: 600, textAlign: 'right' }}>Actions</th>
@@ -1711,7 +1741,11 @@ export const NetworkToolsPage: React.FC = () => {
                 <tbody>
                   {filteredCandidates.length === 0 ? (
                     <tr>
+<<<<<<< HEAD
                       <td colSpan={8} style={{ padding: 30, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+=======
+                      <td colSpan={7} style={{ padding: 30, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                         <FiFileText size={20} style={{ marginBottom: 8, opacity: 0.3, display: 'inline-block' }} />
                         <div>No candidates found.</div>
                       </td>
@@ -1719,6 +1753,7 @@ export const NetworkToolsPage: React.FC = () => {
                   ) : (
                     filteredCandidates.map((c, idx) => (
                       <tr key={idx} style={{ borderBottom: '1px solid var(--color-brand-border)', verticalAlign: 'middle' }}>
+<<<<<<< HEAD
                         <td style={{ padding: '8px 6px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>
                           <IPResolveBadge ip={c.ip} />
                         </td>
@@ -1736,10 +1771,19 @@ export const NetworkToolsPage: React.FC = () => {
                           ) : (
                             <span style={{ color: 'var(--color-brand-muted)', fontSize: 11 }}>-</span>
                           )}
+=======
+                        <td style={{ padding: '8px 6px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>{c.ip}</td>
+                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-heading)' }}>{c.port}</td>
+                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-muted)' }}>
+                          <span style={{ fontSize: 9, padding: '2px 5px', background: 'var(--color-brand-light)', border: '1px solid var(--color-brand-border)', borderRadius: 4, textTransform: 'uppercase' }}>
+                            {c.protocol}
+                          </span>
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                         </td>
                         <td style={{ padding: '8px 6px', fontWeight: 600, color: c.latencyMs > 0 ? 'var(--color-brand-green)' : 'var(--color-brand-red)' }}>
                           {c.latencyMs > 0 ? `${c.latencyMs} ms` : '-'}
                         </td>
+<<<<<<< HEAD
                         <td style={{ padding: '8px 6px' }}>
                           {c.status === 'in_flight' ? (
                             <span style={{ color: 'var(--color-brand-muted)', fontSize: 11 }}>Testing...</span>
@@ -1756,6 +1800,10 @@ export const NetworkToolsPage: React.FC = () => {
                         </td>
                         <td style={{ padding: '8px 6px', color: 'var(--color-brand-blue)', fontWeight: 600 }}>
                           {c.speedMbps > 0 ? `${c.speedMbps.toFixed(2)} MB/s` : '-'}
+=======
+                        <td style={{ padding: '8px 6px', color: 'var(--color-brand-blue)', fontWeight: 600 }}>
+                          {c.speedMbps > 0 ? `${c.speedMbps.toFixed(2)} Mbps` : '-'}
+>>>>>>> 4e4731b3c371b7a0cd3a0287d763cc032f082cfb
                         </td>
                         <td style={{ padding: '8px 6px' }}>
                           <span style={{
