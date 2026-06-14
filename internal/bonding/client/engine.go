@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,9 +188,21 @@ func (e *BondingEngine) StartEngine(cfg *models.BondingEngineConfig) error {
 	e.arteries = make([]*ArteryConn, 0, len(e.activeNodes))
 	basePort := 21001
 
+	// Parse combiner address to extract the websocket path
+	combinerPath := "/ws/bonding/combiner"
+	rawURL := cfg.CombinerURL
+	if !strings.Contains(rawURL, "://") {
+		rawURL = "ws://" + rawURL
+	}
+	if parsedURL, err := url.Parse(rawURL); err == nil && parsedURL.Path != "" {
+		combinerPath = parsedURL.Path
+	}
+
 	for i := range e.activeNodes {
 		tag := fmt.Sprintf("artery-%d", i)
 		ac := NewArteryConn(tag, basePort+i)
+		ac.SetCombinerPath(combinerPath)
+		ac.SetAuthCredentials(cfg.PSKHex, cfg.OriginID)
 		e.arteries = append(e.arteries, ac)
 	}
 

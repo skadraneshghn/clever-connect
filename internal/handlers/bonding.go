@@ -412,7 +412,11 @@ func (h *BondingHandler) DiagnoseEngine(c *gin.Context) {
 				ErrorMessage: "Combiner URL is empty. Please enter a valid combiner URL.",
 			})
 		} else {
-			parsed, err := url.Parse(cfg.CombinerURL)
+			rawURL := cfg.CombinerURL
+			if !strings.Contains(rawURL, "://") {
+				rawURL = "ws://" + rawURL
+			}
+			parsed, err := url.Parse(rawURL)
 			if err != nil {
 				steps = append(steps, DiagnosticStep{
 					Name:         "Server Combiner Connectivity",
@@ -446,6 +450,80 @@ func (h *BondingHandler) DiagnoseEngine(c *gin.Context) {
 						Details:     fmt.Sprintf("Successfully connected to combiner server at %s.", hostPort),
 					})
 				}
+			}
+		}
+
+		// Artery Ports Check
+		basePort := 21001
+		numArteries := cfg.MaxArteries
+		if numArteries <= 0 {
+			numArteries = 5
+		}
+		if len(configs) > 0 && len(configs) < numArteries {
+			numArteries = len(configs)
+		}
+		if numArteries < cfg.MinArteries && len(configs) >= cfg.MinArteries {
+			numArteries = cfg.MinArteries
+		}
+		if numArteries <= 0 {
+			numArteries = 5
+		}
+
+		allPortsOk := true
+		var failedPorts []int
+		for i := 0; i < numArteries; i++ {
+			port := basePort + i
+			addr := fmt.Sprintf("127.0.0.1:%d", port)
+			if engineRunning {
+				conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+				if err != nil {
+					allPortsOk = false
+					failedPorts = append(failedPorts, port)
+				} else {
+					conn.Close()
+				}
+			} else {
+				l, err := net.Listen("tcp", addr)
+				if err != nil {
+					allPortsOk = false
+					failedPorts = append(failedPorts, port)
+				} else {
+					l.Close()
+				}
+			}
+		}
+
+		if engineRunning {
+			if allPortsOk {
+				steps = append(steps, DiagnosticStep{
+					Name:        "Multipath Artery Ports Check",
+					Description: fmt.Sprintf("Verify that %d local artery ports are active", numArteries),
+					Status:      "success",
+					Details:     fmt.Sprintf("All %d local artery ports (%d-%d) are active and accepting connections.", numArteries, basePort, basePort+numArteries-1),
+				})
+			} else {
+				steps = append(steps, DiagnosticStep{
+					Name:         "Multipath Artery Ports Check",
+					Description:  fmt.Sprintf("Verify that %d local artery ports are active", numArteries),
+					Status:       "error",
+					ErrorMessage: fmt.Sprintf("The following artery ports are inactive or blocked: %v. The engine core may not have started properly or crashed.", failedPorts),
+				})
+			}
+		} else {
+			if allPortsOk {
+				steps = append(steps, DiagnosticStep{
+					Name:        "Multipath Artery Ports Check",
+					Description: fmt.Sprintf("Verify that %d local artery ports are free", numArteries),
+					Status:      "success",
+					Details:     fmt.Sprintf("All %d local artery ports (%d-%d) are free and available to bind.", numArteries, basePort, basePort+numArteries-1),
+				})
+			} else {
+				steps = append(steps, DiagnosticStep{
+					Name:         "Multipath Artery Ports Check",
+					Description:  fmt.Sprintf("Verify that %d local artery ports are free", numArteries),
+					Status:       "error",
+					ErrorMessage: fmt.Sprintf("The following local ports are already occupied or unavailable: %v. Please make sure they are not in use by other services.", failedPorts),
+				})
 			}
 		}
 	}

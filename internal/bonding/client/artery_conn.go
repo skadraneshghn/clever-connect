@@ -2,6 +2,9 @@ package client
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -42,6 +45,8 @@ type ArteryConn struct {
 	// Combiner WebSocket path and optional PSK token
 	combinerPath string
 	pskToken     string
+	pskHex       string
+	originID     string
 
 	// Reconnect settings
 	maxBackoff time.Duration
@@ -76,6 +81,14 @@ func (ac *ArteryConn) SetPSKToken(token string) {
 	ac.pskToken = token
 }
 
+// SetAuthCredentials sets the PSK and Client Origin ID for token generation.
+func (ac *ArteryConn) SetAuthCredentials(pskHex string, originID string) {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	ac.pskHex = pskHex
+	ac.originID = originID
+}
+
 // Connect establishes a WebSocket connection through the local dokodemo-door port.
 // The dokodemo-door transparently relays the TCP stream to the combiner server,
 // which upgrades it to WebSocket.
@@ -96,11 +109,24 @@ func (ac *ArteryConn) Connect() error {
 		Path:   ac.combinerPath,
 	}
 
+	// Generate fresh HMAC token if PSK and OriginID are provided
+	token := ac.pskToken
+	if ac.pskHex != "" && ac.originID != "" {
+		pskBytes, err := hex.DecodeString(ac.pskHex)
+		if err == nil {
+			ts := time.Now().Unix()
+			message := fmt.Sprintf("%s:%s:%d", ac.originID, ac.tag, ts)
+			mac := hmac.New(sha256.New, pskBytes)
+			mac.Write([]byte(message))
+			token = hex.EncodeToString(mac.Sum(nil))
+		}
+	}
+
 	// Add artery ID and optional token for combiner authentication
 	q := u.Query()
 	q.Set("artery", ac.tag)
-	if ac.pskToken != "" {
-		q.Set("token", ac.pskToken)
+	if token != "" {
+		q.Set("token", token)
 	}
 	u.RawQuery = q.Encode()
 
