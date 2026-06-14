@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"clever-connect/internal/bonding/frame"
@@ -53,6 +54,12 @@ type Combiner struct {
 	arteries  map[string]*arteryConn // arteryID → WebSocket connection
 	running   bool
 	cancelFn  context.CancelFunc
+
+	// Real-time byte transfer and throughput metrics
+	rxBytes uint64
+	txBytes uint64
+	rxBps   uint64
+	txBps   uint64
 }
 
 // arteryConn represents one client WebSocket artery connection.
@@ -90,6 +97,12 @@ func (c *Combiner) Start() {
 		return
 	}
 
+	// Reset counters
+	atomic.StoreUint64(&c.rxBytes, 0)
+	atomic.StoreUint64(&c.txBytes, 0)
+	atomic.StoreUint64(&c.rxBps, 0)
+	atomic.StoreUint64(&c.txBps, 0)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancelFn = cancel
 	c.running = true
@@ -97,7 +110,42 @@ func (c *Combiner) Start() {
 	// Start the session delivery processor
 	go c.processDeliveredFrames(ctx)
 
+	// Start bandwidth telemetry processor
+	go c.processTelemetry(ctx)
+
 	logger.Info("Combiner", "Server combiner started", "origin", c.originID)
+}
+
+// processTelemetry tracks and calculates real-time bandwidth.
+func (c *Combiner) processTelemetry(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	var lastRx, lastTx uint64
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			currentRx := atomic.LoadUint64(&c.rxBytes)
+			currentTx := atomic.LoadUint64(&c.txBytes)
+
+			var rxDiff, txDiff uint64
+			if currentRx >= lastRx {
+				rxDiff = currentRx - lastRx
+			}
+			if currentTx >= lastTx {
+				txDiff = currentTx - lastTx
+			}
+
+			atomic.StoreUint64(&c.rxBps, rxDiff)
+			atomic.StoreUint64(&c.txBps, txDiff)
+
+			lastRx = currentRx
+			lastTx = currentTx
+		}
+	}
 }
 
 // Stop gracefully shuts down the combiner.
@@ -127,10 +175,15 @@ func (c *Combiner) Stop() {
 
 // Stats returns current combiner statistics.
 type CombinerStats struct {
-	Running     bool          `json:"running"`
-	OriginID    string        `json:"origin_id"`
-	ArteryCount int           `json:"artery_count"`
-	ArteryStats []ArteryStats `json:"artery_stats"`
+	Running       bool          `json:"running"`
+	OriginID      string        `json:"origin_id"`
+	ArteryCount   int           `json:"artery_count"`
+	ArteryStats   []ArteryStats `json:"artery_stats"`
+	ActiveStreams int           `json:"active_streams"`
+	BytesRx       uint64        `json:"bytes_rx"`
+	BytesTx       uint64        `json:"bytes_tx"`
+	RxBps         uint64        `json:"rx_bps"`
+	TxBps         uint64        `json:"tx_bps"`
 }
 
 type ArteryStats struct {
@@ -144,9 +197,14 @@ func (c *Combiner) Stats() CombinerStats {
 	defer c.mu.RUnlock()
 
 	stats := CombinerStats{
-		Running:     c.running,
-		OriginID:    c.originID,
-		ArteryCount: len(c.arteries),
+		Running:       c.running,
+		OriginID:      c.originID,
+		ArteryCount:   len(c.arteries),
+		ActiveStreams: c.session.ActiveStreams(),
+		BytesRx:       atomic.LoadUint64(&c.rxBytes),
+		BytesTx:       atomic.LoadUint64(&c.txBytes),
+		RxBps:         atomic.LoadUint64(&c.rxBps),
+		TxBps:         atomic.LoadUint64(&c.txBps),
 	}
 
 	for _, ac := range c.arteries {
@@ -256,6 +314,7 @@ func (c *Combiner) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		atomic.AddUint64(&c.rxBytes, uint64(len(message)))
 
 		// Decode the frame
 		f, err := frame.Decode(message)
@@ -275,8 +334,11 @@ func (c *Combiner) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				ac.mu.Lock()
 				ac.conn.SetWriteDeadline(time.Now().Add(writeWait))
-				ac.conn.WriteMessage(websocket.BinaryMessage, encoded)
+				err = ac.conn.WriteMessage(websocket.BinaryMessage, encoded)
 				ac.mu.Unlock()
+				if err == nil {
+					atomic.AddUint64(&c.txBytes, uint64(len(encoded)))
+				}
 			}
 			continue
 		}
@@ -372,6 +434,8 @@ func (c *Combiner) sendFrameToAllArteries(f *frame.Frame) {
 		if err != nil {
 			logger.Warn("Combiner", "Failed to send frame to artery",
 				"artery", ac.arteryID, "error", err)
+		} else {
+			atomic.AddUint64(&c.txBytes, uint64(len(encoded)))
 		}
 	}
 }
@@ -397,6 +461,7 @@ func (c *Combiner) sendRTTPings(ac *arteryConn) {
 				ac.mu.Unlock()
 				return
 			}
+			atomic.AddUint64(&c.txBytes, uint64(len(encoded)))
 		}
 		ac.lastPing = time.Now()
 		seq++

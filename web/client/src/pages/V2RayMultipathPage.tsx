@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
 import { useMultipathStore, type ArteryStatus } from '../store/multipathStore';
 
 /* ────────────────────────────────────────────────────────────────────────── */
@@ -186,11 +186,53 @@ export const V2RayMultipathPage: React.FC = () => {
     fetchConfig, fetchStatus, startEngine, stopEngine, connectTelemetry, saveConfig,
   } = useMultipathStore();
 
+  // Local config form states
+  const [mode, setMode] = useState('selector');
+  const [stripingMode, setStripingMode] = useState('auto');
+  const [maxArteries, setMaxArteries] = useState(5);
+  const [minArteries, setMinArteries] = useState(2);
+  const [socksPort, setSocksPort] = useState(10646);
+  const [httpPort, setHttpPort] = useState(10545);
+  const [combinerUrl, setCombinerUrl] = useState('');
+  const [originId, setOriginId] = useState('');
+  const [pskHex, setPskHex] = useState('');
+  const [frameSize, setFrameSize] = useState(4096);
+  const [evalWindowMs, setEvalWindowMs] = useState(5000);
+  const [demoteRttX, setDemoteRttX] = useState(1.5);
+  const [promoteRttX, setPromoteRttX] = useState(1.2);
+  const [lossDemotePct, setLossDemotePct] = useState(5.0);
+  const [cooldownSec, setCooldownSec] = useState(30);
+  const [errorBudget, setErrorBudget] = useState(5);
+
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   // Bootstrap
   useEffect(() => {
     fetchConfig();
     fetchStatus();
   }, [fetchConfig, fetchStatus]);
+
+  // Sync database config to local state on initial load
+  useEffect(() => {
+    if (config) {
+      setMode(config.mode || 'selector');
+      setStripingMode(config.striping_mode || 'auto');
+      setMaxArteries(config.max_arteries || 5);
+      setMinArteries(config.min_arteries || 2);
+      setSocksPort(config.socks_port || 10646);
+      setHttpPort(config.http_port || 10545);
+      setCombinerUrl(config.combiner_url || '');
+      setOriginId(config.origin_id || '');
+      setPskHex(config.psk_hex || '');
+      setFrameSize(config.frame_size || 4096);
+      setEvalWindowMs(config.eval_window_ms || 5000);
+      setDemoteRttX(config.demote_rtt_x || 1.5);
+      setPromoteRttX(config.promote_rtt_x || 1.2);
+      setLossDemotePct(config.loss_demote_pct || 5.0);
+      setCooldownSec(config.cooldown_sec || 30);
+      setErrorBudget(config.error_budget || 5);
+    }
+  }, [config]);
 
   // Connect telemetry when engine is running
   useEffect(() => {
@@ -207,20 +249,57 @@ export const V2RayMultipathPage: React.FC = () => {
     if (isRunning) {
       await stopEngine();
     } else {
-      // Auto-save defaults if no config exists
-      if (!config?.id) {
-        await saveConfig({
-          is_active: true, mode: 'selector', striping_mode: 'auto',
-          max_arteries: 5, min_arteries: 2, combiner_url: '', origin_id: '',
-          psk_hex: '', frame_size: 4096, socks_port: 10646, http_port: 10545,
-          eval_window_ms: 5000, demote_rtt_x: 1.5, promote_rtt_x: 1.2,
-          loss_demote_pct: 5.0, cooldown_sec: 30, error_budget: 5,
-        });
-      }
+      // Auto-save form values before starting
+      await saveConfig({
+        is_active: true,
+        mode,
+        striping_mode: stripingMode,
+        max_arteries: Number(maxArteries),
+        min_arteries: Number(minArteries),
+        socks_port: Number(socksPort),
+        http_port: Number(httpPort),
+        combiner_url: combinerUrl,
+        origin_id: originId,
+        psk_hex: pskHex,
+        frame_size: Number(frameSize),
+        eval_window_ms: Number(evalWindowMs),
+        demote_rtt_x: Number(demoteRttX),
+        promote_rtt_x: Number(promoteRttX),
+        loss_demote_pct: Number(lossDemotePct),
+        cooldown_sec: Number(cooldownSec),
+        error_budget: Number(errorBudget),
+      });
       await startEngine();
     }
     await fetchStatus();
-  }, [isRunning, config, saveConfig, startEngine, stopEngine, fetchStatus]);
+  }, [
+    isRunning, mode, stripingMode, maxArteries, minArteries, socksPort, httpPort,
+    combinerUrl, originId, pskHex, frameSize, evalWindowMs, demoteRttX, promoteRttX,
+    lossDemotePct, cooldownSec, errorBudget, saveConfig, startEngine, fetchStatus, stopEngine
+  ]);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await saveConfig({
+      is_active: config?.is_active ?? false,
+      mode,
+      striping_mode: stripingMode,
+      max_arteries: Number(maxArteries),
+      min_arteries: Number(minArteries),
+      socks_port: Number(socksPort),
+      http_port: Number(httpPort),
+      combiner_url: combinerUrl,
+      origin_id: originId,
+      psk_hex: pskHex,
+      frame_size: Number(frameSize),
+      eval_window_ms: Number(evalWindowMs),
+      demote_rtt_x: Number(demoteRttX),
+      promote_rtt_x: Number(promoteRttX),
+      loss_demote_pct: Number(lossDemotePct),
+      cooldown_sec: Number(cooldownSec),
+      error_budget: Number(errorBudget),
+    });
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, padding: 4 }}>
@@ -423,86 +502,303 @@ export const V2RayMultipathPage: React.FC = () => {
         </div>
       )}
 
-      {/* ── Architecture Info ────────────────────────────────────────── */}
-      <div style={{
-        background: 'var(--color-brand-card)', borderRadius: 14,
-        border: '1px solid var(--color-brand-border)', padding: '20px 24px',
-      }}>
-        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.5, color: 'var(--color-brand-muted)', marginBottom: 16, fontWeight: 600 }}>
-          🏗 Architecture &amp; Exit IP Explained
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          {/* Mode A */}
-          <div style={{
-            padding: '16px', borderRadius: 10,
-            background: config?.mode === 'selector' || !config?.mode
-              ? 'rgba(16,185,129,0.08)' : 'rgba(255,255,255,0.03)',
-            border: `1px solid ${config?.mode === 'selector' || !config?.mode ? 'rgba(16,185,129,0.3)' : 'var(--color-brand-border)'}`,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <span style={{ fontSize: 18 }}>⚡</span>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)' }}>Mode A — Selector/Failover</div>
-                <div style={{ fontSize: 10, color: '#10b981', fontWeight: 600 }}>{config?.mode === 'selector' || !config?.mode ? '● ACTIVE' : '○ Inactive'}</div>
-              </div>
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--color-brand-text)', lineHeight: 1.7 }}>
-              Traffic flows: <strong>You → Best V2Ray Node → Internet</strong><br />
-              <span style={{ color: '#f59e0b' }}>⚠ Exit IP = V2Ray node IP</span> (not your Clever Cloud server).<br />
-              Use this for: smart failover, lowest latency selection, zero-server-change bypass.
-            </div>
-          </div>
-          {/* Mode B */}
-          <div style={{
-            padding: '16px', borderRadius: 10,
-            background: config?.mode === 'bonding'
-              ? 'rgba(99,102,241,0.08)' : 'rgba(255,255,255,0.03)',
-            border: `1px solid ${config?.mode === 'bonding' ? 'rgba(99,102,241,0.3)' : 'var(--color-brand-border)'}`,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <span style={{ fontSize: 18 }}>🔗</span>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)' }}>Mode B — True Bonding</div>
-                <div style={{ fontSize: 10, color: '#6366f1', fontWeight: 600 }}>{config?.mode === 'bonding' ? '● ACTIVE' : '○ Inactive'}</div>
-              </div>
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--color-brand-text)', lineHeight: 1.7 }}>
-              Traffic flows: <strong>You → V2Ray Nodes → Clever Cloud Server → Internet</strong><br />
-              <span style={{ color: '#10b981' }}>✓ Exit IP = Clever Cloud server IP</span>.<br />
-              Requires: Combiner URL configured + server-side combiner running.
-            </div>
-          </div>
-        </div>
-        {config?.mode === 'selector' || !config?.mode ? (
-          <div style={{
-            marginTop: 12, padding: '10px 14px', borderRadius: 8,
-            background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)',
-            fontSize: 12, color: '#f59e0b',
-          }}>
-            💡 <strong>You are in Mode A (Selector).</strong> IP checkers will show a V2Ray node IP — this is correct behavior.
-            To route traffic through your Clever Cloud server (and see its IP), switch to <strong>Mode B (Bonding)</strong> and configure the Combiner URL.
-          </div>
-        ) : null}
-      </div>
-
-      {/* ── Empty State ─────────────────────────────────────────────── */}
+      {/* ── Offline View ─────────────────────────────────────────────── */}
       {!isRunning && (
-        <div style={{
-          background: 'var(--color-brand-card)', borderRadius: 14,
-          border: '1px solid var(--color-brand-border)', padding: '60px 40px',
-          textAlign: 'center',
-        }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>🔌</div>
-          <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--color-brand-heading)', margin: '0 0 8px' }}>
-            Engine Offline
-          </h2>
-          <p style={{ fontSize: 13, color: 'var(--color-brand-muted)', maxWidth: 400, margin: '0 auto', lineHeight: 1.6 }}>
-            The Multipath Engine monitors multiple proxy lines simultaneously and automatically switches
-            to the fastest available path. Click <strong>Start Engine</strong> to begin.
-          </p>
-          <p style={{ fontSize: 11, color: 'var(--color-brand-muted)', marginTop: 12 }}>
-            Requires at least 2 healthy nodes in the scanner pool.
-          </p>
+        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 20, alignItems: 'start' }}>
+          {/* Configuration Form Card */}
+          <div style={{
+            background: 'var(--color-brand-card)', borderRadius: 14,
+            border: '1px solid var(--color-brand-border)', padding: '20px 24px',
+            display: 'flex', flexDirection: 'column', gap: 16
+          }}>
+            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.5, color: 'var(--color-brand-muted)', fontWeight: 600 }}>
+              ⚙️ Engine Settings
+            </div>
+            <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Mode Selection Cards */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', textTransform: 'uppercase', display: 'block', marginBottom: 8 }}>
+                  Engine Mode
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div
+                    onClick={() => setMode('selector')}
+                    style={{
+                      padding: '16px', borderRadius: 10, cursor: 'pointer',
+                      background: mode === 'selector' ? 'rgba(16,185,129,0.08)' : 'var(--color-brand-bg)',
+                      border: `1.5px solid ${mode === 'selector' ? '#10b981' : 'var(--color-brand-border)'}`,
+                      transition: 'all 0.2s ease',
+                      boxShadow: mode === 'selector' ? '0 4px 12px rgba(16,185,129,0.1)' : 'none',
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)' }}>Mode A — Selector</div>
+                    <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', marginTop: 4 }}>Failover / Smart Selection</div>
+                  </div>
+                  <div
+                    onClick={() => setMode('bonding')}
+                    style={{
+                      padding: '16px', borderRadius: 10, cursor: 'pointer',
+                      background: mode === 'bonding' ? 'rgba(99,102,241,0.08)' : 'var(--color-brand-bg)',
+                      border: `1.5px solid ${mode === 'bonding' ? '#6366f1' : 'var(--color-brand-border)'}`,
+                      transition: 'all 0.2s ease',
+                      boxShadow: mode === 'bonding' ? '0 4px 12px rgba(99,102,241,0.1)' : 'none',
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)' }}>Mode B — True Bonding</div>
+                    <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', marginTop: 4 }}>Multipath Tunnel Aggregation</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Mode B specific fields */}
+              {mode === 'bonding' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14, borderRadius: 10, background: 'rgba(99,102,241,0.04)', border: '1px dashed rgba(99,102,241,0.2)' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Combiner URL *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. ws://your-server-ip:10545/api/bonding/combine"
+                      value={combinerUrl}
+                      onChange={(e) => setCombinerUrl(e.target.value)}
+                      required={mode === 'bonding'}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', fontSize: 13, color: 'var(--color-brand-heading)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Pre-Shared Key (Hex)</label>
+                      <input
+                        type="text"
+                        placeholder="Optional hex token"
+                        value={pskHex}
+                        onChange={(e) => setPskHex(e.target.value)}
+                        style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', fontSize: 13, color: 'var(--color-brand-heading)' }}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Client Origin ID</label>
+                      <input
+                        type="text"
+                        placeholder="Optional client ID"
+                        value={originId}
+                        onChange={(e) => setOriginId(e.target.value)}
+                        style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', fontSize: 13, color: 'var(--color-brand-heading)' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* General connection fields */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Max Arteries</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={maxArteries}
+                    onChange={(e) => setMaxArteries(Number(e.target.value))}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', fontSize: 13, color: 'var(--color-brand-heading)' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>SOCKS Port</label>
+                  <input
+                    type="number"
+                    value={socksPort}
+                    onChange={(e) => setSocksPort(Number(e.target.value))}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', fontSize: 13, color: 'var(--color-brand-heading)' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>HTTP Port</label>
+                  <input
+                    type="number"
+                    value={httpPort}
+                    onChange={(e) => setHttpPort(Number(e.target.value))}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', fontSize: 13, color: 'var(--color-brand-heading)' }}
+                  />
+                </div>
+              </div>
+
+              {/* Advanced toggle */}
+              <div
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                style={{ cursor: 'pointer', fontSize: 12, color: 'var(--color-brand)', fontWeight: 600, userSelect: 'none', display: 'flex', alignItems: 'center', gap: 4 }}
+              >
+                {showAdvanced ? '▼ Hide Advanced Parameters' : '▶ Show Advanced Parameters'}
+              </div>
+
+              {showAdvanced && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, padding: 12, borderRadius: 8, background: 'var(--color-brand-bg)', border: '1px solid var(--color-brand-border)' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Min Arteries</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={minArteries}
+                      onChange={(e) => setMinArteries(Number(e.target.value))}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', fontSize: 12, color: 'var(--color-brand-heading)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Frame Size (Bytes)</label>
+                    <input
+                      type="number"
+                      value={frameSize}
+                      onChange={(e) => setFrameSize(Number(e.target.value))}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', fontSize: 12, color: 'var(--color-brand-heading)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Eval Window (ms)</label>
+                    <input
+                      type="number"
+                      value={evalWindowMs}
+                      onChange={(e) => setEvalWindowMs(Number(e.target.value))}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', fontSize: 12, color: 'var(--color-brand-heading)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Loss Demote %</label>
+                    <input
+                      type="number"
+                      value={lossDemotePct}
+                      onChange={(e) => setLossDemotePct(Number(e.target.value))}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', fontSize: 12, color: 'var(--color-brand-heading)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Demote RTT Factor</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={demoteRttX}
+                      onChange={(e) => setDemoteRttX(Number(e.target.value))}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', fontSize: 12, color: 'var(--color-brand-heading)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Promote RTT Factor</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={promoteRttX}
+                      onChange={(e) => setPromoteRttX(Number(e.target.value))}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', fontSize: 12, color: 'var(--color-brand-heading)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Cooldown (Sec)</label>
+                    <input
+                      type="number"
+                      value={cooldownSec}
+                      onChange={(e) => setCooldownSec(Number(e.target.value))}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', fontSize: 12, color: 'var(--color-brand-heading)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Error Budget</label>
+                    <input
+                      type="number"
+                      value={errorBudget}
+                      onChange={(e) => setErrorBudget(Number(e.target.value))}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', fontSize: 12, color: 'var(--color-brand-heading)' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, gridColumn: 'span 2' }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Striping Mode</label>
+                    <select
+                      value={stripingMode}
+                      onChange={(e) => setStripingMode(e.target.value)}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-card)', fontSize: 12, color: 'var(--color-brand-heading)', width: '100%' }}
+                    >
+                      <option value="auto">Auto (Best Effort)</option>
+                      <option value="roundrobin">Round-Robin</option>
+                      <option value="redundant">Redundant (Duplicate Packets)</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                className="btn btn--secondary"
+                style={{ width: '100%', padding: '10px', fontWeight: 600, fontSize: 13 }}
+              >
+                Save Settings Configuration
+              </button>
+            </form>
+          </div>
+
+          {/* Right Column: Explanatory Details */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {/* Architecture Card */}
+            <div style={{
+              background: 'var(--color-brand-card)', borderRadius: 14,
+              border: '1px solid var(--color-brand-border)', padding: '20px 24px',
+            }}>
+              <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.5, color: 'var(--color-brand-muted)', marginBottom: 16, fontWeight: 600 }}>
+                🏗 Architecture &amp; Exit IP Explained
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {/* Mode A explain */}
+                <div style={{
+                  padding: '14px', borderRadius: 8,
+                  background: mode === 'selector' ? 'rgba(16,185,129,0.08)' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${mode === 'selector' ? 'rgba(16,185,129,0.3)' : 'var(--color-brand-border)'}`,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: 16 }}>⚡</span>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)' }}>Mode A — Selector/Failover</div>
+                      <div style={{ fontSize: 9, color: '#10b981', fontWeight: 600 }}>{mode === 'selector' ? '● SELECTED' : '○ Inactive'}</div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--color-brand-text)', lineHeight: 1.6 }}>
+                    Traffic route: <strong>You → Best V2Ray Node → Internet</strong><br />
+                    <span style={{ color: '#f59e0b' }}>⚠ Exit IP = V2Ray node IP</span> (not your Clever Cloud server).<br />
+                    Best for simple failover, lowest latency selection, and zero-server changes.
+                  </div>
+                </div>
+
+                {/* Mode B explain */}
+                <div style={{
+                  padding: '14px', borderRadius: 8,
+                  background: mode === 'bonding' ? 'rgba(99,102,241,0.08)' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${mode === 'bonding' ? 'rgba(99,102,241,0.3)' : 'var(--color-brand-border)'}`,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: 16 }}>🔗</span>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)' }}>Mode B — True Bonding</div>
+                      <div style={{ fontSize: 9, color: '#6366f1', fontWeight: 600 }}>{mode === 'bonding' ? '● SELECTED' : '○ Inactive'}</div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--color-brand-text)', lineHeight: 1.6 }}>
+                    Traffic route: <strong>You → V2Ray Nodes → Clever Cloud Server → Internet</strong><br />
+                    <span style={{ color: '#10b981' }}>✓ Exit IP = Clever Cloud server IP</span>.<br />
+                    Requires configuring the Combiner URL and running a server combiner.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Offline state details */}
+            <div style={{
+              background: 'var(--color-brand-card)', borderRadius: 14,
+              border: '1px solid var(--color-brand-border)', padding: '20px 24px',
+              textAlign: 'center'
+            }}>
+              <div style={{ fontSize: 32, marginBottom: 12 }}>🔌</div>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand-heading)', margin: '0 0 6px' }}>
+                Engine Offline
+              </h3>
+              <p style={{ fontSize: 12, color: 'var(--color-brand-muted)', margin: 0, lineHeight: 1.5 }}>
+                Configure settings and click <strong>Start Engine</strong> in the header to activate the tunnel. Requires at least 2 healthy nodes in the scanner pool to build arteries.
+              </p>
+            </div>
+          </div>
         </div>
       )}
     </div>
