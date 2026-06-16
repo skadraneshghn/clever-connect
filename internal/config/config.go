@@ -44,6 +44,7 @@ type Config struct {
 	CloudflareClientID     string
 	CloudflareClientSecret string
 	CloudflareRedirectURL  string
+	CloudflareScopes       []string
 }
 
 func LoadConfig() *Config {
@@ -114,6 +115,7 @@ func LoadConfig() *Config {
 		CloudflareClientID:     getEnv("CLOUDFLARE_CLIENT_ID", ""),
 		CloudflareClientSecret: getEnv("CLOUDFLARE_CLIENT_SECRET", ""),
 		CloudflareRedirectURL:  getEnv("CLOUDFLARE_REDIRECT_URL", ""),
+		CloudflareScopes:       parseScopes(getEnv("CLOUDFLARE_SCOPES", "account.read,zone.read,zone.write,workers.read,workers.write")),
 	}
 
 	// Automatic parsing of database URIs (e.g. from Clever Cloud MySQL addon)
@@ -184,4 +186,19 @@ func resolveDefaultClientDBPath() string {
 		return "data/client.db"
 	}
 	return filepath.Join(home, ".config", "cleverconnect", "v2ray.db")
+}
+
+func parseScopes(val string) []string {
+	if val == "" {
+		return nil
+	}
+	parts := strings.Split(val, ",")
+	var scopes []string
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			scopes = append(scopes, trimmed)
+		}
+	}
+	return scopes
 }

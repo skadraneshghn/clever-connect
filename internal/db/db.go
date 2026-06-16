@@ -157,6 +157,14 @@ func InitDB(cfg *config.Config) *gorm.DB {
 	if DB.Dialector.Name() == "mysql" {
 		DB.Exec("ALTER TABLE `telegram_configs` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 		DB.Exec("ALTER TABLE `soroush_tunnel_configs` MODIFY COLUMN `call_access_hash` VARCHAR(1024) NULL")
+
+		// Fix legacy api_token column in cloudflare_accounts if it exists
+		var columnExists int64
+		DB.Raw("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'cloudflare_accounts' AND COLUMN_NAME = 'api_token'", cfg.MySQLDBName).Scan(&columnExists)
+		if columnExists > 0 {
+			logger.Info("DB", "Migrating legacy api_token column in cloudflare_accounts to be nullable")
+			DB.Exec("ALTER TABLE `cloudflare_accounts` MODIFY COLUMN `api_token` TEXT NULL")
+		}
 	}
 	logger.Info("DB", "Schema migrations completed successfully")
 
