@@ -348,18 +348,28 @@ func (e *Engine) refreshCandidatePool() error {
 		return fmt.Errorf("no healthy nodes available in PebbleDB")
 	}
 
-	// Filter out nodes that are already active
+	// Filter out nodes that are already active by IP and deduplicate
 	e.mu.Lock()
-	activeAddrs := make(map[string]bool)
+	activeIPs := make(map[string]bool)
 	for _, a := range e.arteries {
-		activeAddrs[fmt.Sprintf("%s:%d", a.Config.Address, a.Config.Port)] = true
+		if a.Config.Address != "" {
+			activeIPs[a.Config.Address] = true
+		}
 	}
 	e.mu.Unlock()
 
+	seenIPs := make(map[string]struct{})
+	for ip := range activeIPs {
+		seenIPs[ip] = struct{}{}
+	}
+
 	var candidates []models.V2RayClientConfig
 	for _, cfg := range configs {
-		key := fmt.Sprintf("%s:%d", cfg.Address, cfg.Port)
-		if !activeAddrs[key] && cfg.LatencyMs > 0 {
+		if cfg.Address == "" {
+			continue
+		}
+		if _, used := seenIPs[cfg.Address]; !used && cfg.LatencyMs > 0 {
+			seenIPs[cfg.Address] = struct{}{}
 			candidates = append(candidates, cfg)
 		}
 	}

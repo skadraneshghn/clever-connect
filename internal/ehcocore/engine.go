@@ -73,13 +73,13 @@ func EnsureBinary() error {
 	}
 
 	logger.Info("Ehco", "ehco binary missing. Starting automatic self-compilation.", "path", binPath)
-	
+
 	if err := os.MkdirAll(filepath.Dir(binPath), 0755); err != nil {
 		return fmt.Errorf("failed to create bin directory: %w", err)
 	}
 
 	buildCmd := exec.Command("go", "build", "-o", binPath, "github.com/Ehco1996/ehco/cmd/ehco")
-	
+
 	out, err := buildCmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to compile ehco at %s: %w\nCompiler Output:\n%s", binPath, err, string(out))
@@ -129,7 +129,7 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 		LogLevel:   "info",
 		RelayConfigs: []*RelayConfig{
 			{
-				Listen:        "127.0.0.1:" + dbCfg.ListenPort,
+				Listen:        "0.0.0.0:" + dbCfg.ListenPort,
 				ListenType:    "ws",
 				TransportType: "raw",
 				Remotes:       []string{dbCfg.TargetHost},
@@ -161,8 +161,8 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
-	logger.Info("Ehco", "Starting Server Tunnel Process", 
-		"listen_port", dbCfg.ListenPort, 
+	logger.Info("Ehco", "Starting Server Tunnel Process",
+		"listen_port", dbCfg.ListenPort,
 		"target_host", dbCfg.TargetHost,
 		"enable_mux", dbCfg.EnableMux,
 		"keep_alive", idleTimeout,
@@ -171,7 +171,7 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 	// Launch process
 	binPath := getEhcoBinPath()
 	cmdInstance = exec.Command(binPath, "-c", configPath)
-	
+
 	// --- Suppress noisy I/O streams in production ---
 	cmdInstance.Stdout = nil
 	cmdInstance.Stderr = nil
@@ -198,7 +198,7 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 	}
 
 	transportType := "wss"
-	baseAddr := "wss://127.0.0.1:8080"
+	baseAddr := "wss://0.0.0.0:8080"
 	authPath := "/tunnel"
 	if dbCfg.AuthToken != "" {
 		authPath = "/tunnel/" + dbCfg.AuthToken
@@ -278,7 +278,7 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 		LogLevel:   "info",
 		RelayConfigs: []*RelayConfig{
 			{
-				Listen:        "127.0.0.1:" + dbCfg.LocalPort,
+				Listen:        "0.0.0.0:" + dbCfg.LocalPort,
 				ListenType:    "raw",
 				TransportType: transportType,
 				Remotes:       []string{baseAddr},
@@ -310,9 +310,9 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
-	logger.Info("Ehco", "Starting Client Tunnel Process", 
-		"local_port", dbCfg.LocalPort, 
-		"remote_url", baseAddr, 
+	logger.Info("Ehco", "Starting Client Tunnel Process",
+		"local_port", dbCfg.LocalPort,
+		"remote_url", baseAddr,
 		"path", authPath,
 		"sni", dbCfg.SNI,
 		"enable_mux", dbCfg.EnableMux,
@@ -323,7 +323,7 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 	// Launch process
 	binPath := getEhcoBinPath()
 	cmdInstance = exec.Command(binPath, "-c", configPath)
-	
+
 	// --- Suppress noisy I/O streams in production ---
 	cmdInstance.Stdout = nil
 	cmdInstance.Stderr = nil

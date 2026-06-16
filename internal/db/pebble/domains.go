@@ -1,64 +1,56 @@
 package pebble
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
+	"clever-connect/internal/db"
 	"clever-connect/internal/models"
 
-	"github.com/cockroachdb/pebble"
+	"gorm.io/gorm"
 )
 
 func SaveDomain(domain *models.Domain) error {
-	if DB == nil {
-		return fmt.Errorf("pebble database is not initialized")
+	if db.DB == nil {
+		return fmt.Errorf("database is not initialized")
 	}
 	if domain.Category == "" {
 		domain.Category = "ALL"
 	}
-	key := []byte("domain_" + domain.ID)
-	val, err := json.Marshal(domain)
-	if err != nil {
-		return err
-	}
-	return DB.Set(key, val, pebble.Sync)
+	domain.UpdatedAt = time.Now()
+	return db.DB.Save(domain).Error
 }
 
 func SaveDomainsBulk(domains []models.Domain) error {
-	if DB == nil {
-		return fmt.Errorf("pebble database is not initialized")
+	if db.DB == nil {
+		return fmt.Errorf("database is not initialized")
 	}
 	if len(domains) == 0 {
 		return nil
 	}
-	batch := DB.NewBatch()
-	for _, d := range domains {
-		if d.Category == "" {
-			d.Category = "ALL"
+	return db.DB.Transaction(func(tx *gorm.DB) error {
+		for i := range domains {
+			if domains[i].Category == "" {
+				domains[i].Category = "ALL"
+			}
+			domains[i].UpdatedAt = time.Now()
+			if err := tx.Save(&domains[i]).Error; err != nil {
+				return err
+			}
 		}
-		key := []byte("domain_" + d.ID)
-		val, _ := json.Marshal(d)
-		batch.Set(key, val, pebble.Sync)
-	}
-	err := batch.Commit(pebble.Sync)
-	batch.Close()
-	return err
+		return nil
+	})
 }
 
 func GetDomain(id string) (*models.Domain, error) {
-	if DB == nil {
-		return nil, fmt.Errorf("pebble database is not initialized")
+	if db.DB == nil {
+		return nil, fmt.Errorf("database is not initialized")
 	}
-	key := []byte("domain_" + id)
-	val, closer, err := DB.Get(key)
-	if err != nil {
-		return nil, err
-	}
-	defer closer.Close()
 	var d models.Domain
-	if err := json.Unmarshal(val, &d); err != nil {
+	err := db.DB.First(&d, "id = ?", id).Error
+	if err != nil {
 		return nil, err
 	}
 	if d.Category == "" {
@@ -68,31 +60,18 @@ func GetDomain(id string) (*models.Domain, error) {
 }
 
 func GetDomainByNameAndCategory(name, category string) (*models.Domain, error) {
-	if DB == nil {
-		return nil, fmt.Errorf("pebble database is not initialized")
+	if db.DB == nil {
+		return nil, fmt.Errorf("database is not initialized")
 	}
 	if category == "" {
 		category = "ALL"
 	}
-	iter, err := DB.NewIter(nil)
+	var d models.Domain
+	err := db.DB.First(&d, "domain_name = ? AND category = ?", name, category).Error
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
-
-	prefix := []byte("domain_")
-	for iter.SeekGE(prefix); iter.Valid() && strings.HasPrefix(string(iter.Key()), "domain_"); iter.Next() {
-		var d models.Domain
-		if err := json.Unmarshal(iter.Value(), &d); err == nil {
-			if d.Category == "" {
-				d.Category = "ALL"
-			}
-			if d.DomainName == name && d.Category == category {
-				return &d, nil
-			}
-		}
-	}
-	return nil, pebble.ErrNotFound
+	return &d, nil
 }
 
 func GetDomainByName(name string) (*models.Domain, error) {
@@ -100,28 +79,19 @@ func GetDomainByName(name string) (*models.Domain, error) {
 }
 
 func ListCategories() []string {
-	if DB == nil {
+	if db.DB == nil {
 		return []string{"ALL"}
 	}
+	var categories []string
+	db.DB.Model(&models.Domain{}).Distinct().Pluck("category", &categories)
+	
 	categoriesMap := make(map[string]bool)
 	categoriesMap["ALL"] = true
-
-	iter, err := DB.NewIter(nil)
-	if err != nil {
-		return []string{"ALL"}
-	}
-	defer iter.Close()
-
-	prefix := []byte("domain_")
-	for iter.SeekGE(prefix); iter.Valid() && strings.HasPrefix(string(iter.Key()), "domain_"); iter.Next() {
-		var d models.Domain
-		if err := json.Unmarshal(iter.Value(), &d); err == nil {
-			if d.Category != "" {
-				categoriesMap[d.Category] = true
-			}
+	for _, cat := range categories {
+		if cat != "" {
+			categoriesMap[cat] = true
 		}
 	}
-
 	var list []string
 	for cat := range categoriesMap {
 		list = append(list, cat)
@@ -140,162 +110,122 @@ type DomainStats struct {
 
 func ListDomains(category, search, status, tlsFilter string, httpStatus int, limit, offset int, sortBy, sortOrder string) ([]models.Domain, int, DomainStats) {
 	var stats DomainStats
-	if DB == nil {
+	if db.DB == nil {
 		return []models.Domain{}, 0, stats
 	}
-	var all []models.Domain
-	
-	iter, err := DB.NewIter(nil)
-	if err != nil {
-		return all, 0, stats
+
+	// 1. Calculate stats for category (ignoring search filters and pagination)
+	var allForStats []models.Domain
+	statQuery := db.DB.Model(&models.Domain{})
+	if category != "" && category != "ALL" {
+		statQuery = statQuery.Where("category = ?", category)
 	}
-	defer iter.Close()
+	statQuery.Find(&allForStats)
 
-	prefix := []byte("domain_")
-	for iter.SeekGE(prefix); iter.Valid() && strings.HasPrefix(string(iter.Key()), "domain_"); iter.Next() {
-		var d models.Domain
-		if err := json.Unmarshal(iter.Value(), &d); err == nil {
-			if d.Category == "" {
-				d.Category = "ALL"
-			}
-
-			// Compute stats for all domains matching the category (ignoring search filters and pagination)
-			if category == "" || category == "ALL" || d.Category == category {
-				stats.Total++
-				if d.Status == "online" {
-					stats.Online++
-				} else if d.Status == "offline" || d.Status == "timeout" || d.Status == "nxdomain" {
-					stats.Offline++
-				} else if d.Status == "checking" {
-					stats.Checking++
-				}
-				if d.TLSStatus {
-					stats.SSLValid++
-				}
-			}
-
-			// Filter: Category
-			if category != "" && category != "ALL" && d.Category != category {
-				continue
-			}
-
-			// Filter: Search (name or IP)
-			if search != "" {
-				s := strings.ToLower(search)
-				if !strings.Contains(strings.ToLower(d.DomainName), s) && !strings.Contains(strings.ToLower(d.IPAddresses), s) {
-					continue
-				}
-			}
-
-			// Filter: Status
-			if status != "" && d.Status != status {
-				continue
-			}
-
-			// Filter: TLS Filter (valid, invalid, expired)
-			if tlsFilter != "" {
-				if tlsFilter == "valid" && !d.TLSStatus {
-					continue
-				}
-				if tlsFilter == "invalid" && d.TLSStatus {
-					continue
-				}
-				if tlsFilter == "expired" && (!d.TLSStatus || d.TLSExpiryDays > 0) {
-					continue
-				}
-			}
-
-			// Filter: HTTP Status
-			if httpStatus > 0 && d.HTTPStatus != httpStatus {
-				continue
-			}
-
-			all = append(all, d)
+	for _, d := range allForStats {
+		stats.Total++
+		if d.Status == "online" {
+			stats.Online++
+		} else if d.Status == "offline" || d.Status == "timeout" || d.Status == "nxdomain" {
+			stats.Offline++
+		} else if d.Status == "checking" {
+			stats.Checking++
+		}
+		if d.TLSStatus {
+			stats.SSLValid++
 		}
 	}
 
-	sort.Slice(all, func(i, j int) bool {
-		var isLess bool
-		switch sortBy {
-		case "domain_name":
-			isLess = all[i].DomainName < all[j].DomainName
-		case "status":
-			isLess = all[i].Status < all[j].Status
-		case "latency_ms":
-			isLess = all[i].LatencyMs < all[j].LatencyMs
-		case "tls_expiry_days":
-			isLess = all[i].TLSExpiryDays < all[j].TLSExpiryDays
-		case "http_status":
-			isLess = all[i].HTTPStatus < all[j].HTTPStatus
-		default: // created_at
-			isLess = all[i].CreatedAt.Before(all[j].CreatedAt)
+	// 2. Build filtered query
+	query := db.DB.Model(&models.Domain{})
+	if category != "" && category != "ALL" {
+		query = query.Where("category = ?", category)
+	}
+	if search != "" {
+		s := "%" + strings.ToLower(search) + "%"
+		query = query.Where("LOWER(domain_name) LIKE ? OR LOWER(ip_addresses) LIKE ?", s, s)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if tlsFilter != "" {
+		if tlsFilter == "valid" {
+			query = query.Where("tls_status = ?", true)
+		} else if tlsFilter == "invalid" {
+			query = query.Where("tls_status = ?", false)
+		} else if tlsFilter == "expired" {
+			query = query.Where("tls_status = ? AND tls_expiry_days <= 0", true)
 		}
-		if sortOrder == "desc" {
-			return !isLess
-		}
-		return isLess
-	})
+	}
+	if httpStatus > 0 {
+		query = query.Where("http_status = ?", httpStatus)
+	}
 
-	total := len(all)
+	var total64 int64
+	query.Count(&total64)
+	total := int(total64)
+
+	// Order by
+	orderCol := "created_at"
+	switch sortBy {
+	case "domain_name":
+		orderCol = "domain_name"
+	case "status":
+		orderCol = "status"
+	case "latency_ms":
+		orderCol = "latency_ms"
+	case "tls_expiry_days":
+		orderCol = "tls_expiry_days"
+	case "http_status":
+		orderCol = "http_status"
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		sortOrder = "desc"
+	}
+	query = query.Order(orderCol + " " + sortOrder)
+
+	// Pagination
+	var result []models.Domain
 	if limit > 0 {
-		if offset >= total {
-			return []models.Domain{}, total, stats
-		}
-		end := offset + limit
-		if end > total {
-			end = total
-		}
-		return all[offset:end], total, stats
+		query = query.Offset(offset).Limit(limit)
 	}
-	return all, total, stats
+	err := query.Find(&result).Error
+	if err != nil {
+		return []models.Domain{}, 0, stats
+	}
+
+	for i := range result {
+		if result[i].Category == "" {
+			result[i].Category = "ALL"
+		}
+	}
+
+	return result, total, stats
 }
 
 func DeleteDomain(id string) error {
-	if DB == nil {
-		return fmt.Errorf("pebble database is not initialized")
+	if db.DB == nil {
+		return fmt.Errorf("database is not initialized")
 	}
-	key := []byte("domain_" + id)
-	return DB.Delete(key, pebble.Sync)
+	return db.DB.Delete(&models.Domain{}, "id = ?", id).Error
 }
 
 func DeleteDomainsBulk(ids []string) error {
-	if DB == nil {
-		return fmt.Errorf("pebble database is not initialized")
+	if db.DB == nil {
+		return fmt.Errorf("database is not initialized")
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	batch := DB.NewBatch()
-	for _, id := range ids {
-		key := []byte("domain_" + id)
-		batch.Delete(key, pebble.Sync)
-	}
-	err := batch.Commit(pebble.Sync)
-	batch.Close()
-	return err
+	return db.DB.Delete(&models.Domain{}, "id IN ?", ids).Error
 }
 
 func DeleteAllDomains(category string) error {
-	if DB == nil {
-		return fmt.Errorf("pebble database is not initialized")
+	if db.DB == nil {
+		return fmt.Errorf("database is not initialized")
 	}
-	iter, err := DB.NewIter(nil)
-	if err != nil {
-		return err
+	if category == "" || category == "ALL" {
+		return db.DB.Where("1 = 1").Delete(&models.Domain{}).Error
 	}
-	defer iter.Close()
-
-	batch := DB.NewBatch()
-	prefix := []byte("domain_")
-	for iter.SeekGE(prefix); iter.Valid() && strings.HasPrefix(string(iter.Key()), "domain_"); iter.Next() {
-		var d models.Domain
-		if err := json.Unmarshal(iter.Value(), &d); err == nil {
-			if category == "" || category == "ALL" || d.Category == category {
-				batch.Delete(iter.Key(), pebble.Sync)
-			}
-		}
-	}
-	err = batch.Commit(pebble.Sync)
-	batch.Close()
-	return err
+	return db.DB.Delete(&models.Domain{}, "category = ?", category).Error
 }

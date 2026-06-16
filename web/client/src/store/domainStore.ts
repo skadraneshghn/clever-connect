@@ -21,6 +21,7 @@ interface DomainStore {
   setDomains: (domains: Domain[]) => void;
   appendDomains: (domains: Domain[]) => void;
   updateDomain: (domain: Domain) => void;
+  updateDomainsBulk: (updates: Record<string, Partial<Domain>>) => void;
   removeDomain: (id: string) => void;
   removeDomainsBulk: (ids: string[]) => void;
   clearDomains: () => void;
@@ -67,6 +68,18 @@ export const useDomainStore = create<DomainStore>((set) => ({
         },
       },
     }));
+  },
+
+  updateDomainsBulk: (updates) => {
+    set((state) => {
+      const nextDomains = { ...state.domains };
+      Object.entries(updates).forEach(([id, data]) => {
+        if (nextDomains[id]) {
+          nextDomains[id] = { ...nextDomains[id], ...data };
+        }
+      });
+      return { domains: nextDomains };
+    });
   },
 
   removeDomain: (id) => {

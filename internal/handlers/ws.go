@@ -302,7 +302,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 					DomainSource      string               `json:"domain_source"`
 					CustomDomains     []string             `json:"custom_domains"`
 					WordlistURL       string               `json:"wordlist_url"`
-					ExpectResponse    string               `json:"expect_response"`
+					ExpectResponse    interface{}          `json:"expect_response"`
 				}
 				if err := json.Unmarshal(incoming.Data, &req); err == nil {
 					if req.ConcurrencyLimit <= 0 {
@@ -327,6 +327,19 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 						req.DomainSource = "default"
 					}
 
+					var expectStr string
+					if req.ExpectResponse != nil {
+						if b, ok := req.ExpectResponse.(bool); ok {
+							if b {
+								expectStr = "true"
+							} else {
+								expectStr = ""
+							}
+						} else if s, ok := req.ExpectResponse.(string); ok {
+							expectStr = s
+						}
+					}
+
 					testerCfg := &models.DNSTesterConfig{
 						ConcurrencyLimit: req.ConcurrencyLimit,
 						QPSLimit:         req.QPSLimit,
@@ -340,7 +353,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 						DomainSource:     req.DomainSource,
 						CustomDomains:    models.StringArray(req.CustomDomains),
 						WordlistURL:      req.WordlistURL,
-						ExpectResponse:   req.ExpectResponse,
+						ExpectResponse:   expectStr,
 					}
 					_ = dns.GetEngine().StartTest(testerCfg, req.CustomResolvers, req.SelectedProtocols)
 				}

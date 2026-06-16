@@ -73,6 +73,7 @@ interface DNSStore {
   setLoading: (loading: boolean) => void;
   setResolvers: (list: any[]) => void;
   updateResolver: (key: string, data: Partial<DNSResolver>) => void;
+  updateResolversBulk: (updates: Record<string, Partial<DNSResolver>>) => void;
   setJobStats: (stats: DNSJobStats | null) => void;
   setSweeping: (sweeping: boolean) => void;
   setAppliedResolver: (key: string) => void;
@@ -172,6 +173,62 @@ export const useDNSStore = create<DNSStore>((set) => ({
           ...state.resolvers,
           [key]: { ...resolver, ...data },
         },
+      };
+    });
+  },
+
+  updateResolversBulk: (updates) => {
+    set((state) => {
+      const nextResolvers = { ...state.resolvers };
+      const nextKeys = [...state.resolverKeys];
+      let resolverKeysChanged = false;
+
+      Object.entries(updates).forEach(([key, data]) => {
+        const resolver = nextResolvers[key];
+        if (!resolver) {
+          const [ip, protocol] = key.split(':');
+          const newResolver: DNSResolver = {
+            id: 0,
+            ip: ip || '',
+            protocol: protocol || 'udp',
+            provider_name: data.provider_name || 'Dynamic Resolver',
+            category: data.category || 'public',
+            support_udp: protocol === 'udp',
+            support_tcp: protocol === 'tcp',
+            support_dot: protocol === 'dot',
+            support_doh: protocol === 'doh',
+            support_doq: protocol === 'doq',
+            is_custom: false,
+            latency_ms: 0,
+            jitter_ms: 0,
+            success_rate: 0,
+            packet_loss: 0,
+            censored: false,
+            nxdomain_hijacked: false,
+            dnssec_valid: false,
+            dns_rebinding_vuln: false,
+            query_type: '',
+            dns_class: '',
+            domain: '',
+            clever_score: 0,
+            completed_at: '',
+            error_message: '',
+            is_testing: false,
+            ...data,
+          };
+          nextResolvers[key] = newResolver;
+          if (!nextKeys.includes(key)) {
+            nextKeys.push(key);
+            resolverKeysChanged = true;
+          }
+        } else {
+          nextResolvers[key] = { ...resolver, ...data };
+        }
+      });
+
+      return {
+        resolvers: nextResolvers,
+        ...(resolverKeysChanged ? { resolverKeys: nextKeys } : {}),
       };
     });
   },

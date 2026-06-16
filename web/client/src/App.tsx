@@ -24,10 +24,10 @@ const V2RayDashboardPage = lazy(() => import('./pages/V2RayDashboardPage').then(
 const V2RayClientPage = lazy(() => import('./pages/V2RayClientPage').then(m => ({ default: m.V2RayClientPage })));
 const V2RayCorePage = lazy(() => import('./pages/V2RayCorePage').then(m => ({ default: m.V2RayCorePage })));
 const V2RayRoutingPage = lazy(() => import('./pages/V2RayRoutingPage').then(m => ({ default: m.V2RayRoutingPage })));
-const NetworkToolsPage = lazy(() => import('./pages/NetworkToolsPage').then(m => ({ default: m.NetworkToolsPage })));
-const DomainCheckerPage = lazy(() => import('./pages/DomainCheckerPage').then(m => ({ default: m.DomainCheckerPage })));
-const IPDomainCheckerPage = lazy(() => import('./pages/IPDomainCheckerPage').then(m => ({ default: m.IPDomainCheckerPage })));
-const DNSTesterPage = lazy(() => import('./pages/DNSTesterPage').then(m => ({ default: m.DNSTesterPage })));
+const V2RayScannerPage = lazy(() => import('./pages/v2ray-scanner/V2RayScannerPage').then(m => ({ default: m.V2RayScannerPage })));
+const DomainCheckerPage = lazy(() => import('./pages/domain-checker/DomainCheckerPage').then(m => ({ default: m.DomainCheckerPage })));
+const IPDomainCheckerPage = lazy(() => import('./pages/ip-domain-checker/IPDomainCheckerPage').then(m => ({ default: m.IPDomainCheckerPage })));
+const DNSTesterPage = lazy(() => import('./pages/dns-tester/DNSTesterPage').then(m => ({ default: m.DNSTesterPage })));
 const V2RayMultipathPage = lazy(() => import('./pages/V2RayMultipathPage').then(m => ({ default: m.V2RayMultipathPage })));
 
 // Loading spinner
@@ -146,7 +146,7 @@ const router = createBrowserRouter([
       { path: 'v2ray-nodes', element: <V2RayClientPage /> },
       { path: 'v2ray-core', element: <V2RayCorePage /> },
       { path: 'v2ray-routing', element: <V2RayRoutingPage /> },
-      { path: 'v2ray-scanner', element: <NetworkToolsPage /> },
+      { path: 'v2ray-scanner', element: <V2RayScannerPage /> },
       { path: 'domain-checker', element: <DomainCheckerPage /> },
       { path: 'ip-domain-checker', element: <IPDomainCheckerPage /> },
       { path: 'dns-tester', element: <DNSTesterPage /> },

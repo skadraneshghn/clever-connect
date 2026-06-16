@@ -788,7 +788,7 @@ func (e *Engine) runSingleDiagnostic(ctx context.Context, job DNSTestJob) DNSTes
 			}
 		}
 
-		if job.Config.ExpectResponse != "" {
+		if job.Config.ExpectResponse != "" && job.Config.ExpectResponse != "true" && job.Config.ExpectResponse != "false" {
 			expectedMatch = false
 			expectLower := strings.ToLower(job.Config.ExpectResponse)
 			for _, val := range resolvedIPs {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,10 @@ type BondingEngine struct {
 	// Pool of candidate nodes
 	candidatePool []models.V2RayClientConfig
 	activeNodes   []models.V2RayClientConfig
+
+	// replacingMu serialises concurrent replaceDeadArtery calls so two goroutines
+	// can't race to grab the same node from the candidate pool at the same time.
+	replacingMu sync.Mutex
 
 	// Telemetry
 	TelemetryChan chan BondingStatus
@@ -427,19 +432,113 @@ func (e *BondingEngine) GetStatus() BondingStatus {
 	return status
 }
 
-// refreshCandidatePool loads the best nodes from PebbleDB.
+// refreshCandidatePool loads the best nodes from PebbleDB, excluding any
+// addresses that are already assigned to active arteries.
+// This prevents multiple arteries from being routed through the same VPS node.
 func (e *BondingEngine) refreshCandidatePool() error {
 	configs, total := pebble.ListClientConfigs(pebble.ConfigFilter{
 		SortBy:     "latency",
 		PingStatus: "pass",
 	}, 0, 0)
 
+	// Fallback to all configs if not enough passing configs
+	maxArteries := 5
+	if e.config != nil && e.config.MaxArteries > 0 {
+		maxArteries = e.config.MaxArteries
+	}
+	if len(configs) < maxArteries*2 {
+		logger.Warn("Bonding", "Not enough passing configs in PebbleDB; falling back to all configs", "passing", len(configs), "required_target", maxArteries*2)
+		allConfigs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{
+			SortBy: "latency",
+		}, 0, 0)
+
+		// Merge them, keeping passing configs first, then others
+		seen := make(map[uint]bool)
+		merged := make([]models.V2RayClientConfig, 0, len(allConfigs))
+		for _, c := range configs {
+			seen[c.ID] = true
+			merged = append(merged, c)
+		}
+		for _, c := range allConfigs {
+			if !seen[c.ID] {
+				merged = append(merged, c)
+			}
+		}
+		configs = merged
+		total = len(configs)
+	}
+
 	if total == 0 {
 		return fmt.Errorf("no healthy nodes available in PebbleDB")
 	}
 
+	// Build a set of addresses currently in use by active arteries.
+	e.mu.RLock()
+	inUse := make(map[string]struct{}, len(e.activeNodes))
+	for _, n := range e.activeNodes {
+		if n.Address != "" {
+			inUse[n.Address] = struct{}{}
+		}
+	}
+	e.mu.RUnlock()
+
+	// Filter out already-active nodes and duplicate IPs within the candidate list itself,
+	// so each artery gets a unique VPS.
+	seenIPs := make(map[string]struct{})
+	for ip := range inUse {
+		seenIPs[ip] = struct{}{}
+	}
+
+	filtered := make([]models.V2RayClientConfig, 0, len(configs))
+	for _, c := range configs {
+		if c.Address == "" {
+			continue
+		}
+		if _, used := seenIPs[c.Address]; !used {
+			seenIPs[c.Address] = struct{}{}
+			filtered = append(filtered, c)
+		}
+	}
+
+	// Fall back to the least-used active nodes if filtering left nothing (pool exhausted).
+	if len(filtered) == 0 {
+		logger.Warn("Bonding", "Candidate pool exhausted after deduplication; choosing least-used nodes")
+
+		// Count usage of each address in activeNodes
+		addressUsage := make(map[string]int)
+		e.mu.RLock()
+		for _, n := range e.activeNodes {
+			if n.Address != "" {
+				addressUsage[n.Address]++
+			}
+		}
+		e.mu.RUnlock()
+
+		// Deduplicate the fallback configs by IP as well, keeping the first occurrence (lowest latency)
+		fallbackSeen := make(map[string]struct{})
+		uniqueConfigs := make([]models.V2RayClientConfig, 0, len(configs))
+		for _, c := range configs {
+			if c.Address == "" {
+				continue
+			}
+			if _, seen := fallbackSeen[c.Address]; !seen {
+				fallbackSeen[c.Address] = struct{}{}
+				uniqueConfigs = append(uniqueConfigs, c)
+			}
+		}
+
+		// Sort unique configs by their usage count, then by latency (stable sort preserves latency order)
+		sort.SliceStable(uniqueConfigs, func(i, j int) bool {
+			usageI := addressUsage[uniqueConfigs[i].Address]
+			usageJ := addressUsage[uniqueConfigs[j].Address]
+			return usageI < usageJ
+		})
+
+		filtered = uniqueConfigs
+	}
+
 	e.mu.Lock()
-	e.candidatePool = configs
+	e.candidatePool = filtered
 	e.mu.Unlock()
 
 	return nil
@@ -648,14 +747,26 @@ func (e *BondingEngine) pingLoop(ctx context.Context) {
 	}
 }
 
-// replaceDeadArtery swaps a dead artery with a fresh node.
+// replaceDeadArtery swaps a dead artery with a fresh, unique node.
+// replacingMu ensures concurrent dead-artery events don't race to grab the
+// same candidate node from the pool at the same time.
 func (e *BondingEngine) replaceDeadArtery(ctx context.Context, pathID string) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	// Serialise replacements: only one artery swaps at a time.
+	e.replacingMu.Lock()
+	defer e.replacingMu.Unlock()
+
 	if ctx.Err() != nil {
 		return
 	}
 
 	logger.Info("Bonding", "Replacing dead artery", "path", pathID)
 
+	// Refresh pool AFTER acquiring the lock so each replacement sees an
+	// up-to-date picture of which nodes are already active.
 	_ = e.refreshCandidatePool()
 
 	e.mu.Lock()
@@ -673,11 +784,13 @@ func (e *BondingEngine) replaceDeadArtery(ctx context.Context, pathID string) {
 	replacement := e.candidatePool[0]
 	e.candidatePool = e.candidatePool[1:]
 
-	// Update activeNodes config
+	// Immediately mark the replacement as active so the next concurrent
+	// replaceDeadArtery call (after we release replacingMu) won't pick it again.
 	var idx int
 	if _, err := fmt.Sscanf(pathID, "artery-%d", &idx); err == nil && idx >= 0 && idx < len(e.activeNodes) {
 		e.activeNodes[idx] = replacement
 	}
+
 
 	// Reset metrics
 	metrics := control.NewPathMetrics(pathID)

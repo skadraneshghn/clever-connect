@@ -159,15 +159,23 @@ func (ac *ArteryConn) Connect() error {
 
 	// Route through the local xray SOCKS5 proxy (artery-N-in inbound).
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", localPort)
-	baseDialer := &net.Dialer{Timeout: 15 * time.Second}
+	baseDialer := &net.Dialer{Timeout: 5 * time.Second}
 	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, baseDialer)
 	if err != nil {
 		return fmt.Errorf("artery %s: failed to create SOCKS5 dialer for %s: %w", tag, socksAddr, err)
 	}
 
 	wsDialer := websocket.Dialer{
-		HandshakeTimeout: 15 * time.Second,
+		HandshakeTimeout: 5 * time.Second,
 		NetDial: func(network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err == nil {
+				if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
+					addr = net.JoinHostPort(ips[0].String(), port)
+				} else if err != nil {
+					logger.Warn("Bonding", "Local DNS lookup failed for combiner host", "host", host, "error", err)
+				}
+			}
 			return socksDialer.Dial(network, addr)
 		},
 	}

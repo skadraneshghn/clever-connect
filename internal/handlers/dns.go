@@ -741,7 +741,30 @@ func (h *DNSHandler) GetConfig(c *gin.Context) {
 		db.DB.Create(&config)
 	}
 
-	c.JSON(http.StatusOK, config)
+	// Fetch applied DNS setting if it exists
+	var appliedResolver string
+	var setting models.V2RayClientSetting
+	if err := db.DB.Where("key = ?", "dns_doh_url").First(&setting).Error; err == nil {
+		appliedResolver = setting.Value
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":                 config.ID,
+		"concurrency_limit":  config.ConcurrencyLimit,
+		"qps_limit":          config.QPSLimit,
+		"timeout_ms":         config.TimeoutMs,
+		"attempts":           config.Attempts,
+		"cache_busting":      config.CacheBusting,
+		"reference_domain":   config.ReferenceDomain,
+		"query_types":        config.QueryTypes,
+		"dns_class":          config.DNSClass,
+		"query_generator":    config.QueryGenerator,
+		"domain_source":      config.DomainSource,
+		"custom_domains":     config.CustomDomains,
+		"wordlist_url":       config.WordlistURL,
+		"expect_response":    config.ExpectResponse,
+		"resolver_applied":   appliedResolver,
+	})
 }
 
 // SaveConfig handles POST /api/dns/config

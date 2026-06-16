@@ -1,163 +1,35 @@
-import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import {
-  FiSearch, FiPlay, FiCheckCircle, FiXCircle,
-  FiClock, FiGlobe, FiPlus, FiChevronDown, FiChevronUp,
-  FiUploadCloud, FiDownload, FiFolderPlus, FiFilter,
-  FiFileText, FiFolder, FiTrash2
+import { 
+  FiSearch, FiGlobe, FiPlus, FiDownload, FiFolderPlus, FiFilter,
+  FiTrash2, FiFolder, FiFileText, FiChevronDown, FiChevronUp,
+  FiPlay, FiSquare, FiList, FiTrendingUp, FiActivity, FiArrowRight
 } from 'react-icons/fi';
-import { useDomainStore } from '../store/domainStore';
-import { useAuthStore } from '../store/authStore';
-import { IPResolveBadge } from '../components/atoms/IPResolveBadge';
-import { useGeoStore } from '../store/geoStore';
+import { useDomainStore } from '../../store/domainStore';
+import { useAuthStore } from '../../store/authStore';
+import { useGeoStore } from '../../store/geoStore';
 
-const StatusBadge = ({ status }: { status: string }) => {
-  switch (status) {
-    case 'online':
-      return <span style={{ padding: '2px 6px', borderRadius: 4, background: '#eefbf3', color: '#15803d', fontSize: 10, fontWeight: 700 }}>Online</span>;
-    case 'offline':
-    case 'nxdomain':
-      return <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(239, 68, 68, 0.08)', color: 'var(--color-brand-red)', fontSize: 10, fontWeight: 700 }}>Offline</span>;
-    case 'timeout':
-      return <span style={{ padding: '2px 6px', borderRadius: 4, background: '#fffbeb', color: '#b45309', fontSize: 10, fontWeight: 700 }}>Timeout</span>;
-    case 'checking':
-      return (
-        <span style={{ padding: '2px 6px', borderRadius: 4, background: 'var(--color-brand-light)', color: 'var(--color-brand)', fontSize: 10, fontWeight: 700 }} className="shimmer-text">
-          Checking
-        </span>
-      );
-    default:
-      return <span style={{ padding: '2px 6px', borderRadius: 4, background: 'var(--color-brand-bg)', color: 'var(--color-brand-muted)', fontSize: 10, fontWeight: 700 }}>Pending</span>;
-  }
+import { DomainRow } from './components/DomainRow';
+import { SidebarCategories } from './components/SidebarCategories';
+import { StatsDashboard } from './components/StatsDashboard';
+import { ImportDomainsModal } from './components/ImportDomainsModal';
+
+// Sort icon helper
+const SortIcon = ({ column, sortBy, sortOrder }: { column: string; sortBy: string; sortOrder: 'asc' | 'desc' }) => {
+  if (sortBy !== column) return <FiChevronDown style={{ opacity: 0.3 }} />;
+  return sortOrder === 'asc' ? <FiChevronUp style={{ color: 'var(--color-brand)' }} /> : <FiChevronDown style={{ color: 'var(--color-brand)' }} />;
 };
-
-const DomainRow = React.memo(({
-  domainId,
-  style,
-  isSelected,
-  onToggleSelect,
-  onCheckSingle,
-  onDeleteSingle
-}: {
-  domainId: string;
-  style: React.CSSProperties;
-  isSelected: boolean;
-  onToggleSelect: (id: string) => void;
-  onCheckSingle: (id: string) => void;
-  onDeleteSingle: (id: string) => void;
-}) => {
-  const domain = useDomainStore(state => state.domains[domainId]);
-
-  if (!domain) return null;
-
-  const isChecking = domain.status === 'checking';
-
-  let rowStyle: React.CSSProperties = {
-    ...style,
-    borderBottom: '1px solid var(--color-brand-border)',
-    background: isSelected ? 'var(--color-brand-light)' : 'none',
-    transition: 'background-color 0.2s ease',
-  };
-
-  const getLatencyColor = (ms: number) => {
-    if (ms <= 0) return 'var(--color-brand-muted)';
-    if (ms < 100) return 'var(--color-brand-green)';
-    if (ms < 300) return '#f59e0b';
-    return 'var(--color-brand-red)';
-  };
-
-  return (
-    <tr
-      className={isChecking ? 'pulse-testing' : ''}
-      style={rowStyle}
-    >
-      <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-        <input
-          type="checkbox"
-          checked={isSelected}
-          onChange={() => onToggleSelect(domainId)}
-          style={{ cursor: 'pointer', accentColor: 'var(--color-brand)', transform: 'scale(1.1)' }}
-        />
-      </td>
-      <td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>
-        <span
-          onClick={(e) => {
-            if (e.ctrlKey) {
-              e.preventDefault();
-              const url = domain.domain_name.startsWith('http') ? domain.domain_name : `https://${domain.domain_name}`;
-              window.open(url, '_blank', 'noopener,noreferrer');
-            }
-          }}
-          style={{ cursor: 'pointer' }}
-          className="hover:underline"
-          title="Ctrl+Click to open in new tab"
-        >
-          {domain.domain_name}
-        </span>
-      </td>
-      <td style={{ padding: '10px 12px' }}>
-        <StatusBadge status={domain.status} />
-      </td>
-      <td style={{ padding: '10px 12px', color: 'var(--color-brand-text)' }}>
-        {
-          domain.ip_addresses ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {domain.ip_addresses.split(',').map((ip: string) => {
-                const cleanIp = ip.trim();
-                return cleanIp ? <IPResolveBadge key={cleanIp} ip={cleanIp} /> : null;
-              })}
-            </div>
-          ) : (
-            '-'
-          )
-        }
-      </td >
-      <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 700, color: getLatencyColor(domain.latency_ms) }}>
-        {domain.latency_ms > 0 ? `${domain.latency_ms}ms` : '-'}
-      </td>
-      <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-        {domain.status !== 'pending' && domain.status !== 'checking' && (
-          <span style={{
-            padding: '2px 6px',
-            borderRadius: 4,
-            background: domain.tls_status ? '#eefbf3' : 'rgba(239, 68, 68, 0.08)',
-            color: domain.tls_status ? '#15803d' : 'var(--color-brand-red)',
-            fontSize: 10,
-            fontWeight: 700,
-          }}>
-            {domain.tls_status ? (domain.tls_expiry_days > 0 ? `${domain.tls_expiry_days}d` : 'Valid') : 'Invalid'}
-          </span>
-        )}
-      </td>
-      <td style={{ padding: '10px 12px', textAlign: 'center', fontFamily: 'monospace', color: domain.http_status === 200 ? 'var(--color-brand-green)' : 'var(--color-brand-text)' }}>
-        {domain.http_status || '-'}
-      </td>
-      <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-          <button
-            onClick={() => onCheckSingle(domainId)}
-            disabled={isChecking}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)' }}
-            title="Check Domain"
-          >
-            <FiPlay size={12} />
-          </button>
-          <button
-            onClick={() => onDeleteSingle(domainId)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-red)' }}
-            title="Delete Domain"
-          >
-            <FiTrash2 size={12} />
-          </button>
-        </div>
-      </td>
-    </tr >
-  );
-});
 
 export const DomainCheckerPage: React.FC = () => {
   const { token } = useAuthStore();
-  const { domains, domainIds, setDomains, appendDomains, updateDomain } = useDomainStore();
+  const { 
+    domains, 
+    domainIds, 
+    setDomains, 
+    appendDomains, 
+    updateDomain,
+    updateDomainsBulk
+  } = useDomainStore();
 
   const [ws, setWs] = useState<WebSocket | null>(null);
 
@@ -216,7 +88,6 @@ export const DomainCheckerPage: React.FC = () => {
   });
 
   const isChecking = dbStats.checking > 0;
-
 
   const fetchCategories = async () => {
     try {
@@ -316,7 +187,6 @@ export const DomainCheckerPage: React.FC = () => {
 
               if (oldDomain.tls_status) next.ssl_valid = Math.max(0, next.ssl_valid - 1);
             } else {
-              // fallback: if not in memory (paginated out), it was probably "checking"
               next.checking = Math.max(0, next.checking - 1);
             }
 
@@ -353,7 +223,6 @@ export const DomainCheckerPage: React.FC = () => {
     }
   }, [checkedAllCount, totalAllToCheck, isCheckingAll]);
 
-
   const virtualizer = useVirtualizer({
     count: domainIds.length,
     getScrollElement: () => parentRef.current,
@@ -388,7 +257,6 @@ export const DomainCheckerPage: React.FC = () => {
     });
   }, []);
 
-  // Modal file parsing helper
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -404,7 +272,7 @@ export const DomainCheckerPage: React.FC = () => {
         if (lines.length > 0) {
           const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
           let domainColIndex = headers.findIndex(h => h.includes('domain') || h.includes('host') || h.includes('url'));
-          if (domainColIndex === -1) domainColIndex = 0; // fallback to first column
+          if (domainColIndex === -1) domainColIndex = 0;
 
           for (let i = 1; i < lines.length; i++) {
             const row = lines[i].split(',');
@@ -489,9 +357,12 @@ export const DomainCheckerPage: React.FC = () => {
     setTotalAllToCheck(idsArray.length);
     setIsCheckingAll(true);
 
+    // Visually set checking state (HIGH PERFORMANCE BATCH UPDATE)
+    const updates: Record<string, Partial<any>> = {};
     idsArray.forEach(id => {
-      updateDomain({ ...domains[id], status: 'checking' });
+      updates[id] = { status: 'checking' };
     });
+    updateDomainsBulk(updates);
 
     await fetch('/api/domains/check/bulk', {
       method: 'POST',
@@ -546,7 +417,6 @@ export const DomainCheckerPage: React.FC = () => {
       }
     }
   };
-
 
   const handleDeleteSingle = useCallback(async (id: string) => {
     if (!window.confirm("Are you sure you want to delete this domain?")) return;
@@ -654,11 +524,6 @@ export const DomainCheckerPage: React.FC = () => {
     document.body.removeChild(element);
   };
 
-  const SortIcon = ({ column }: { column: string }) => {
-    if (sortBy !== column) return <FiChevronDown style={{ opacity: 0.3 }} />;
-    return sortOrder === 'asc' ? <FiChevronUp style={{ color: 'var(--color-brand)' }} /> : <FiChevronDown style={{ color: 'var(--color-brand)' }} />;
-  };
-
   const toggleSort = (column: string) => {
     if (sortBy === column) {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
@@ -707,52 +572,12 @@ export const DomainCheckerPage: React.FC = () => {
       `}</style>
 
       {/* LEFT SIDEBAR: Categories list */}
-      <div className="g-card" style={{ width: 220, padding: 16, display: 'flex', flexDirection: 'column', gap: 16, flexShrink: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-brand-heading)', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <FiFolder /> Categories
-          </span>
-          <button
-            onClick={() => setIsNewCatModalOpen(true)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', padding: 0 }}
-            title="Create New Category"
-          >
-            <FiFolderPlus size={16} />
-          </button>
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto', flex: 1 }}>
-          {categories.map((cat) => {
-            const isSelected = selectedCategory === cat;
-            return (
-              <button
-                key={cat}
-                onClick={() => setSelectedCategory(cat)}
-                style={{
-                  textAlign: 'left',
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  border: 'none',
-                  background: isSelected ? 'var(--color-brand-light)' : 'transparent',
-                  color: isSelected ? 'var(--color-brand)' : 'var(--color-brand-text)',
-                  fontSize: 12,
-                  fontWeight: isSelected ? 600 : 500,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  transition: 'all 0.15s ease'
-                }}
-              >
-                <FiFileText size={14} style={{ opacity: isSelected ? 1 : 0.6 }} />
-                <span style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', flex: 1 }}>
-                  {cat}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <SidebarCategories
+        categories={categories}
+        selectedCategory={selectedCategory}
+        setSelectedCategory={setSelectedCategory}
+        onAddCategoryClick={() => setIsNewCatModalOpen(true)}
+      />
 
       {/* RIGHT CONTENT: Toolbar, Filters & Table */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 20, minWidth: 0 }}>
@@ -835,7 +660,6 @@ export const DomainCheckerPage: React.FC = () => {
               <FiPlay /> Test Category ({selectedCategory})
             </button>
 
-
             <div style={{ position: 'relative', display: 'inline-block' }}>
               <button
                 className="btn btn--secondary btn--sm"
@@ -886,99 +710,13 @@ export const DomainCheckerPage: React.FC = () => {
         </div>
 
         {/* Telemetry Card */}
-        <div className="g-card" style={{ padding: 20 }}>
-          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
-
-            <div style={{ display: 'flex', width: '100%', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-around', gap: 20 }}>
-              {/* Sonar Radar Graphic */}
-              <div style={{ position: 'relative', width: 100, height: 100, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.25)', background: 'radial-gradient(circle, rgba(255, 107, 44, 0.05) 0%, rgba(0,0,0,0) 70%)', overflow: 'hidden', flexShrink: 0 }}>
-                <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.15)', transform: 'scale(0.66)' }} />
-                <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid rgba(255, 107, 44, 0.1)', transform: 'scale(0.33)' }} />
-                <div style={{ position: 'absolute', width: '100%', height: '1px', background: 'rgba(255, 107, 44, 0.12)', top: '50%', left: 0 }} />
-                <div style={{ position: 'absolute', height: '100%', width: '1px', background: 'rgba(255, 107, 44, 0.12)', left: '50%', top: 0 }} />
-
-                {/* Blinking center spot */}
-                <div style={{ position: 'absolute', width: 6, height: 6, borderRadius: '50%', background: 'var(--color-brand)', boxShadow: '0 0 10px var(--color-brand)', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 5 }} />
-
-                {/* Sweep ray */}
-                <div
-                  className={`clip-radar ${isChecking ? 'animate-radar-sweep' : 'opacity-20'}`}
-                  style={{
-                    position: 'absolute',
-                    width: '50%',
-                    height: '50%',
-                    top: 0,
-                    left: '50%',
-                    transformOrigin: 'bottom left',
-                    background: 'linear-gradient(to right, rgba(255, 107, 44, 0.4) 0%, rgba(255, 107, 44, 0) 100%)',
-                    clipPath: 'polygon(0 100%, 100% 100%, 100% 0)'
-                  }}
-                />
-              </div>
-
-              {/* Metrics */}
-              <div style={{ flex: 1, minWidth: 160 }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 10 }}>
-                  {isChecking ? 'DOMAIN PROBING IN PROGRESS...' : 'TELEMETRY SCAN IDLE'}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 16 }}>
-                  <div>
-                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-text)', fontWeight: 600, textTransform: 'uppercase' }}>Total</span>
-                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-heading)' }}>
-                      {dbStats.total}
-                    </strong>
-                  </div>
-                  <div>
-                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-green)', fontWeight: 600, textTransform: 'uppercase' }}>Online</span>
-                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-green)' }}>
-                      {dbStats.online}
-                    </strong>
-                  </div>
-                  <div>
-                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-red)', fontWeight: 600, textTransform: 'uppercase' }}>Offline</span>
-                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-red)' }}>
-                      {dbStats.offline}
-                    </strong>
-                  </div>
-                  <div>
-                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-blue)', fontWeight: 600, textTransform: 'uppercase' }}>Checking</span>
-                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-blue)' }}>
-                      {dbStats.checking}
-                    </strong>
-                  </div>
-                  <div>
-                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-brand-indigo)', fontWeight: 600, textTransform: 'uppercase' }}>SSL Valid</span>
-                    <strong style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-brand-indigo)' }}>
-                      {dbStats.ssl_valid}
-                    </strong>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {isCheckingAll && (
-              <div style={{ width: '100%', marginTop: 16, borderTop: '1px dashed var(--color-brand-border)', paddingTop: 16 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: 'var(--color-brand-text)', marginBottom: 6 }}>
-                  <span style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span className="shimmer-text" style={{ color: 'var(--color-brand)' }}>●</span> Bulk Probing: {checkedAllCount} / {totalAllToCheck} Domains Checked
-                  </span>
-                  <span style={{ fontWeight: 700, color: 'var(--color-brand)' }}>{Math.round((checkedAllCount / (totalAllToCheck || 1)) * 100)}%</span>
-                </div>
-                <div style={{ width: '100%', height: 6, background: 'var(--color-brand-bg)', borderRadius: 3, overflow: 'hidden' }}>
-                  <div style={{
-                    width: `${Math.min(100, Math.round((checkedAllCount / (totalAllToCheck || 1)) * 100))}%`,
-                    height: '100%',
-                    background: 'linear-gradient(to right, var(--color-brand-light), var(--color-brand))',
-                    borderRadius: 3,
-                    transition: 'width 0.3s ease-out'
-                  }} />
-                </div>
-              </div>
-            )}
-
-          </div>
-        </div>
-
+        <StatsDashboard
+          dbStats={dbStats}
+          isChecking={isChecking}
+          isCheckingAll={isCheckingAll}
+          checkedAllCount={checkedAllCount}
+          totalAllToCheck={totalAllToCheck}
+        />
 
         {/* Filter bar card */}
         <div className="g-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1144,314 +882,96 @@ export const DomainCheckerPage: React.FC = () => {
                   </th>
                   <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', cursor: 'pointer' }} onClick={() => toggleSort('domain_name')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      Domain <SortIcon column="domain_name" />
+                      Domain <SortIcon column="domain_name" sortBy={sortBy} sortOrder={sortOrder} />
                     </div>
                   </th>
                   <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 120, cursor: 'pointer' }} onClick={() => toggleSort('status')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      Status <SortIcon column="status" />
+                      Status <SortIcon column="status" sortBy={sortBy} sortOrder={sortOrder} />
                     </div>
                   </th>
                   <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>IP Addresses</th>
                   <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 100, textAlign: 'center', cursor: 'pointer' }} onClick={() => toggleSort('latency_ms')}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                      Latency <SortIcon column="latency_ms" />
+                      Latency <SortIcon column="latency_ms" sortBy={sortBy} sortOrder={sortOrder} />
                     </div>
                   </th>
                   <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 120, textAlign: 'center', cursor: 'pointer' }} onClick={() => toggleSort('tls_expiry_days')}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                      SSL/TLS <SortIcon column="tls_expiry_days" />
+                      SSL/TLS <SortIcon column="tls_expiry_days" sortBy={sortBy} sortOrder={sortOrder} />
                     </div>
                   </th>
                   <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 90, textAlign: 'center', cursor: 'pointer' }} onClick={() => toggleSort('http_status')}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                      HTTP <SortIcon column="http_status" />
+                      HTTP <SortIcon column="http_status" sortBy={sortBy} sortOrder={sortOrder} />
                     </div>
                   </th>
                   <th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 80, textAlign: 'center' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {domainIds.length === 0 ? (
+                {virtualizer.getVirtualItems()[0]?.start > 0 && (
+                  <tr style={{ height: virtualizer.getVirtualItems()[0].start }} />
+                )}
+                {virtualizer.getVirtualItems().map((virtualRow) => {
+                  const id = domainIds[virtualRow.index];
+                  return (
+                    <DomainRow
+                      key={id}
+                      domainId={id}
+                      onCheckSingle={handleCheckSingle}
+                      onDeleteSingle={handleDeleteSingle}
+                      isChecking={isChecking}
+                      isSelected={selectedIds.has(id)}
+                      onToggleSelect={toggleSelect}
+                    />
+                  );
+                })}
+                {virtualizer.getVirtualItems().length > 0 && (
+                  <tr
+                    style={{
+                      height:
+                        virtualizer.getTotalSize() -
+                        virtualizer.getVirtualItems()[virtualizer.getVirtualItems().length - 1].end,
+                    }}
+                  />
+                )}
+
+                {domainIds.length === 0 && (
                   <tr>
                     <td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
                       No domains added in this filter context. Click "Add Domains" to import.
                     </td>
                   </tr>
-                ) : (
-                  <>
-                    {virtualizer.getVirtualItems()[0]?.start > 0 && (
-                      <tr>
-                        <td colSpan={8} style={{ height: virtualizer.getVirtualItems()[0].start }} />
-                      </tr>
-                    )}
-                    {virtualizer.getVirtualItems().map((virtualRow) => {
-                      const domainId = domainIds[virtualRow.index];
-                      if (!domainId) return null;
-                      return (
-                        <DomainRow
-                          key={domainId}
-                          domainId={domainId}
-                          style={{
-                            height: virtualRow.size,
-                          }}
-                          isSelected={selectedIds.has(domainId)}
-                          onToggleSelect={toggleSelect}
-                          onCheckSingle={handleCheckSingle}
-                          onDeleteSingle={handleDeleteSingle}
-                        />
-                      );
-                    })}
-                    {virtualizer.getVirtualItems().length > 0 && (
-                      <tr>
-                        <td
-                          colSpan={8}
-                          style={{
-                            height:
-                              virtualizer.getTotalSize() -
-                              virtualizer.getVirtualItems()[virtualizer.getVirtualItems().length - 1].end,
-                          }}
-                        />
-                      </tr>
-                    )}
-                    {isFetching && hasMore && (
-                      <tr>
-                        <td colSpan={8} style={{ padding: 10, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
-                          Loading more...
-                        </td>
-                      </tr>
-                    )}
-                  </>
                 )}
               </tbody>
             </table>
           </div>
         </div>
-
       </div>
 
-      {/* ADVANCED ADD DOMAINS MODAL */}
-      {isAddModalOpen && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0, left: 0, width: '100%', height: '100%',
-            background: 'rgba(0,0,0,0.5)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            zIndex: 999,
-          }}
-          onClick={() => !isImporting && setIsAddModalOpen(false)}
-        >
-          <div
-            style={{
-              background: 'var(--color-brand-card)',
-              padding: 24,
-              borderRadius: 12,
-              width: 500,
-              maxWidth: '90%',
-              boxShadow: '0 10px 25px rgba(0,0,0,0.15)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 16
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0 }}>
-              Bulk Domain Importer
-            </h3>
-
-            {isImporting ? (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: '40px 20px',
-                gap: 14,
-                background: 'var(--color-brand-bg)',
-                border: '1px solid var(--color-brand-border)',
-                borderRadius: 8,
-                margin: '10px 0'
-              }}>
-                <div style={{
-                  width: 32,
-                  height: 32,
-                  border: '3px solid var(--color-brand-border)',
-                  borderTop: '3px solid var(--color-brand)',
-                  borderRadius: '50%',
-                  animation: 'spin 1s linear infinite',
-                }} />
-                <style>{`
-                  @keyframes spin {
-                    0% { transform: rotate(0deg); }
-                    100% { transform: rotate(360deg); }
-                  }
-                `}</style>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                  <span style={{ fontSize: 13, color: 'var(--color-brand-heading)', fontWeight: 600 }}>
-                    Importing {addMethod === 'text' ? rawTextImport.split('\n').map(s => s.trim()).filter(Boolean).length : fileDomains.length} domains...
-                  </span>
-                  <span style={{ fontSize: 11, color: 'var(--color-brand-muted)' }}>
-                    Writing to Pebble database & updating categories
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <>
-                {/* Category Select / Creation */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-text)' }}>Target Category</label>
-
-                  {!isCreatingNewCatInImport ? (
-                    <div style={{ display: 'flex', gap: 10 }}>
-                      <select
-                        value={importCategory}
-                        onChange={(e) => setImportCategory(e.target.value)}
-                        style={{
-                          flex: 1,
-                          padding: '8px 10px',
-                          borderRadius: 8,
-                          border: '1px solid var(--color-brand-border)',
-                          background: 'var(--color-brand-bg)',
-                          fontSize: 13,
-                          color: 'var(--color-brand-heading)'
-                        }}
-                      >
-                        {categories.map(cat => (
-                          <option key={cat} value={cat}>{cat}</option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        className="btn btn--secondary"
-                        onClick={() => setIsCreatingNewCatInImport(true)}
-                      >
-                        New
-                      </button>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', gap: 10 }}>
-                      <input
-                        type="text"
-                        placeholder="Enter category name..."
-                        value={customImportCat}
-                        onChange={(e) => setCustomImportCat(e.target.value)}
-                        style={{
-                          flex: 1,
-                          padding: '8px 10px',
-                          borderRadius: 8,
-                          border: '1px solid var(--color-brand-border)',
-                          background: 'var(--color-brand-bg)',
-                          fontSize: 13,
-                          color: 'var(--color-brand-heading)'
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className="btn btn--secondary"
-                        onClick={() => setIsCreatingNewCatInImport(false)}
-                      >
-                        Select Existing
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Selector: Text or File */}
-                <div style={{ display: 'flex', borderBottom: '1px solid var(--color-brand-border)' }}>
-                  <button
-                    onClick={() => setAddMethod('text')}
-                    style={{
-                      flex: 1, padding: '8px 0', border: 'none', background: 'none',
-                      fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                      borderBottom: addMethod === 'text' ? '2px solid var(--color-brand)' : 'none',
-                      color: addMethod === 'text' ? 'var(--color-brand)' : 'var(--color-brand-text)'
-                    }}
-                  >
-                    Raw Text List
-                  </button>
-                  <button
-                    onClick={() => setAddMethod('file')}
-                    style={{
-                      flex: 1, padding: '8px 0', border: 'none', background: 'none',
-                      fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                      borderBottom: addMethod === 'file' ? '2px solid var(--color-brand)' : 'none',
-                      color: addMethod === 'file' ? 'var(--color-brand)' : 'var(--color-brand-text)'
-                    }}
-                  >
-                    Upload TXT / CSV File
-                  </button>
-                </div>
-
-                {/* Input area */}
-                {addMethod === 'text' ? (
-                  <textarea
-                    value={rawTextImport}
-                    onChange={(e) => setRawTextImport(e.target.value)}
-                    placeholder="Paste domains (one per line, e.g. google.com)..."
-                    style={{
-                      width: '100%', height: 180, padding: 12, borderRadius: 8,
-                      border: '1px solid var(--color-brand-border)',
-                      background: 'var(--color-brand-bg)',
-                      fontSize: 13, color: 'var(--color-brand-heading)',
-                      resize: 'none', outline: 'none'
-                    }}
-                  />
-                ) : (
-                  <div
-                    onClick={() => fileInputRef.current?.click()}
-                    style={{
-                      height: 180, border: '2px dashed var(--color-brand-border)',
-                      borderRadius: 8, display: 'flex', flexDirection: 'column',
-                      alignItems: 'center', justifyContent: 'center', gap: 10,
-                      cursor: 'pointer', background: 'var(--color-brand-bg)'
-                    }}
-                  >
-                    <FiUploadCloud size={32} style={{ color: 'var(--color-brand)' }} />
-                    <span style={{ fontSize: 12, color: 'var(--color-brand-text)', fontWeight: 500 }}>
-                      Click to select TXT or CSV domain list file
-                    </span>
-                    {fileParsedCount > 0 && (
-                      <span style={{ fontSize: 11, color: 'var(--color-brand-green)', fontWeight: 700 }}>
-                        Successfully parsed {fileParsedCount} domains!
-                      </span>
-                    )}
-                    <input
-                      type="file"
-                      accept=".txt,.csv"
-                      ref={fileInputRef}
-                      onChange={handleFileChange}
-                      style={{ display: 'none' }}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Actions */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button
-                type="button"
-                className="btn btn--secondary btn--sm"
-                onClick={() => !isImporting && setIsAddModalOpen(false)}
-                disabled={isImporting}
-                style={{ opacity: isImporting ? 0.6 : 1, cursor: isImporting ? 'not-allowed' : 'pointer' }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn--primary btn--sm"
-                onClick={handleImportSubmit}
-                disabled={isImporting}
-                style={{ opacity: isImporting ? 0.6 : 1, cursor: isImporting ? 'not-allowed' : 'pointer' }}
-              >
-                {isImporting ? 'Importing...' : 'Import Domains'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* BULK IMPORT MODAL */}
+      <ImportDomainsModal
+        isOpen={isAddModalOpen}
+        onClose={() => !isImporting && setIsAddModalOpen(false)}
+        categories={categories}
+        importCategory={importCategory}
+        setImportCategory={setImportCategory}
+        isCreatingNewCatInImport={isCreatingNewCatInImport}
+        setIsCreatingNewCatInImport={setIsCreatingNewCatInImport}
+        customImportCat={customImportCat}
+        setCustomImportCat={setCustomImportCat}
+        addMethod={addMethod}
+        setAddMethod={setAddMethod}
+        rawTextImport={rawTextImport}
+        setRawTextImport={setRawTextImport}
+        fileDomains={fileDomains}
+        fileParsedCount={fileParsedCount}
+        fileInputRef={fileInputRef}
+        handleFileChange={handleFileChange}
+        handleImportSubmit={handleImportSubmit}
+        isImporting={isImporting}
+      />
 
       {/* CREATE CATEGORY MODAL */}
       {isNewCatModalOpen && (
