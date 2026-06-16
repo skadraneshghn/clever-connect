@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FiPlus, FiGlobe, FiCloudLightning, FiAlertTriangle, FiLoader } from 'react-icons/fi';
+import { FiPlus, FiGlobe, FiCloudLightning, FiAlertTriangle, FiLoader, FiCopy, FiCheck, FiSettings, FiRefreshCw } from 'react-icons/fi';
 import { useCloudflareStore } from '../store/cloudflareStore';
 import type { CloudflareAccount } from '../store/cloudflareStore';
 import { CloudflareStatsCard } from '../components/molecules/CloudflareStatsCard';
@@ -16,7 +16,10 @@ export const CloudflarePage: React.FC = () => {
     deleteDeployment, 
     checkDeploymentHealth, 
     isLoading, 
-    error 
+    error,
+    forwarderConfig,
+    fetchForwarderConfig,
+    updateForwarderConfig
   } = useCloudflareStore();
 
   const [showModal, setShowModal] = useState(false);
@@ -24,10 +27,48 @@ export const CloudflarePage: React.FC = () => {
   const [editingAccount, setEditingAccount] = useState<CloudflareAccount | null>(null);
   const [checkingIds, setCheckingIds] = useState<number[]>([]);
 
+  // Nova forwarder states
+  const [isEditingForwarder, setIsEditingForwarder] = useState(false);
+  const [forwarderToken, setForwarderToken] = useState('');
+  const [forwarderPort, setForwarderPort] = useState(8081);
+  const [forwarderEnabled, setForwarderEnabled] = useState(true);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedToken, setCopiedToken] = useState(false);
+
+  // Sync state when forwarderConfig loads
+  useEffect(() => {
+    if (forwarderConfig) {
+      setForwarderToken(forwarderConfig.secret_auth_key);
+      setForwarderPort(forwarderConfig.assigned_core_port);
+      setForwarderEnabled(forwarderConfig.is_enabled);
+    }
+  }, [forwarderConfig]);
+
+  const handleSaveForwarder = async () => {
+    await updateForwarderConfig({
+      secret_auth_key: forwarderToken,
+      assigned_core_port: forwarderPort,
+      is_enabled: forwarderEnabled,
+    });
+    setIsEditingForwarder(false);
+  };
+
+  const handleRegenerateToken = () => {
+    const chars = '0123456789abcdef';
+    let token = '';
+    for (let i = 0; i < 32; i++) {
+      token += chars[Math.floor(Math.random() * 16)];
+    }
+    setForwarderToken(token);
+  };
+
+  const computedForwardingUrl = `${window.location.origin}/api/nova/forward`;
+
   useEffect(() => {
     fetchAccounts();
     fetchDeployments();
-  }, [fetchAccounts, fetchDeployments]);
+    fetchForwarderConfig();
+  }, [fetchAccounts, fetchDeployments, fetchForwarderConfig]);
 
   const handleEdit = (account: CloudflareAccount) => {
     setEditingAccount(account);
@@ -238,6 +279,151 @@ export const CloudflarePage: React.FC = () => {
           )}
         </div>
       )}
+
+      {/* Nova Forwarder Ingress Pipeline Card */}
+      <div className="g-card" style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0, color: 'var(--color-brand-heading)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <FiCloudLightning size={18} color="var(--color-brand)" />
+              Nova Edge Ingress Pipeline
+            </h2>
+            <p style={{ fontSize: 13, color: 'var(--color-brand-text)', margin: '4px 0 0' }}>
+              Multiplex proxy traffic from Cloudflare Worker onto port 8080.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <span style={{
+              fontSize: 10,
+              fontWeight: 700,
+              padding: '4px 8px',
+              borderRadius: 10,
+              color: '#fff',
+              background: forwarderEnabled ? '#22c55e' : 'var(--color-brand-red)',
+              textTransform: 'uppercase',
+              display: 'inline-flex',
+              alignItems: 'center'
+            }}>
+              {forwarderEnabled ? 'Active Ingress' : 'Disabled'}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 20, background: 'var(--color-brand-light)', padding: 16, borderRadius: 8, border: '1px solid var(--color-brand-border)' }}>
+          {/* Left Column: Computed Path URL */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Ingress Target URL</span>
+            <span style={{ fontSize: 12, color: 'var(--color-brand-text)' }}>
+              Configure your Cloudflare Worker upstream routing destination target to:
+            </span>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--color-brand-bg)', border: '1px solid var(--color-brand-border)', color: '#22c55e', fontSize: 12, overflowX: 'auto', whiteSpace: 'nowrap' }}>
+                {computedForwardingUrl}
+              </code>
+              <button
+                className="btn"
+                style={{ padding: '8px 12px' }}
+                onClick={() => {
+                  navigator.clipboard.writeText(computedForwardingUrl);
+                  setCopiedUrl(true);
+                  setTimeout(() => setCopiedUrl(false), 2000);
+                }}
+                title="Copy URL"
+              >
+                {copiedUrl ? <FiCheck size={14} color="#22c55e" /> : <FiCopy size={14} />}
+              </button>
+            </div>
+          </div>
+
+          {/* Right Column: Settings */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Security & Loopback Routing</span>
+            {isEditingForwarder ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <label style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>Secret Ingress Token (X-Nova-Auth)</label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="text"
+                      value={forwarderToken}
+                      onChange={(e) => setForwarderToken(e.target.value)}
+                      style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                    />
+                    <button className="btn" style={{ padding: '6px 10px', fontSize: 11 }} onClick={handleRegenerateToken}>
+                      <FiRefreshCw size={12} /> Gen
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>Loopback Port</label>
+                    <input
+                      type="number"
+                      value={forwarderPort}
+                      onChange={(e) => setForwarderPort(Number(e.target.value))}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, color: 'var(--color-brand-text)' }}>Ingress Enabled</label>
+                    <select
+                      value={forwarderEnabled ? 'true' : 'false'}
+                      onChange={(e) => setForwarderEnabled(e.target.value === 'true')}
+                      style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--color-brand-border)', background: 'var(--color-brand-bg)', color: 'var(--color-brand-heading)', fontSize: 12 }}
+                    >
+                      <option value="true">Enabled</option>
+                      <option value="false">Disabled</option>
+                    </select>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+                  <button className="btn" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => setIsEditingForwarder(false)}>Cancel</button>
+                  <button className="btn btn--primary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={handleSaveForwarder}>Save Settings</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: 'var(--color-brand-text)' }}>X-Nova-Auth Token:</span>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <code style={{ fontSize: 12, color: 'var(--color-brand-heading)' }}>
+                      {forwarderConfig ? `${forwarderConfig.secret_auth_key.substring(0, 8)}...` : 'Not Set'}
+                    </code>
+                    <button
+                      className="btn"
+                      style={{ padding: '4px 6px' }}
+                      onClick={() => {
+                        if (forwarderConfig) {
+                          navigator.clipboard.writeText(forwarderConfig.secret_auth_key);
+                          setCopiedToken(true);
+                          setTimeout(() => setCopiedToken(false), 2000);
+                        }
+                      }}
+                      disabled={!forwarderConfig}
+                      title="Copy Token"
+                    >
+                      {copiedToken ? <FiCheck size={12} color="#22c55e" /> : <FiCopy size={12} />}
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: 'var(--color-brand-text)' }}>Assigned Loopback Port:</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                    {forwarderConfig ? forwarderConfig.assigned_core_port : '8081'}
+                  </span>
+                </div>
+                <button
+                  className="btn"
+                  style={{ alignSelf: 'flex-end', padding: '6px 12px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}
+                  onClick={() => setIsEditingForwarder(true)}
+                >
+                  <FiSettings size={12} /> Configure Ingress
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Modals */}
       <CloudflareAddModal

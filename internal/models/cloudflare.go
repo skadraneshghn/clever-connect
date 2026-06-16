@@ -37,3 +37,11 @@ type CloudflareWorkerDeployment struct {
 	Message      string         `gorm:"type:text" json:"message"`
 }
 
+type NovaForwarderConfig struct {
+	gorm.Model
+	SecretAuthKey    string `gorm:"size:191;not null" json:"secret_auth_key"`
+	AssignedCorePort int    `gorm:"default:8081" json:"assigned_core_port"` // Internal loopback to Xray/Singbox in container
+	IsEnabled        bool   `gorm:"default:true" json:"is_enabled"`
+}
+
+

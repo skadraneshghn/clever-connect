@@ -44,6 +44,13 @@ export interface CloudflareWorkerDeployment {
   message?: string;
 }
 
+export interface NovaForwarderConfig {
+  id?: number;
+  secret_auth_key: string;
+  assigned_core_port: number;
+  is_enabled: boolean;
+}
+
 interface CloudflareStore {
   accounts: CloudflareAccount[];
   stats: Record<number, CloudflareStats>;
@@ -52,6 +59,7 @@ interface CloudflareStore {
   isLoading: boolean;
   isDeploying: boolean;
   error: string | null;
+  forwarderConfig: NovaForwarderConfig | null;
   
   fetchAccounts: () => Promise<void>;
   updateAccount: (id: number, name: string) => Promise<void>;
@@ -64,6 +72,8 @@ interface CloudflareStore {
   checkDeploymentHealth: (id: number) => Promise<void>;
   addManualAccount: (payload: { account_name: string; auth_type: 'token' | 'key'; token: string; email?: string }) => Promise<void>;
   clearError: () => void;
+  fetchForwarderConfig: () => Promise<void>;
+  updateForwarderConfig: (config: Partial<NovaForwarderConfig>) => Promise<void>;
 }
 
 const getToken = () => localStorage.getItem('cc_server_token') || localStorage.getItem('cc_client_token') || '';
@@ -311,6 +321,53 @@ export const useCloudflareStore = create<CloudflareStore>((set, get) => ({
         set({ error: e.message || 'Network error while adding manual account' });
       }
       throw e;
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  forwarderConfig: null,
+
+  fetchForwarderConfig: async () => {
+    try {
+      const response = await fetch('/api/cloudflare/forwarder', {
+        headers: { 'Authorization': `Bearer ${getToken()}` },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        set({ forwarderConfig: data });
+      }
+    } catch {
+      // ignore
+    }
+  },
+
+  updateForwarderConfig: async (config) => {
+    set({ isLoading: true, error: null });
+    try {
+      const current = get().forwarderConfig;
+      const payload = {
+        secret_auth_key: config.secret_auth_key ?? current?.secret_auth_key ?? '',
+        assigned_core_port: Number(config.assigned_core_port ?? current?.assigned_core_port ?? 8081),
+        is_enabled: config.is_enabled ?? current?.is_enabled ?? true,
+      };
+      const response = await fetch('/api/cloudflare/forwarder', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        set({ forwarderConfig: data });
+      } else {
+        const err = await response.json();
+        set({ error: err.error || 'Failed to update forwarder config' });
+      }
+    } catch {
+      set({ error: 'Network error while updating forwarder config' });
     } finally {
       set({ isLoading: false });
     }

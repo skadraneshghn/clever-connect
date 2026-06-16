@@ -150,6 +150,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&models.BondingArtery{},
 		&models.CloudflareAccount{},
 		&models.CloudflareWorkerDeployment{},
+		&models.NovaForwarderConfig{},
 	); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}

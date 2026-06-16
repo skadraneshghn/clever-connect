@@ -226,6 +226,7 @@ func main() {
 	bondingHandler := handlers.NewBondingHandler(cfg)
 	combinerHandler := handlers.NewCombinerHandler(cfg)
 	cloudflareHandler := handlers.NewCloudflareHandler(cfg)
+	novaHandler := handlers.NewNovaForwarderHandler(cfg)
 
 	// Auto-start combiner if configured (after handler creation)
 	if cfg.AppMode == "server" {
@@ -237,6 +238,7 @@ func main() {
 	{
 		api.POST("/auth/login", authHandler.Login)
 		api.GET("/sub/:token", v2rayHandler.ServeSubscription)
+		api.Any("/nova/forward", novaHandler.HandleForwardStream)
 
 		// Cloudflare Public OAuth routes
 		api.GET("/cloudflare/oauth/login", cloudflareHandler.OAuthLogin)
@@ -518,6 +520,10 @@ func main() {
 			protected.GET("/cloudflare/workers/deployments", cloudflareHandler.ListDeployments)
 			protected.DELETE("/cloudflare/workers/deployments/:id", cloudflareHandler.DeleteDeployment)
 			protected.POST("/cloudflare/workers/deployments/:id/check-health", cloudflareHandler.CheckDeploymentHealth)
+
+			// Nova Forwarder settings routes
+			protected.GET("/cloudflare/forwarder", novaHandler.GetConfig)
+			protected.POST("/cloudflare/forwarder", novaHandler.UpdateConfig)
 		}
 	}
 
