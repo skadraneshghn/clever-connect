@@ -24,16 +24,44 @@ export interface CloudflareStats {
   cached_requests: number;
 }
 
+export interface CloudflareZone {
+  id: string;
+  name: string;
+  status: string;
+}
+
+export interface CloudflareWorkerDeployment {
+  id: number;
+  CreatedAt?: string;
+  UpdatedAt?: string;
+  account_id: string;
+  script_name: string;
+  local_path: string;
+  default_url: string;
+  custom_domain: string;
+  zone_id: string;
+  health_status: string; // "healthy" | "unhealthy" | "error" | "unknown"
+  message?: string;
+}
+
 interface CloudflareStore {
   accounts: CloudflareAccount[];
   stats: Record<number, CloudflareStats>;
+  zones: CloudflareZone[];
+  deployments: CloudflareWorkerDeployment[];
   isLoading: boolean;
+  isDeploying: boolean;
   error: string | null;
   
   fetchAccounts: () => Promise<void>;
   updateAccount: (id: number, name: string) => Promise<void>;
   deleteAccount: (id: number) => Promise<void>;
   fetchStats: (id: number) => Promise<void>;
+  fetchZones: (accountId: string) => Promise<void>;
+  fetchDeployments: () => Promise<void>;
+  deployWorker: (payload: { account_id: string; script_name: string; custom_domain?: string; zone_id?: string }) => Promise<void>;
+  deleteDeployment: (id: number) => Promise<void>;
+  checkDeploymentHealth: (id: number) => Promise<void>;
   clearError: () => void;
 }
 
@@ -42,7 +70,10 @@ const getToken = () => localStorage.getItem('cc_server_token') || localStorage.g
 export const useCloudflareStore = create<CloudflareStore>((set, get) => ({
   accounts: [],
   stats: {},
+  zones: [],
+  deployments: [],
   isLoading: false,
+  isDeploying: false,
   error: null,
 
   clearError: () => set({ error: null }),
@@ -143,6 +174,116 @@ export const useCloudflareStore = create<CloudflareStore>((set, get) => ({
       }
     } catch {
       // network/fetch failed
+    }
+  },
+
+  fetchZones: async (accountId: string) => {
+    set({ isLoading: true, error: null });
+    try {
+      const response = await fetch(`/api/cloudflare/zones?account_id=${accountId}`, {
+        headers: { 'Authorization': `Bearer ${getToken()}` },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        set({ zones: data || [] });
+      } else {
+        const err = await response.json();
+        set({ error: err.error || 'Failed to fetch zones' });
+      }
+    } catch {
+      set({ error: 'Network error while fetching zones' });
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  fetchDeployments: async () => {
+    set({ isLoading: true, error: null });
+    try {
+      const response = await fetch('/api/cloudflare/workers/deployments', {
+        headers: { 'Authorization': `Bearer ${getToken()}` },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        set({ deployments: data || [] });
+      } else {
+        const err = await response.json();
+        set({ error: err.error || 'Failed to fetch deployments' });
+      }
+    } catch {
+      set({ error: 'Network error while fetching deployments' });
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  deployWorker: async (payload) => {
+    set({ isDeploying: true, error: null });
+    try {
+      const response = await fetch('/api/cloudflare/workers/deploy', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (response.ok) {
+        const newDeployment = await response.json();
+        set((state) => ({
+          deployments: [newDeployment, ...state.deployments]
+        }));
+      } else {
+        const err = await response.json();
+        set({ error: err.error || 'Failed to deploy worker' });
+        throw new Error(err.error || 'Failed to deploy worker');
+      }
+    } catch (e: any) {
+      if (!get().error) {
+        set({ error: e.message || 'Network error during worker deployment' });
+      }
+      throw e;
+    } finally {
+      set({ isDeploying: false });
+    }
+  },
+
+  deleteDeployment: async (id) => {
+    set({ isLoading: true, error: null });
+    try {
+      const response = await fetch(`/api/cloudflare/workers/deployments/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${getToken()}` },
+      });
+      if (response.ok) {
+        set((state) => ({
+          deployments: state.deployments.filter(d => d.id !== id),
+        }));
+      } else {
+        const err = await response.json();
+        set({ error: err.error || 'Failed to delete deployment' });
+      }
+    } catch {
+      set({ error: 'Network error while deleting deployment' });
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  checkDeploymentHealth: async (id) => {
+    try {
+      const response = await fetch(`/api/cloudflare/workers/deployments/${id}/check-health`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${getToken()}` },
+      });
+      if (response.ok) {
+        const updated = await response.json();
+        set((state) => ({
+          deployments: state.deployments.map(d => d.id === id ? updated : d),
+        }));
+      }
+    } catch {
+      // ignore network errors
     }
   },
 }));

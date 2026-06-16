@@ -505,6 +505,11 @@ func main() {
 			protected.PUT("/cloudflare/accounts/:id", cloudflareHandler.UpdateAccount)
 			protected.DELETE("/cloudflare/accounts/:id", cloudflareHandler.DeleteAccount)
 			protected.GET("/cloudflare/accounts/:id/stats", cloudflareHandler.GetAccountStats)
+			protected.GET("/cloudflare/zones", cloudflareHandler.GetZones)
+			protected.POST("/cloudflare/workers/deploy", cloudflareHandler.DeployWorker)
+			protected.GET("/cloudflare/workers/deployments", cloudflareHandler.ListDeployments)
+			protected.DELETE("/cloudflare/workers/deployments/:id", cloudflareHandler.DeleteDeployment)
+			protected.POST("/cloudflare/workers/deployments/:id/check-health", cloudflareHandler.CheckDeploymentHealth)
 		}
 	}
 

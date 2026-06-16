@@ -36,7 +36,7 @@ func GetOAuthConfig(cfg *config.Config) *oauth2.Config {
 			AuthURL:  "https://dash.cloudflare.com/oauth2/auth",
 			TokenURL: "https://dash.cloudflare.com/oauth2/token",
 		},
-		Scopes: []string{"account:read", "zone:read", "workers:read"},
+		Scopes: []string{"account:read", "zone:read", "zone:write", "workers:read", "workers:write"},
 	}
 }
 
@@ -81,24 +81,20 @@ func VerifyOAuthToken(ctx context.Context, oauthConfig *oauth2.Config, code stri
 	return results, nil
 }
 
-// GetStats retrieves zone counts, worker scripts, and 30-day bandwidth/request analytics using OAuth2,
-// auto-refreshing the token if it has expired.
-func GetStats(ctx context.Context, oauthConfig *oauth2.Config, account *models.CloudflareAccount) (*AccountStats, error) {
-	// Reconstruct the token
+// RefreshAccountToken checks if the token is expired, refreshes it using OAuth client credentials, and persists it to database.
+func RefreshAccountToken(ctx context.Context, oauthConfig *oauth2.Config, account *models.CloudflareAccount) error {
 	srcToken := &oauth2.Token{
 		AccessToken:  account.AccessToken,
 		RefreshToken: account.RefreshToken,
 		Expiry:       account.TokenExpiry,
 	}
 
-	// Verify and auto-refresh the token if expired
 	tokenSource := oauthConfig.TokenSource(ctx, srcToken)
 	freshToken, err := tokenSource.Token()
 	if err != nil {
-		return nil, fmt.Errorf("oauth token refresh failed: %w", err)
+		return fmt.Errorf("oauth token refresh failed: %w", err)
 	}
 
-	// If token was refreshed, persist new credentials to GORM
 	if freshToken.AccessToken != account.AccessToken {
 		account.AccessToken = freshToken.AccessToken
 		account.RefreshToken = freshToken.RefreshToken
@@ -112,6 +108,15 @@ func GetStats(ctx context.Context, oauthConfig *oauth2.Config, account *models.C
 				logger.Info("CloudflareEngine", "OAuth token auto-refreshed successfully", "accountID", account.AccountID)
 			}
 		}
+	}
+	return nil
+}
+
+// GetStats retrieves zone counts, worker scripts, and 30-day bandwidth/request analytics using OAuth2,
+// auto-refreshing the token if it has expired.
+func GetStats(ctx context.Context, oauthConfig *oauth2.Config, account *models.CloudflareAccount) (*AccountStats, error) {
+	if err := RefreshAccountToken(ctx, oauthConfig, account); err != nil {
+		return nil, err
 	}
 
 	// Instantiate the Cloudflare SDK with the current access token

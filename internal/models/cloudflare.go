@@ -17,3 +17,16 @@ type CloudflareAccount struct {
 	Email        string    `gorm:"size:191" json:"email"`
 	Status       string    `gorm:"size:50;default:'active'" json:"status"` // "active", "error"
 }
+
+type CloudflareWorkerDeployment struct {
+	gorm.Model
+	AccountID    string `gorm:"size:191;not null;index" json:"account_id"`
+	ScriptName   string `gorm:"size:191;not null" json:"script_name"`
+	LocalPath    string `gorm:"size:255;default:'data/worker.js'" json:"local_path"`
+	DefaultURL   string `gorm:"size:255" json:"default_url"`   // https://script-name.subdomain.workers.dev
+	CustomDomain string `gorm:"size:191" json:"custom_domain"` // e.g., nova.yourdomain.com
+	ZoneID       string `gorm:"size:191" json:"zone_id"`
+	HealthStatus string `gorm:"size:50;default:'unknown'" json:"health_status"` // "healthy" | "unhealthy" | "error"
+	Message      string `gorm:"type:text" json:"message"`
+}
+

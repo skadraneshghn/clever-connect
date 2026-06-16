@@ -12,6 +12,7 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
+	cfSdk "github.com/cloudflare/cloudflare-go"
 	"github.com/gin-gonic/gin"
 )
 
@@ -232,3 +233,148 @@ func (h *CloudflareHandler) GetAccountStats(c *gin.Context) {
 
 	c.JSON(http.StatusOK, stats)
 }
+
+// GetZones GET /api/cloudflare/zones?account_id=xxx
+func (h *CloudflareHandler) GetZones(c *gin.Context) {
+	accountID := c.Query("account_id")
+	if accountID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing account_id parameter"})
+		return
+	}
+
+	var account models.CloudflareAccount
+	if err := db.DB.Where("account_id = ?", accountID).First(&account).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Cloudflare account not found"})
+		return
+	}
+
+	oauthConfig := cloudflare.GetOAuthConfig(h.cfg)
+	if err := cloudflare.RefreshAccountToken(c.Request.Context(), oauthConfig, &account); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to refresh token: " + err.Error()})
+		return
+	}
+
+	api, err := cfSdk.NewWithAPIToken(account.AccessToken)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize Cloudflare client: " + err.Error()})
+		return
+	}
+
+	zones, err := api.ListZones(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch zones from Cloudflare: " + err.Error()})
+		return
+	}
+
+	var accountZones []cfSdk.Zone
+	for _, z := range zones {
+		if z.Account.ID == accountID {
+			accountZones = append(accountZones, z)
+		}
+	}
+
+	c.JSON(http.StatusOK, accountZones)
+}
+
+type DeployWorkerRequest struct {
+	AccountID    string `json:"account_id" binding:"required"`
+	ScriptName   string `json:"script_name" binding:"required"`
+	CustomDomain string `json:"custom_domain"`
+	ZoneID       string `json:"zone_id"`
+}
+
+// DeployWorker POST /api/cloudflare/workers/deploy
+func (h *CloudflareHandler) DeployWorker(c *gin.Context) {
+	var req DeployWorkerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var account models.CloudflareAccount
+	if err := db.DB.Where("account_id = ?", req.AccountID).First(&account).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Cloudflare account not found"})
+		return
+	}
+
+	oauthConfig := cloudflare.GetOAuthConfig(h.cfg)
+
+	deployment, err := cloudflare.DeployWorkerScript(c.Request.Context(), oauthConfig, &account, req.ScriptName, req.CustomDomain, req.ZoneID)
+	if err != nil {
+		logger.Error("CloudflareAPI", "Failed to deploy worker", "scriptName", req.ScriptName, "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	status, msg, err := cloudflare.CheckWorkerHealth(c.Request.Context(), deployment)
+	if err == nil {
+		deployment.HealthStatus = status
+		deployment.Message = msg
+		_ = db.DB.Save(deployment)
+	}
+
+	c.JSON(http.StatusOK, deployment)
+}
+
+// ListDeployments GET /api/cloudflare/workers/deployments
+func (h *CloudflareHandler) ListDeployments(c *gin.Context) {
+	var deployments []models.CloudflareWorkerDeployment
+	if err := db.DB.Find(&deployments).Error; err != nil {
+		logger.Error("CloudflareAPI", "Failed to retrieve worker deployments from DB", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve deployments"})
+		return
+	}
+	c.JSON(http.StatusOK, deployments)
+}
+
+// DeleteDeployment DELETE /api/cloudflare/workers/deployments/:id
+func (h *CloudflareHandler) DeleteDeployment(c *gin.Context) {
+	idParam := c.Param("id")
+	id, err := strconv.ParseUint(idParam, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid deployment ID"})
+		return
+	}
+
+	if err := db.DB.Delete(&models.CloudflareWorkerDeployment{}, id).Error; err != nil {
+		logger.Error("CloudflareAPI", "Failed to delete worker deployment", "id", id, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete deployment"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Deployment record deleted successfully"})
+}
+
+// CheckDeploymentHealth POST /api/cloudflare/workers/deployments/:id/check-health
+func (h *CloudflareHandler) CheckDeploymentHealth(c *gin.Context) {
+	idParam := c.Param("id")
+	id, err := strconv.ParseUint(idParam, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid deployment ID"})
+		return
+	}
+
+	var deployment models.CloudflareWorkerDeployment
+	if err := db.DB.First(&deployment, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Deployment not found"})
+		return
+	}
+
+	status, msg, err := cloudflare.CheckWorkerHealth(c.Request.Context(), &deployment)
+	if err != nil {
+		deployment.HealthStatus = "error"
+		deployment.Message = err.Error()
+	} else {
+		deployment.HealthStatus = status
+		deployment.Message = msg
+	}
+
+	if err := db.DB.Save(&deployment).Error; err != nil {
+		logger.Error("CloudflareAPI", "Failed to update deployment health status in DB", "id", id, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update health status"})
+		return
+	}
+
+	c.JSON(http.StatusOK, deployment)
+}
+
