@@ -39,6 +39,11 @@ type Config struct {
 	BondingCombinerURL string
 	BondingMaxArteries int
 	BondingFrameSize   int
+
+	// Cloudflare OAuth
+	CloudflareClientID     string
+	CloudflareClientSecret string
+	CloudflareRedirectURL  string
 }
 
 func LoadConfig() *Config {
@@ -104,6 +109,11 @@ func LoadConfig() *Config {
 		MySQLDBName:         getEnv("MYSQL_DB_NAME", "clever_connect_server"),
 		AdminUsername:       getEnv("ADMIN_USERNAME", "salman"),
 		AdminPassword:       getEnv("ADMIN_PASSWORD", "136517"),
+
+		// Cloudflare OAuth
+		CloudflareClientID:     getEnv("CLOUDFLARE_CLIENT_ID", ""),
+		CloudflareClientSecret: getEnv("CLOUDFLARE_CLIENT_SECRET", ""),
+		CloudflareRedirectURL:  getEnv("CLOUDFLARE_REDIRECT_URL", ""),
 	}
 
 	// Automatic parsing of database URIs (e.g. from Clever Cloud MySQL addon)

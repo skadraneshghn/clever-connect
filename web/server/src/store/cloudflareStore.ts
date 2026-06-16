@@ -6,7 +6,9 @@ export interface CloudflareAccount {
   UpdatedAt?: string;
   account_name: string;
   account_id: string;
-  api_token: string;
+  access_token: string;
+  refresh_token: string;
+  token_expiry: string;
   email?: string;
   status: string; // "active" | "error"
 }
@@ -29,8 +31,7 @@ interface CloudflareStore {
   error: string | null;
   
   fetchAccounts: () => Promise<void>;
-  addAccount: (name: string, token: string) => Promise<void>;
-  updateAccount: (id: number, name: string, token?: string) => Promise<void>;
+  updateAccount: (id: number, name: string) => Promise<void>;
   deleteAccount: (id: number) => Promise<void>;
   fetchStats: (id: number) => Promise<void>;
   clearError: () => void;
@@ -66,35 +67,7 @@ export const useCloudflareStore = create<CloudflareStore>((set, get) => ({
     }
   },
 
-  addAccount: async (name, token) => {
-    set({ isLoading: true, error: null });
-    try {
-      const response = await fetch('/api/cloudflare/accounts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getToken()}`,
-        },
-        body: JSON.stringify({ account_name: name, api_token: token }),
-      });
-      if (response.ok) {
-        await get().fetchAccounts();
-      } else {
-        const err = await response.json();
-        set({ error: err.error || 'Failed to add Cloudflare token' });
-        throw new Error(err.error || 'Failed to add Cloudflare token');
-      }
-    } catch (e: any) {
-      if (!get().error) {
-        set({ error: e.message || 'Network error while adding account' });
-      }
-      throw e;
-    } finally {
-      set({ isLoading: false });
-    }
-  },
-
-  updateAccount: async (id, name, token) => {
+  updateAccount: async (id, name) => {
     set({ isLoading: true, error: null });
     try {
       const response = await fetch(`/api/cloudflare/accounts/${id}`, {
@@ -103,7 +76,7 @@ export const useCloudflareStore = create<CloudflareStore>((set, get) => ({
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${getToken()}`,
         },
-        body: JSON.stringify({ account_name: name, api_token: token || undefined }),
+        body: JSON.stringify({ account_name: name }),
       });
       if (response.ok) {
         await get().fetchAccounts();

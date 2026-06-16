@@ -238,6 +238,10 @@ func main() {
 		api.POST("/auth/login", authHandler.Login)
 		api.GET("/sub/:token", v2rayHandler.ServeSubscription)
 
+		// Cloudflare Public OAuth routes
+		api.GET("/cloudflare/oauth/login", cloudflareHandler.OAuthLogin)
+		api.GET("/cloudflare/oauth/callback", cloudflareHandler.OAuthCallback)
+
 		// Protected API routes
 		protected := api.Group("")
 		protected.Use(handlers.AuthMiddleware(cfg.JWTSecret))
@@ -498,7 +502,6 @@ func main() {
 
 			// Cloudflare API routes
 			protected.GET("/cloudflare/accounts", cloudflareHandler.ListAccounts)
-			protected.POST("/cloudflare/accounts", cloudflareHandler.AddAccount)
 			protected.PUT("/cloudflare/accounts/:id", cloudflareHandler.UpdateAccount)
 			protected.DELETE("/cloudflare/accounts/:id", cloudflareHandler.DeleteAccount)
 			protected.GET("/cloudflare/accounts/:id/stats", cloudflareHandler.GetAccountStats)

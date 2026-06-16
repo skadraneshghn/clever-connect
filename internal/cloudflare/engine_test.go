@@ -1,25 +1,42 @@
 package cloudflare
 
 import (
+	"context"
 	"testing"
+
+	"clever-connect/internal/config"
+	"clever-connect/internal/models"
 )
 
-func TestNewClientEmptyToken(t *testing.T) {
-	_, err := NewClient("")
-	if err == nil {
-		t.Error("Expected error for empty token, got nil")
+func TestGetOAuthConfig(t *testing.T) {
+	cfg := &config.Config{
+		CloudflareClientID:     "id",
+		CloudflareClientSecret: "secret",
+		CloudflareRedirectURL:  "url",
+	}
+	oauthCfg := GetOAuthConfig(cfg)
+	if oauthCfg.ClientID != "id" || oauthCfg.ClientSecret != "secret" || oauthCfg.RedirectURL != "url" {
+		t.Errorf("OAuth config not matched: %v", oauthCfg)
 	}
 }
 
-func TestVerifyTokenInvalid(t *testing.T) {
-	_, err := VerifyToken("invalid_token", "My CF Token")
+func TestVerifyOAuthTokenInvalid(t *testing.T) {
+	cfg := &config.Config{}
+	oauthCfg := GetOAuthConfig(cfg)
+	_, err := VerifyOAuthToken(context.Background(), oauthCfg, "invalid_code", "My Account")
 	if err == nil {
-		t.Error("Expected error for invalid token, got nil")
+		t.Error("Expected exchange error for invalid code, got nil")
 	}
 }
 
 func TestGetStatsInvalid(t *testing.T) {
-	_, err := GetStats("invalid_token", "dummy_acc_id")
+	cfg := &config.Config{}
+	oauthCfg := GetOAuthConfig(cfg)
+	account := &models.CloudflareAccount{
+		AccessToken:  "invalid",
+		RefreshToken: "invalid",
+	}
+	_, err := GetStats(context.Background(), oauthCfg, account)
 	if err == nil {
 		t.Error("Expected error for invalid credentials, got nil")
 	}
