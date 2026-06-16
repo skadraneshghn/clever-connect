@@ -1,12 +1,20 @@
 package main
 
 import (
-	"context"
+	"fmt"
+	"reflect"
 	"github.com/cloudflare/cloudflare-go"
 )
 
 func main() {
-	var api cloudflare.API
-	// This will test if the method compiles
-	_, _, _ = api.Memberships(context.Background(), cloudflare.MembershipListParams{})
+	printFields(cloudflare.CreateWorkerParams{})
+}
+
+func printFields(x interface{}) {
+	t := reflect.TypeOf(x)
+	fmt.Printf("\n--- Struct: %s ---\n", t.String())
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		fmt.Printf("  %s %s\n", f.Name, f.Type)
+	}
 }

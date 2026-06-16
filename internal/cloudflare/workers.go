@@ -1,6 +1,7 @@
 package cloudflare
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -26,45 +27,73 @@ func DeployWorkerScript(ctx context.Context, oauthConfig *oauth2.Config, account
 		return nil, fmt.Errorf("failed to refresh account token: %w", err)
 	}
 
-	// 2. Read worker code from local file (download from GitHub if missing)
+	// 2. Read worker code from local file (download from GitHub zip archive if missing)
 	localPath := "data/worker.js"
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
-		logger.Info("CloudflareWorkers", "worker.js not found locally. Downloading from GitHub...", "url", "https://raw.githubusercontent.com/IRNova/Nova-Proxy/refs/heads/main/worker.js")
+		logger.Info("CloudflareWorkers", "worker.js not found locally. Downloading from GitHub zip archive...", "url", "https://github.com/IRNova/Nova-Proxy/archive/refs/tags/V3.0.0.zip")
 		
 		// Ensure parent directory exists
 		if err := os.MkdirAll("data", 0755); err != nil {
 			return nil, fmt.Errorf("failed to create data directory: %w", err)
 		}
 
-		// Download worker code
-		downloadURL := "https://raw.githubusercontent.com/IRNova/Nova-Proxy/refs/heads/main/worker.js"
+		// Download zip archive
+		downloadURL := "https://github.com/IRNova/Nova-Proxy/archive/refs/tags/V3.0.0.zip"
 		req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create download request: %w", err)
 		}
 
-		client := &http.Client{Timeout: 30 * time.Second}
+		client := &http.Client{Timeout: 60 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("failed to download worker script from GitHub: %w", err)
+			return nil, fmt.Errorf("failed to download worker zip from GitHub: %w", err)
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("failed to download worker script from GitHub: received status %d", resp.StatusCode)
+			return nil, fmt.Errorf("failed to download worker zip from GitHub: received status %d", resp.StatusCode)
 		}
 
-		// Write to file
-		out, err := os.Create(localPath)
+		// Read the entire zip body into memory
+		zipBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create file at %s: %w", localPath, err)
+			return nil, fmt.Errorf("failed to read zip body response: %w", err)
 		}
-		defer out.Close()
 
-		if _, err = io.Copy(out, resp.Body); err != nil {
-			return nil, fmt.Errorf("failed to save downloaded worker script: %w", err)
+		zipReader, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse zip archive: %w", err)
 		}
-		logger.Info("CloudflareWorkers", "worker.js downloaded and saved successfully", "path", localPath)
+
+		var found bool
+		for _, file := range zipReader.File {
+			if file.FileInfo().Name() == "worker.js" && !file.FileInfo().IsDir() {
+				rcFile, err := file.Open()
+				if err != nil {
+					return nil, fmt.Errorf("failed to open worker.js inside zip: %w", err)
+				}
+				defer rcFile.Close()
+
+				out, err := os.Create(localPath)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create file at %s: %w", localPath, err)
+				}
+				defer out.Close()
+
+				if _, err = io.Copy(out, rcFile); err != nil {
+					return nil, fmt.Errorf("failed to save extracted worker script: %w", err)
+				}
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return nil, fmt.Errorf("worker.js not found inside the downloaded zip archive")
+		}
+
+		logger.Info("CloudflareWorkers", "worker.js extracted and saved successfully from V3.0.0 zip", "path", localPath)
 	}
 
 	scriptBytes, err := os.ReadFile(localPath)
@@ -107,11 +136,22 @@ func DeployWorkerScript(ctx context.Context, oauthConfig *oauth2.Config, account
 		logger.Info("CloudflareWorkers", "Created 'KV' namespace successfully", "namespaceID", targetNamespaceID)
 	}
 
+	// Detect if the script is an ES module
+	isModule := false
+	scriptContent := string(scriptBytes)
+	if strings.Contains(scriptContent, "export default") || strings.Contains(scriptContent, "export {") || strings.Contains(scriptContent, "export const") {
+		isModule = true
+		logger.Info("CloudflareWorkers", "Detected ES module format for worker script", "scriptName", scriptName)
+	} else {
+		logger.Info("CloudflareWorkers", "Detected standard Service Worker format for worker script", "scriptName", scriptName)
+	}
+
 	// 5. Upload Worker Script to Cloudflare with KV Binding
 	params := cloudflare.CreateWorkerParams{
-		ScriptName: scriptName,
-		Script:     string(scriptBytes),
-		Module:     false, // standard service syntax
+		ScriptName:        scriptName,
+		Script:            scriptContent,
+		Module:            isModule,
+		CompatibilityDate: "2024-01-01",
 		Bindings: map[string]cloudflare.WorkerBinding{
 			"KV": cloudflare.WorkerKvNamespaceBinding{
 				NamespaceID: targetNamespaceID,
@@ -119,7 +159,7 @@ func DeployWorkerScript(ctx context.Context, oauthConfig *oauth2.Config, account
 		},
 	}
 
-	logger.Info("CloudflareWorkers", "Uploading worker script with KV binding to Cloudflare", "scriptName", scriptName, "accountID", account.AccountID)
+	logger.Info("CloudflareWorkers", "Uploading worker script with KV binding to Cloudflare", "scriptName", scriptName, "accountID", account.AccountID, "isModule", isModule)
 	_, err = api.UploadWorker(ctx, rc, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload worker script: %w", err)
