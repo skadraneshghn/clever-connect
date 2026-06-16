@@ -577,16 +577,18 @@ func compileClientConfigXray(
 	for i, in := range config.Inbounds {
 		if in.Tag == "socks-in" {
 			config.Inbounds[i].Port = socksPort
+			config.Inbounds[i].Listen = "0.0.0.0"
 			foundSocks = true
 		} else if in.Tag == "http-in" {
 			config.Inbounds[i].Port = httpPort
+			config.Inbounds[i].Listen = "0.0.0.0"
 			foundHttp = true
 		}
 	}
 
 	if !foundSocks {
 		config.Inbounds = append(config.Inbounds, InboundConfig{
-			Listen:   "127.0.0.1",
+			Listen:   "0.0.0.0",
 			Port:     socksPort,
 			Protocol: "socks",
 			Settings: map[string]interface{}{
@@ -599,7 +601,7 @@ func compileClientConfigXray(
 
 	if !foundHttp {
 		config.Inbounds = append(config.Inbounds, InboundConfig{
-			Listen:   "127.0.0.1",
+			Listen:   "0.0.0.0",
 			Port:     httpPort,
 			Protocol: "http",
 			Settings: map[string]interface{}{

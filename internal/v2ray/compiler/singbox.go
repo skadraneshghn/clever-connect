@@ -338,9 +338,11 @@ func CompileSingBoxClientConfig(
 	for i, in := range config.Inbounds {
 		if in.Tag == "socks-in" {
 			config.Inbounds[i].ListenPort = socksPort
+			config.Inbounds[i].Listen = "0.0.0.0"
 			foundSocks = true
 		} else if in.Tag == "http-in" {
 			config.Inbounds[i].ListenPort = httpPort
+			config.Inbounds[i].Listen = "0.0.0.0"
 			foundHttp = true
 		}
 	}
@@ -349,7 +351,7 @@ func CompileSingBoxClientConfig(
 		config.Inbounds = append(config.Inbounds, SingBoxInbound{
 			Type:       "socks",
 			Tag:        "socks-in",
-			Listen:     "127.0.0.1",
+			Listen:     "0.0.0.0",
 			ListenPort: socksPort,
 		})
 	}
@@ -357,7 +359,7 @@ func CompileSingBoxClientConfig(
 		config.Inbounds = append(config.Inbounds, SingBoxInbound{
 			Type:       "http",
 			Tag:        "http-in",
-			Listen:     "127.0.0.1",
+			Listen:     "0.0.0.0",
 			ListenPort: httpPort,
 		})
 	}

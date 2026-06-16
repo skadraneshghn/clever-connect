@@ -364,7 +364,7 @@ func StartLocalProxyEngine(socksPublic, socksInternal, httpPublic, httpInternal 
 
 	// Start SOCKS5 Local Proxy Wrapper
 	go func() {
-		addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPublic))
+		addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(socksPublic))
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			logger.Error("ClientProxy", "Failed to start local SOCKS5 wrapper listener", "error", err)
@@ -384,7 +384,7 @@ func StartLocalProxyEngine(socksPublic, socksInternal, httpPublic, httpInternal 
 
 	// Start HTTP Local Proxy Wrapper
 	go func() {
-		addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(httpPublic))
+		addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(httpPublic))
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			logger.Error("ClientProxy", "Failed to start local HTTP wrapper listener", "error", err)

@@ -72,7 +72,7 @@ func (fe *Frontend) Stop() {
 
 // startSOCKS5 launches the SOCKS5 server using the go-socks5 library.
 func (fe *Frontend) startSOCKS5(ctx context.Context) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", fe.socksPort)
+	addr := fmt.Sprintf("0.0.0.0:%d", fe.socksPort)
 
 	// Create a custom dialer that intercepts connections and routes them through bonding
 	resolver := &bondingResolver{
@@ -153,7 +153,7 @@ func (br *bondingResolver) dialBonding(ctx context.Context, network, addr string
 
 // startHTTPConnect launches an HTTP CONNECT proxy server.
 func (fe *Frontend) startHTTPConnect(ctx context.Context) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", fe.httpPort)
+	addr := fmt.Sprintf("0.0.0.0:%d", fe.httpPort)
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
