@@ -136,6 +136,34 @@ func DeployWorkerScript(ctx context.Context, oauthConfig *oauth2.Config, account
 		logger.Info("CloudflareWorkers", "Created 'KV' namespace successfully", "namespaceID", targetNamespaceID)
 	}
 
+	// 4.1. Manage D1 Database (Find or Create 'clever_connect_d1' database)
+	logger.Info("CloudflareWorkers", "Listing D1 databases to check for 'clever_connect_d1' database", "accountID", account.AccountID)
+	d1Databases, _, err := api.ListD1Databases(ctx, rc, cloudflare.ListD1DatabasesParams{})
+	if err != nil {
+		logger.Warn("CloudflareWorkers", "Failed to list D1 databases (ignoring and trying to create)", "error", err)
+	}
+
+	var targetDatabaseID string
+	for _, db := range d1Databases {
+		if strings.EqualFold(db.Name, "clever_connect_d1") {
+			targetDatabaseID = db.UUID
+			logger.Info("CloudflareWorkers", "Found existing D1 database", "name", db.Name, "databaseID", targetDatabaseID)
+			break
+		}
+	}
+
+	if targetDatabaseID == "" {
+		logger.Info("CloudflareWorkers", "No existing D1 database found. Creating new D1 database 'clever_connect_d1'...", "accountID", account.AccountID)
+		createResp, err := api.CreateD1Database(ctx, rc, cloudflare.CreateD1DatabaseParams{
+			Name: "clever_connect_d1",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create D1 database: %w", err)
+		}
+		targetDatabaseID = createResp.UUID
+		logger.Info("CloudflareWorkers", "Created D1 database successfully", "name", createResp.Name, "databaseID", targetDatabaseID)
+	}
+
 	// Detect if the script is an ES module
 	isModule := false
 	scriptContent := string(scriptBytes)
@@ -146,7 +174,7 @@ func DeployWorkerScript(ctx context.Context, oauthConfig *oauth2.Config, account
 		logger.Info("CloudflareWorkers", "Detected standard Service Worker format for worker script", "scriptName", scriptName)
 	}
 
-	// 5. Upload Worker Script to Cloudflare with KV Binding
+	// 5. Upload Worker Script to Cloudflare with KV and D1 Bindings
 	params := cloudflare.CreateWorkerParams{
 		ScriptName:        scriptName,
 		Script:            scriptContent,
@@ -155,6 +183,9 @@ func DeployWorkerScript(ctx context.Context, oauthConfig *oauth2.Config, account
 		Bindings: map[string]cloudflare.WorkerBinding{
 			"KV": cloudflare.WorkerKvNamespaceBinding{
 				NamespaceID: targetNamespaceID,
+			},
+			"DB": cloudflare.WorkerD1DatabaseBinding{
+				DatabaseID: targetDatabaseID,
 			},
 		},
 	}

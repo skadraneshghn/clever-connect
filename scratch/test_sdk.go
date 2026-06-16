@@ -7,7 +7,9 @@ import (
 )
 
 func main() {
-	printFields(cloudflare.CreateWorkerParams{})
+	printFields(cloudflare.D1Database{})
+	printFields(cloudflare.CreateD1DatabaseParams{})
+	printFields(cloudflare.ListD1DatabasesParams{})
 }
 
 func printFields(x interface{}) {
