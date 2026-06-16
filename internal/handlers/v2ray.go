@@ -843,6 +843,7 @@ func (h *V2RayHandler) ImportSubscription(c *gin.Context) {
 func (h *V2RayHandler) ImportManualConfig(c *gin.Context) {
 	var req struct {
 		Content string `json:"content"`
+		URI     string `json:"uri"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -851,7 +852,10 @@ func (h *V2RayHandler) ImportManualConfig(c *gin.Context) {
 
 	raw := strings.TrimSpace(req.Content)
 	if raw == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Content cannot be empty"})
+		raw = strings.TrimSpace(req.URI)
+	}
+	if raw == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Content or URI cannot be empty"})
 		return
 	}
 

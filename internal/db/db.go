@@ -290,6 +290,42 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		})
 	}
 
+	// Seed default EhcoServerConfig
+	var ehcoServerCfg models.EhcoServerConfig
+	if err := DB.First(&ehcoServerCfg).Error; err != nil {
+		logger.Info("DB", "Seeding default Ehco server configuration")
+		tokenBytes := make([]byte, 16)
+		_, _ = rand.Read(tokenBytes)
+		DB.Create(&models.EhcoServerConfig{
+			ListenPort: "3001",
+			AuthToken:  hex.EncodeToString(tokenBytes),
+			TargetMode: "direct",
+			TargetHost: "127.0.0.1:80",
+			EnableMux:  true,
+			KeepAlive:  15,
+			IsActive:   false,
+		})
+	}
+
+	// Seed default EhcoClientConfig
+	var ehcoClientCfg models.EhcoClientConfig
+	if err := DB.First(&ehcoClientCfg).Error; err != nil {
+		logger.Info("DB", "Seeding default Ehco client configuration")
+		DB.Create(&models.EhcoClientConfig{
+			LocalPort:    "1080",
+			RemoteURL:    "",
+			AuthToken:    "",
+			SNI:          "",
+			EnableMux:    true,
+			KeepAlive:    15,
+			BypassIR:     true,
+			IsActive:     false,
+			EnableBridge: false,
+			BridgeURL:    "",
+			BridgeSNI:    "",
+		})
+	}
+
 	// Seed default ScannerSource
 	var sourceCount int64
 	if DB.Model(&models.ScannerSource{}).Count(&sourceCount); sourceCount == 0 {

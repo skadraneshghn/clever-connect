@@ -101,13 +101,13 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 		if authHeader != "" {
 			parts := strings.Split(authHeader, " ")
 			if len(parts) == 2 && parts[0] == "Bearer" {
-				tokenString = parts[1]
+				tokenString = strings.TrimSpace(parts[1])
 			}
 		}
 
 		// Check query param for websockets
 		if tokenString == "" {
-			tokenString = c.Query("token")
+			tokenString = strings.TrimSpace(c.Query("token"))
 		}
 
 		if tokenString == "" {
@@ -120,15 +120,16 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 			return
 		}
 
-		// Check if the token matches Ehco server or client auth token from DB
+		// Check if the token matches Ehco server or client auth token from DB (with robust trim check)
 		if db.DB != nil {
+			trimmedToken := strings.TrimSpace(tokenString)
 			var serverCfg models.EhcoServerConfig
-			if db.DB.First(&serverCfg).Error == nil && serverCfg.AuthToken != "" && tokenString == serverCfg.AuthToken {
+			if db.DB.First(&serverCfg).Error == nil && serverCfg.AuthToken != "" && trimmedToken == strings.TrimSpace(serverCfg.AuthToken) {
 				c.Next()
 				return
 			}
 			var clientCfg models.EhcoClientConfig
-			if db.DB.First(&clientCfg).Error == nil && clientCfg.AuthToken != "" && tokenString == clientCfg.AuthToken {
+			if db.DB.First(&clientCfg).Error == nil && clientCfg.AuthToken != "" && trimmedToken == strings.TrimSpace(clientCfg.AuthToken) {
 				c.Next()
 				return
 			}

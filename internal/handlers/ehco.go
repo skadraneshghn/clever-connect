@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strings"
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
@@ -102,7 +103,7 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 		var serverCfg models.EhcoServerConfig
 		if err := db.DB.First(&serverCfg).Error; err == nil {
 			serverCfg.ListenPort = req.ListenPort
-			serverCfg.AuthToken = req.AuthToken
+			serverCfg.AuthToken = strings.TrimSpace(req.AuthToken)
 			serverCfg.TargetMode = req.TargetMode
 			serverCfg.TargetHost = req.TargetHost
 			serverCfg.EnableMux = req.EnableMux
@@ -111,7 +112,7 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 		} else {
 			serverCfg = models.EhcoServerConfig{
 				ListenPort: req.ListenPort,
-				AuthToken:  req.AuthToken,
+				AuthToken:  strings.TrimSpace(req.AuthToken),
 				TargetMode: req.TargetMode,
 				TargetHost: req.TargetHost,
 				EnableMux:  req.EnableMux,
@@ -156,8 +157,8 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 		var clientCfg models.EhcoClientConfig
 		if err := db.DB.First(&clientCfg).Error; err == nil {
 			clientCfg.LocalPort = req.LocalPort
-			clientCfg.RemoteURL = req.RemoteURL
-			clientCfg.AuthToken = req.AuthToken
+			clientCfg.RemoteURL = strings.TrimSpace(req.RemoteURL)
+			clientCfg.AuthToken = strings.TrimSpace(req.AuthToken)
 			clientCfg.SNI = req.SNI
 			clientCfg.EnableMux = req.EnableMux
 			clientCfg.KeepAlive = req.KeepAlive
@@ -169,8 +170,8 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 		} else {
 			clientCfg = models.EhcoClientConfig{
 				LocalPort:    req.LocalPort,
-				RemoteURL:    req.RemoteURL,
-				AuthToken:    req.AuthToken,
+				RemoteURL:    strings.TrimSpace(req.RemoteURL),
+				AuthToken:    strings.TrimSpace(req.AuthToken),
 				SNI:          req.SNI,
 				EnableMux:    req.EnableMux,
 				KeepAlive:    req.KeepAlive,

@@ -126,7 +126,7 @@ func FetchAndImportSubscription(subURL string) ([]models.V2RayClientConfig, erro
 	}
 
 	rawContent := string(bodyBytes)
-	decodedBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rawContent))
+	decodedBytes, err := RobustDecodeBase64(rawContent)
 	if err != nil {
 		// Attempt reading raw unencoded lines just in case
 		decodedBytes = bodyBytes
@@ -389,23 +389,41 @@ func ParseProxyLink(link string) (models.V2RayClientConfig, error) {
 	return cfg, fmt.Errorf("unsupported proxy link format")
 }
 
-func decodeB64(s string) (string, error) {
-	s = strings.TrimSpace(s)
+// RobustDecodeBase64 strips whitespace/newlines and decodes standard, url-safe, and unpadded base64 strings
+func RobustDecodeBase64(s string) ([]byte, error) {
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.ReplaceAll(s, "\t", "")
+
 	for _, enc := range []*base64.Encoding{
-		base64.StdEncoding, base64.RawStdEncoding,
-		base64.URLEncoding, base64.RawURLEncoding,
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
 	} {
 		if dec, err := enc.DecodeString(s); err == nil {
-			return string(dec), nil
+			return dec, nil
 		}
 	}
+
+	// Fix missing padding character(s)
 	if pad := len(s) % 4; pad != 0 {
 		s += strings.Repeat("=", 4-pad)
 		if dec, err := base64.StdEncoding.DecodeString(s); err == nil {
-			return string(dec), nil
+			return dec, nil
 		}
 	}
-	return "", fmt.Errorf("failed to decode base64")
+
+	return nil, fmt.Errorf("failed to decode base64")
+}
+
+func decodeB64(s string) (string, error) {
+	dec, err := RobustDecodeBase64(s)
+	if err != nil {
+		return "", err
+	}
+	return string(dec), nil
 }
 
 // StartSubscriptionUpdater runs a background worker to periodically update subscriptions

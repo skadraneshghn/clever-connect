@@ -45,17 +45,18 @@ func (h *NovaForwarderHandler) proxyToServer(c *gin.Context, method string, apiP
 	var remoteURLTarget string
 	var remoteToken string
 
-	if h.cfg.ServerURL != "" {
-		remoteURLTarget = h.cfg.ServerURL
-		remoteToken = h.cfg.ServerAuthToken
+	var clientCfg models.EhcoClientConfig
+	dbErr := db.DB.First(&clientCfg).Error
+
+	if dbErr == nil && clientCfg.RemoteURL != "" {
+		remoteURLTarget = strings.TrimSpace(clientCfg.RemoteURL)
+		remoteToken = strings.TrimSpace(clientCfg.AuthToken)
+	} else if h.cfg.ServerURL != "" {
+		remoteURLTarget = strings.TrimSpace(h.cfg.ServerURL)
+		remoteToken = strings.TrimSpace(h.cfg.ServerAuthToken)
 	} else {
-		var clientCfg models.EhcoClientConfig
-		if err := db.DB.First(&clientCfg).Error; err != nil || clientCfg.RemoteURL == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "No remote server connection configured in client panel"})
-			return true
-		}
-		remoteURLTarget = clientCfg.RemoteURL
-		remoteToken = clientCfg.AuthToken
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No remote server connection configured in client panel"})
+		return true
 	}
 
 	remoteHost := remoteURLTarget

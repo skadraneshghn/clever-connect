@@ -651,17 +651,19 @@ func (h *WSHandler) ServeWSJobs(c *gin.Context) {
 		// --- CLIENT MODE: PIPE/PROXY TO SERVER ---
 		var remoteURLTarget string
 		var remoteToken string
-		if h.cfg.ServerURL != "" {
-			remoteURLTarget = h.cfg.ServerURL
-			remoteToken = h.cfg.ServerAuthToken
+
+		var clientCfg models.EhcoClientConfig
+		dbErr := db.DB.First(&clientCfg).Error
+
+		if dbErr == nil && clientCfg.RemoteURL != "" {
+			remoteURLTarget = strings.TrimSpace(clientCfg.RemoteURL)
+			remoteToken = strings.TrimSpace(clientCfg.AuthToken)
+		} else if h.cfg.ServerURL != "" {
+			remoteURLTarget = strings.TrimSpace(h.cfg.ServerURL)
+			remoteToken = strings.TrimSpace(h.cfg.ServerAuthToken)
 		} else {
-			var clientCfg models.EhcoClientConfig
-			if err := db.DB.First(&clientCfg).Error; err != nil || clientCfg.RemoteURL == "" {
-				logger.Warn("WS", "No remote server connection configured for jobs proxy")
-				return
-			}
-			remoteURLTarget = clientCfg.RemoteURL
-			remoteToken = clientCfg.AuthToken
+			logger.Warn("WS", "No remote server connection configured for jobs proxy")
+			return
 		}
 
 		// Convert http/https to ws/wss if needed
