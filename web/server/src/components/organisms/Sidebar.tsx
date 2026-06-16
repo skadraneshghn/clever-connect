@@ -16,6 +16,7 @@ const navItems = [
       { id: 'ehco-tunnel', label: 'Ehco' },
       { id: 'soroush-tunnel', label: 'Soroush' },
       { id: 'bonding-combiner', label: 'Multipath Combiner' },
+      { id: 'cloudflare', label: 'Cloudflare' }
     ]
   },
   {

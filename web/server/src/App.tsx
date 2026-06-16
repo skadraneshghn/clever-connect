@@ -22,6 +22,7 @@ const V2RayServerPage = lazy(() => import('./pages/V2RayServerPage').then(m => (
 const V2RayCorePage = lazy(() => import('./pages/V2RayCorePage').then(m => ({ default: m.V2RayCorePage })));
 const V2RayRoutingPage = lazy(() => import('./pages/V2RayRoutingPage').then(m => ({ default: m.V2RayRoutingPage })));
 const BondingCombinerPage = lazy(() => import('./pages/BondingCombinerPage').then(m => ({ default: m.BondingCombinerPage })));
+const CloudflarePage = lazy(() => import('./pages/CloudflarePage').then(m => ({ default: m.CloudflarePage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -61,6 +62,7 @@ const ProtectedLayout: React.FC = () => {
     'v2ray-core': ['V2Ray', 'Core Configuration'],
     'v2ray-routing': ['V2Ray', 'Routing Rules'],
     'bonding-combiner': ['Protocol', 'Multipath Combiner'],
+    cloudflare: ['Protocol', 'Cloudflare'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -133,6 +135,7 @@ const router = createBrowserRouter([
       { path: 'v2ray-core', element: <V2RayCorePage /> },
       { path: 'v2ray-routing', element: <V2RayRoutingPage /> },
       { path: 'bonding-combiner', element: <BondingCombinerPage /> },
+      { path: 'cloudflare', element: <CloudflarePage /> },
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },

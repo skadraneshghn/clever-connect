@@ -33,7 +33,8 @@ const navItems = [
       { id: 'v2ray-scanner', label: 'Scanner Engine' },
       { id: 'domain-checker', label: 'Domain Checker' },
       { id: 'ip-domain-checker', label: 'IP & Domain Checker' },
-      { id: 'dns-tester', label: 'DNS Tester' }
+      { id: 'dns-tester', label: 'DNS Tester' },
+      { id: 'cloudflare', label: 'Cloudflare' }
     ]
   },
   {

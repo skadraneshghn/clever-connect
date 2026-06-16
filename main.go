@@ -225,6 +225,7 @@ func main() {
 	dnsHandler := handlers.NewDNSHandler(cfg)
 	bondingHandler := handlers.NewBondingHandler(cfg)
 	combinerHandler := handlers.NewCombinerHandler(cfg)
+	cloudflareHandler := handlers.NewCloudflareHandler(cfg)
 
 	// Auto-start combiner if configured (after handler creation)
 	if cfg.AppMode == "server" {
@@ -494,6 +495,13 @@ func main() {
 			protected.POST("/bonding/combiner/stop", combinerHandler.StopCombiner)
 			protected.GET("/bonding/combiner/status", combinerHandler.GetCombinerStatus)
 			protected.Any("/bonding/combiner/diagnose", combinerHandler.DiagnoseCombiner)
+
+			// Cloudflare API routes
+			protected.GET("/cloudflare/accounts", cloudflareHandler.ListAccounts)
+			protected.POST("/cloudflare/accounts", cloudflareHandler.AddAccount)
+			protected.PUT("/cloudflare/accounts/:id", cloudflareHandler.UpdateAccount)
+			protected.DELETE("/cloudflare/accounts/:id", cloudflareHandler.DeleteAccount)
+			protected.GET("/cloudflare/accounts/:id/stats", cloudflareHandler.GetAccountStats)
 		}
 	}
 
