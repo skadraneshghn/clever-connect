@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -90,6 +91,13 @@ func (h *CloudflareHandler) OAuthCallback(c *gin.Context) {
 
 	code := c.Query("code")
 	if code == "" {
+		errParam := c.Query("error")
+		errDesc := c.Query("error_description")
+		if errParam != "" {
+			logger.Warn("CloudflareAPI", "OAuth callback returned error", "error", errParam, "description", errDesc)
+			c.String(http.StatusBadRequest, fmt.Sprintf("Cloudflare OAuth Error: %s - %s", errParam, errDesc))
+			return
+		}
 		c.String(http.StatusBadRequest, "Missing authorization code from Cloudflare")
 		return
 	}
