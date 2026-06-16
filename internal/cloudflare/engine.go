@@ -36,7 +36,7 @@ func GetOAuthConfig(cfg *config.Config) *oauth2.Config {
 			AuthURL:  "https://dash.cloudflare.com/oauth2/auth",
 			TokenURL: "https://dash.cloudflare.com/oauth2/token",
 		},
-		Scopes: []string{"account:read", "zone:read", "zone:write", "workers:read", "workers:write"},
+		Scopes: []string{"account.read", "zone.read", "zone.write", "workers.read", "workers.write"},
 	}
 }
 
