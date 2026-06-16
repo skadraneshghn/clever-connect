@@ -495,7 +495,7 @@ type NodeCategory struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	Name      string    `json:"name" gorm:"uniqueIndex"`
+	Name      string    `json:"name" gorm:"size:191;uniqueIndex"`
 	Type      string    `json:"type"` // "auto" or "custom"
 	ColorHex  string    `json:"color_hex"`
 }
