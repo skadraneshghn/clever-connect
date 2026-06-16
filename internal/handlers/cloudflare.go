@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"clever-connect/internal/cloudflare"
 	"clever-connect/internal/config"
@@ -25,6 +27,82 @@ func NewCloudflareHandler(cfg *config.Config) *CloudflareHandler {
 	return &CloudflareHandler{cfg: cfg}
 }
 
+// proxyToServer automatically forwards requests from the Client Panel to the remote Clever Cloud server.
+func (h *CloudflareHandler) proxyToServer(c *gin.Context, method string, apiPath string) bool {
+	if h.cfg.AppMode == "server" {
+		return false
+	}
+
+	var remoteURLTarget string
+	var remoteToken string
+
+	if h.cfg.ServerURL != "" {
+		remoteURLTarget = h.cfg.ServerURL
+		remoteToken = h.cfg.ServerAuthToken
+	} else {
+		var clientCfg models.EhcoClientConfig
+		if err := db.DB.First(&clientCfg).Error; err != nil || clientCfg.RemoteURL == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No remote server connection configured in client panel"})
+			return true
+		}
+		remoteURLTarget = clientCfg.RemoteURL
+		remoteToken = clientCfg.AuthToken
+	}
+
+	remoteHost := remoteURLTarget
+	remoteHost = strings.Replace(remoteHost, "wss://", "https://", 1)
+	remoteHost = strings.Replace(remoteHost, "ws://", "http://", 1)
+	if idx := strings.Index(remoteHost, "/ws"); idx != -1 {
+		remoteHost = remoteHost[:idx]
+	}
+	if idx := strings.Index(remoteHost, "/tunnel"); idx != -1 {
+		remoteHost = remoteHost[:idx]
+	}
+	remoteHost = strings.TrimSuffix(remoteHost, "/")
+
+	remoteURL := remoteHost + apiPath
+	if c.Request.URL.RawQuery != "" {
+		remoteURL += "?" + c.Request.URL.RawQuery
+	}
+
+	req, err := http.NewRequest(method, remoteURL, c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request", "details": err.Error()})
+		return true
+	}
+
+	for k, vv := range c.Request.Header {
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
+	}
+	if remoteToken != "" {
+		req.Header.Set("Authorization", "Bearer "+remoteToken)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Remote server connection refused or timed out", "details": err.Error()})
+		return true
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Remote server rejected proxy token (401). Please update the remote server or verify your Auth Token."})
+		return true
+	}
+
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			c.Writer.Header().Add(k, v)
+		}
+	}
+	c.Writer.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(c.Writer, resp.Body)
+	return true
+}
+
 type UpdateAccountRequest struct {
 	AccountName string `json:"account_name" binding:"required"`
 }
@@ -37,6 +115,9 @@ func generateState() string {
 
 // ListAccounts GET /api/cloudflare/accounts
 func (h *CloudflareHandler) ListAccounts(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	var accounts []models.CloudflareAccount
 	if err := db.DB.Find(&accounts).Error; err != nil {
 		logger.Error("CloudflareAPI", "Failed to retrieve accounts from database", "error", err)
@@ -49,6 +130,9 @@ func (h *CloudflareHandler) ListAccounts(c *gin.Context) {
 
 // OAuthLogin GET /api/cloudflare/oauth/login
 func (h *CloudflareHandler) OAuthLogin(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	oauthConfig := cloudflare.GetOAuthConfig(h.cfg)
 	if oauthConfig.ClientID == "" || oauthConfig.ClientSecret == "" {
 		c.String(http.StatusInternalServerError, "Cloudflare OAuth is not configured on this server (missing Client ID or Client Secret)")
@@ -68,6 +152,9 @@ func (h *CloudflareHandler) OAuthLogin(c *gin.Context) {
 
 // OAuthCallback GET /api/cloudflare/oauth/callback
 func (h *CloudflareHandler) OAuthCallback(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	oauthConfig := cloudflare.GetOAuthConfig(h.cfg)
 
 	// Verify state to prevent CSRF
@@ -159,6 +246,9 @@ func (h *CloudflareHandler) OAuthCallback(c *gin.Context) {
 
 // UpdateAccount PUT /api/cloudflare/accounts/:id
 func (h *CloudflareHandler) UpdateAccount(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	idParam := c.Param("id")
 	id, err := strconv.ParseUint(idParam, 10, 32)
 	if err != nil {
@@ -190,6 +280,9 @@ func (h *CloudflareHandler) UpdateAccount(c *gin.Context) {
 
 // DeleteAccount DELETE /api/cloudflare/accounts/:id
 func (h *CloudflareHandler) DeleteAccount(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	idParam := c.Param("id")
 	id, err := strconv.ParseUint(idParam, 10, 32)
 	if err != nil {
@@ -215,6 +308,9 @@ type AddAccountRequest struct {
 
 // AddAccount POST /api/cloudflare/accounts
 func (h *CloudflareHandler) AddAccount(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	var req AddAccountRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload: " + err.Error()})
@@ -263,6 +359,9 @@ func (h *CloudflareHandler) AddAccount(c *gin.Context) {
 
 // GetAccountStats GET /api/cloudflare/accounts/:id/stats
 func (h *CloudflareHandler) GetAccountStats(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	idParam := c.Param("id")
 	id, err := strconv.ParseUint(idParam, 10, 32)
 	if err != nil {
@@ -299,6 +398,9 @@ func (h *CloudflareHandler) GetAccountStats(c *gin.Context) {
 
 // GetZones GET /api/cloudflare/zones?account_id=xxx
 func (h *CloudflareHandler) GetZones(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	accountID := c.Query("account_id")
 	if accountID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing account_id parameter"})
@@ -348,6 +450,9 @@ type DeployWorkerRequest struct {
 
 // DeployWorker POST /api/cloudflare/workers/deploy
 func (h *CloudflareHandler) DeployWorker(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	var req DeployWorkerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -381,6 +486,9 @@ func (h *CloudflareHandler) DeployWorker(c *gin.Context) {
 
 // ListDeployments GET /api/cloudflare/workers/deployments
 func (h *CloudflareHandler) ListDeployments(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	var deployments []models.CloudflareWorkerDeployment
 	if err := db.DB.Find(&deployments).Error; err != nil {
 		logger.Error("CloudflareAPI", "Failed to retrieve worker deployments from DB", "error", err)
@@ -392,6 +500,9 @@ func (h *CloudflareHandler) ListDeployments(c *gin.Context) {
 
 // DeleteDeployment DELETE /api/cloudflare/workers/deployments/:id
 func (h *CloudflareHandler) DeleteDeployment(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	idParam := c.Param("id")
 	id, err := strconv.ParseUint(idParam, 10, 32)
 	if err != nil {
@@ -410,6 +521,9 @@ func (h *CloudflareHandler) DeleteDeployment(c *gin.Context) {
 
 // CheckDeploymentHealth POST /api/cloudflare/workers/deployments/:id/check-health
 func (h *CloudflareHandler) CheckDeploymentHealth(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
 	idParam := c.Param("id")
 	id, err := strconv.ParseUint(idParam, 10, 32)
 	if err != nil {

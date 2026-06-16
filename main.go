@@ -301,6 +301,13 @@ func main() {
 			protected.POST("/v2ray/client/configs/import-bulk", v2rayHandler.ImportBulkConfigs)
 			protected.POST("/v2ray/client/configs/import-qr", v2rayHandler.ImportQRConfig)
 
+			// Category management routes
+			protected.GET("/v2ray/client/categories", v2rayHandler.ListCategories)
+			protected.POST("/v2ray/client/categories", v2rayHandler.CreateCategory)
+			protected.PUT("/v2ray/client/categories/:id", v2rayHandler.UpdateCategory)
+			protected.DELETE("/v2ray/client/categories/:id", v2rayHandler.DeleteCategory)
+			protected.POST("/v2ray/client/configs/assign-category", v2rayHandler.AssignCategoryToConfigs)
+
 			// Profiles compatibility aliases for client panel
 			protected.GET("/v2ray/client/profiles", v2rayHandler.ListClientConfigs)
 			protected.POST("/v2ray/client/profiles", v2rayHandler.CreateClientConfig)

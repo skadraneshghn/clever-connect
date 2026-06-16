@@ -30,9 +30,74 @@ export const SettingsPage: React.FC = () => {
   const [testStatus, setTestStatus] = useState<Record<string, { loading: boolean; valid?: boolean; error?: string }>>({});
   const [saveStatus, setSaveStatus] = useState('');
 
+  // Clever Server Connection Settings
+  const [serverUrl, setServerUrl] = useState('');
+  const [serverAuthToken, setServerAuthToken] = useState('');
+  const [serverConfig, setServerConfig] = useState<any>(null);
+  const [serverSaveStatus, setServerSaveStatus] = useState('');
+
   useEffect(() => {
     fetchApiConfig();
   }, [fetchApiConfig]);
+
+  useEffect(() => {
+    const fetchServerConfig = async () => {
+      try {
+        const clientToken = token || localStorage.getItem('cc_client_token') || '';
+        const res = await fetch('/api/ehco/config', {
+          headers: {
+            'Authorization': `Bearer ${clientToken}`,
+          },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.config) {
+            setServerConfig(data.config);
+            setServerUrl(data.config.remote_url || '');
+            setServerAuthToken(data.config.auth_token || '');
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch ehco config', err);
+      }
+    };
+    fetchServerConfig();
+  }, [token]);
+
+  const handleSaveServerConfig = async () => {
+    setServerSaveStatus('Saving...');
+    try {
+      const clientToken = token || localStorage.getItem('cc_client_token') || '';
+      const payload = {
+        ...serverConfig,
+        remote_url: serverUrl,
+        auth_token: serverAuthToken,
+      };
+      const res = await fetch('/api/ehco/config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${clientToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.config) {
+          setServerConfig(data.config);
+          setServerUrl(data.config.remote_url || '');
+          setServerAuthToken(data.config.auth_token || '');
+        }
+        setServerSaveStatus('✅ Saved successfully!');
+        setTimeout(() => setServerSaveStatus(''), 3000);
+      } else {
+        const data = await res.json();
+        setServerSaveStatus(`❌ Failed: ${data.error || 'Server error'}`);
+      }
+    } catch (err: any) {
+      setServerSaveStatus(`❌ Error: ${err.message}`);
+    }
+  };
 
   useEffect(() => {
     if (apiConfig) {
@@ -199,6 +264,76 @@ export const SettingsPage: React.FC = () => {
                   </div>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Clever Server Connection Settings Card */}
+          <div className="g-card animate-slide-in">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <FiGlobe style={{ color: 'var(--color-brand)', fontSize: 18 }} />
+              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Clever Server Connection Settings</span>
+            </div>
+            <p style={{ fontSize: 11, color: 'var(--color-brand-text)', marginBottom: 14 }}>
+              Configure the connection to the remote Clever Server panel. This server will be used as the SOCKS5 proxy backend and for Cloudflare sync APIs.
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)', marginBottom: 6 }}>
+                  Clever Server Address
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g., https://panel.yourdomain.com or wss://panel.yourdomain.com/tunnel"
+                  value={serverUrl}
+                  onChange={e => setServerUrl(e.target.value)}
+                  style={{
+                    width: '100%',
+                    fontSize: 12,
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-bg)',
+                    color: 'var(--color-brand-heading)'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)', marginBottom: 6 }}>
+                  Connection Security Token (Auth Token)
+                </label>
+                <input
+                  type="password"
+                  placeholder="Enter remote server connection security token"
+                  value={serverAuthToken}
+                  onChange={e => setServerAuthToken(e.target.value)}
+                  style={{
+                    width: '100%',
+                    fontSize: 12,
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-bg)',
+                    color: 'var(--color-brand-heading)'
+                  }}
+                />
+              </div>
+
+              <div style={{ marginTop: 6, display: 'flex', gap: 10, alignItems: 'center' }}>
+                <button
+                  className="btn btn--sm btn--primary"
+                  onClick={handleSaveServerConfig}
+                  style={{ height: 38, whiteSpace: 'nowrap' }}
+                >
+                  Save Connection Settings
+                </button>
+                {serverSaveStatus && (
+                  <span style={{ fontSize: 12, color: serverSaveStatus.startsWith('✅') ? '#10b981' : '#ef4444' }}>
+                    {serverSaveStatus}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 

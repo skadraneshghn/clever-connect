@@ -485,6 +485,19 @@ type V2RayClientConfig struct {
 	DownloadSpeedMBps float64   `json:"download_speed_mbps" gorm:"default:0"`
 	CdnProvider       string    `json:"cdn_provider"`
 	PopLocation       string    `json:"pop_location"`
+	CategoryID        uint      `json:"category_id"`
+	SourceVector      string    `json:"source_vector"`
+	CountryCode       string    `json:"country_code"`
+}
+
+// NodeCategory stores tags/folders to organize proxy configs
+type NodeCategory struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Name      string    `json:"name" gorm:"uniqueIndex"`
+	Type      string    `json:"type"` // "auto" or "custom"
+	ColorHex  string    `json:"color_hex"`
 }
 
 // V2RayClientSubscription stores imported subscription links on the client side

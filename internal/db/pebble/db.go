@@ -221,6 +221,7 @@ func DeleteAllClientConfigs() error {
 type ConfigFilter struct {
 	Search         string   `json:"search"`
 	SubscriptionID *uint    `json:"subscription_id"`
+	CategoryID     *uint    `json:"category_id"`
 	Protocol       string   `json:"protocol"`
 	Network        string   `json:"network"`
 	Port           int      `json:"port"`
@@ -250,6 +251,10 @@ func ListClientConfigs(filter ConfigFilter, offset, limit int) ([]models.V2RayCl
 		if err := json.Unmarshal(iter.Value(), &cfg); err == nil {
 			// Subscription ID filter
 			if filter.SubscriptionID != nil && cfg.SubscriptionID != *filter.SubscriptionID {
+				continue
+			}
+			// Category ID filter
+			if filter.CategoryID != nil && cfg.CategoryID != *filter.CategoryID {
 				continue
 			}
 			// Protocol filter

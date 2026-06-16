@@ -512,12 +512,22 @@ func (h *V2RayHandler) ListClientConfigs(c *gin.Context) {
 			subID = &val
 		}
 	}
+
+	var catID *uint
+	if catIDStr := c.Query("category_id"); catIDStr != "" {
+		if id, err := strconv.Atoi(catIDStr); err == nil {
+			val := uint(id)
+			catID = &val
+		}
+	}
+
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100")) // Virtual windowing default
 
 	filter := pebble.ConfigFilter{
 		Search:         search,
 		SubscriptionID: subID,
+		CategoryID:     catID,
 		Protocol:       protocol,
 		Network:        network,
 		Port:           port,
@@ -780,6 +790,8 @@ func (h *V2RayHandler) ImportSubscription(c *gin.Context) {
 		db.DB.Save(&subRecord)
 	}
 
+	catID := GetOrCreateSubscriptionCategory(subRecord.Name)
+
 	var toInsert []models.V2RayClientConfig
 	
 	allConfigs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
@@ -791,14 +803,30 @@ func (h *V2RayHandler) ImportSubscription(c *gin.Context) {
 
 	for _, cfg := range configs {
 		cfg.SubscriptionID = subRecord.ID
+		cfg.SourceVector = "subscription"
+		cfg.CountryCode = DetectCountryCode(cfg.Name)
 		key := fmt.Sprintf("%s-%s-%d", cfg.UUID, cfg.Address, cfg.Port)
 		
 		if existing, ok := existingMap[key]; ok {
 			existing.Name = cfg.Name
 			existing.TLSSettings = cfg.TLSSettings
 			existing.SubscriptionID = subRecord.ID
+			existing.SourceVector = "subscription"
+			existing.CountryCode = cfg.CountryCode
+
+			if existing.CategoryID > 0 {
+				var nodeCat models.NodeCategory
+				if err := db.DB.First(&nodeCat, existing.CategoryID).Error; err == nil && nodeCat.Type == "custom" {
+					// Keep
+				} else {
+					existing.CategoryID = catID
+				}
+			} else {
+				existing.CategoryID = catID
+			}
 			toInsert = append(toInsert, existing)
 		} else {
+			cfg.CategoryID = catID
 			toInsert = append(toInsert, cfg)
 		}
 	}
@@ -827,6 +855,8 @@ func (h *V2RayHandler) ImportManualConfig(c *gin.Context) {
 		return
 	}
 
+	catID := GetOrCreateSourceCategory("manual")
+
 	// Check if JSON block
 	if strings.HasPrefix(raw, "{") && strings.HasSuffix(raw, "}") {
 		cfg, err := parseJSONOutbound(raw)
@@ -834,6 +864,9 @@ func (h *V2RayHandler) ImportManualConfig(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON outbound block: " + err.Error()})
 			return
 		}
+		cfg.SourceVector = "manual"
+		cfg.CountryCode = DetectCountryCode(cfg.Name)
+		cfg.CategoryID = catID
 		pebble.SaveClientConfig(&cfg)
 		c.JSON(http.StatusOK, gin.H{"status": "imported", "config": cfg})
 		return
@@ -852,6 +885,9 @@ func (h *V2RayHandler) ImportManualConfig(c *gin.Context) {
 			}
 			cfg, err := sub.ParseProxyLink(line)
 			if err == nil {
+				cfg.SourceVector = "manual"
+				cfg.CountryCode = DetectCountryCode(cfg.Name)
+				cfg.CategoryID = catID
 				pebble.SaveClientConfig(&cfg)
 				lastImported = cfg
 				importedCount++
@@ -872,6 +908,9 @@ func (h *V2RayHandler) ImportManualConfig(c *gin.Context) {
 		return
 	}
 
+	cfg.SourceVector = "manual"
+	cfg.CountryCode = DetectCountryCode(cfg.Name)
+	cfg.CategoryID = catID
 	pebble.SaveClientConfig(&cfg)
 	c.JSON(http.StatusOK, gin.H{"status": "imported", "config": cfg})
 }
@@ -905,6 +944,9 @@ func (h *V2RayHandler) ImportQRConfig(c *gin.Context) {
 		return
 	}
 
+	cfg.SourceVector = "qr"
+	cfg.CountryCode = DetectCountryCode(cfg.Name)
+	cfg.CategoryID = GetOrCreateSourceCategory("qr")
 	pebble.SaveClientConfig(&cfg)
 	c.JSON(http.StatusOK, gin.H{"status": "imported", "config": cfg})
 }
@@ -919,6 +961,7 @@ func (h *V2RayHandler) ImportBulkConfigs(c *gin.Context) {
 		return
 	}
 
+	catID := GetOrCreateSourceCategory("clipboard")
 	var configsToInsert []models.V2RayClientConfig
 	for _, uri := range req.Uris {
 		uri = strings.TrimSpace(uri)
@@ -927,6 +970,9 @@ func (h *V2RayHandler) ImportBulkConfigs(c *gin.Context) {
 		}
 		cfg, err := sub.ParseProxyLink(uri)
 		if err == nil {
+			cfg.SourceVector = "clipboard"
+			cfg.CountryCode = DetectCountryCode(cfg.Name)
+			cfg.CategoryID = catID
 			configsToInsert = append(configsToInsert, cfg)
 		}
 	}
@@ -2057,5 +2103,205 @@ func (h *V2RayHandler) DeleteScannerSource(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+// ListCategories handles GET /api/v2ray/client/categories
+func (h *V2RayHandler) ListCategories(c *gin.Context) {
+	var cats []models.NodeCategory
+	if err := db.DB.Order("name asc").Find(&cats).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, cats)
+}
+
+// CreateCategory handles POST /api/v2ray/client/categories
+func (h *V2RayHandler) CreateCategory(c *gin.Context) {
+	var req struct {
+		Name     string `json:"name" binding:"required"`
+		ColorHex string `json:"color_hex" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	cat := models.NodeCategory{
+		Name:     req.Name,
+		ColorHex: req.ColorHex,
+		Type:     "custom",
+	}
+
+	if err := db.DB.Create(&cat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, cat)
+}
+
+// UpdateCategory handles PUT /api/v2ray/client/categories/:id
+func (h *V2RayHandler) UpdateCategory(c *gin.Context) {
+	id := c.Param("id")
+	var cat models.NodeCategory
+	if err := db.DB.First(&cat, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
+		return
+	}
+
+	var req struct {
+		Name     string `json:"name"`
+		ColorHex string `json:"color_hex"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Name != "" {
+		cat.Name = req.Name
+	}
+	if req.ColorHex != "" {
+		cat.ColorHex = req.ColorHex
+	}
+
+	if err := db.DB.Save(&cat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, cat)
+}
+
+// DeleteCategory handles DELETE /api/v2ray/client/categories/:id
+func (h *V2RayHandler) DeleteCategory(c *gin.Context) {
+	idStr := c.Param("id")
+	id, _ := strconv.Atoi(idStr)
+
+	// Fetch all nodes to clear this CategoryID in PebbleDB
+	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+	var updated []models.V2RayClientConfig
+	for _, cfg := range configs {
+		if cfg.CategoryID == uint(id) {
+			cfg.CategoryID = 0
+			updated = append(updated, cfg)
+		}
+	}
+	if len(updated) > 0 {
+		_ = pebble.SaveClientConfigsBulk(updated)
+	}
+
+	if err := db.DB.Delete(&models.NodeCategory{}, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+// AssignCategoryToConfigs handles POST /api/v2ray/client/configs/assign-category
+func (h *V2RayHandler) AssignCategoryToConfigs(c *gin.Context) {
+	var req struct {
+		IDs        []uint `json:"ids" binding:"required"`
+		CategoryID uint   `json:"category_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.CategoryID != 0 {
+		var cat models.NodeCategory
+		if err := db.DB.First(&cat, req.CategoryID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
+			return
+		}
+	}
+
+	var updated []models.V2RayClientConfig
+	for _, id := range req.IDs {
+		if cfg, err := pebble.GetClientConfig(id); err == nil {
+			cfg.CategoryID = req.CategoryID
+			updated = append(updated, *cfg)
+		}
+	}
+
+	if len(updated) > 0 {
+		if err := pebble.SaveClientConfigsBulk(updated); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "assigned", "count": len(updated)})
+}
+
+// Helper: DetectCountryCode extracts country codes from name
+func DetectCountryCode(name string) string {
+	name = strings.ToUpper(name)
+	countries := map[string]string{
+		"US": "US", "UNITED STATES": "US", "🇺🇸": "US",
+		"HK": "HK", "HONG KONG": "HK", "🇭🇰": "HK",
+		"DE": "DE", "GERMANY": "DE", "🇩🇪": "DE",
+		"GB": "GB", "UNITED KINGDOM": "GB", "UK": "GB", "🇬🇧": "GB",
+		"FR": "FR", "FRANCE": "FR", "🇫🇷": "FR",
+		"NL": "NL", "NETHERLANDS": "NL", "🇳🇱": "NL",
+		"SG": "SG", "SINGAPORE": "SG", "🇸🇬": "SG",
+		"JP": "JP", "JAPAN": "JP", "🇯🇵": "JP",
+		"KR": "KR", "KOREA": "KR", "🇰🇷": "KR",
+		"TR": "TR", "TURKEY": "TR", "🇹🇷": "TR",
+		"IR": "IR", "IRAN": "IR", "🇮🇷": "IR",
+		"FI": "FI", "FINLAND": "FI", "🇫🇮": "FI",
+		"SE": "SE", "SWEDEN": "SE", "🇸🇪": "SE",
+		"CA": "CA", "CANADA": "CA", "🇨🇦": "CA",
+	}
+	for kw, cc := range countries {
+		if strings.Contains(name, kw) {
+			return cc
+		}
+	}
+	return ""
+}
+
+// Helper: GetOrCreateSubscriptionCategory looks up or creates subscription category
+func GetOrCreateSubscriptionCategory(name string) uint {
+	var cat models.NodeCategory
+	if err := db.DB.Where("name = ? AND type = ?", name, "auto").First(&cat).Error; err != nil {
+		cat = models.NodeCategory{
+			Name:     name,
+			Type:     "auto",
+			ColorHex: "#3b82f6",
+		}
+		db.DB.Create(&cat)
+	}
+	return cat.ID
+}
+
+// Helper: GetOrCreateSourceCategory looks up or creates category for clipboard/manual/qr source
+func GetOrCreateSourceCategory(source string) uint {
+	var cat models.NodeCategory
+	name := ""
+	color := ""
+	switch source {
+	case "clipboard":
+		name = "Clipboard Import"
+		color = "#f59e0b"
+	case "qr":
+		name = "QR Import"
+		color = "#10b981"
+	case "manual":
+		name = "Manual Import"
+		color = "#6366f1"
+	default:
+		name = "Other Import"
+		color = "#6b7280"
+	}
+
+	if err := db.DB.Where("name = ? AND type = ?", name, "auto").First(&cat).Error; err != nil {
+		cat = models.NodeCategory{
+			Name:     name,
+			Type:     "auto",
+			ColorHex: color,
+		}
+		db.DB.Create(&cat)
+	}
+	return cat.ID
 }
 

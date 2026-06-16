@@ -136,6 +136,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&models.V2RayClientFrontingMap{},
 		&models.V2RayClientSetting{},
 		&models.V2RayClientSubscription{},
+		&models.NodeCategory{},
 		&models.Domain{},
 		&models.ScannerSource{},
 		&models.ScannerConfig{},

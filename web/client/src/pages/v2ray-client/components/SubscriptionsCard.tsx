@@ -11,6 +11,7 @@ import {
 	FiStopCircle,
 	FiLoader,
 	FiSettings,
+	FiPlusCircle,
 } from 'react-icons/fi';
 import { IPResolveBadge } from '../../../components/atoms/IPResolveBadge';
 
@@ -74,6 +75,13 @@ interface SubscriptionsCardProps {
 	stopAdvancedTest: () => void;
 	testSingleProfileAdvanced: (id: number, testType: string, url?: string) => void;
 	selectedCore: string;
+
+	// Categorization and Layout tabs
+	viewMode?: 'list' | 'ingestion';
+	categories?: any[];
+	selectedCategoryId?: number | null;
+	setSelectedCategoryId?: (id: number | null) => void;
+	fetchCategories?: () => void;
 }
 
 const isIP = (str: string) => {
@@ -119,6 +127,19 @@ const getProtocolBadge = (proto: string) => {
 	);
 };
 
+const getFlagEmoji = (countryCode: string) => {
+	if (!countryCode) return '';
+	const codePoints = countryCode
+		.toUpperCase()
+		.split('')
+		.map(char => 127397 + char.charCodeAt(0));
+	try {
+		return String.fromCodePoint(...codePoints);
+	} catch (e) {
+		return '';
+	}
+};
+
 export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 	isLoading,
 	subUrl,
@@ -156,6 +177,12 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 	stopAdvancedTest,
 	testSingleProfileAdvanced,
 	selectedCore,
+
+	viewMode = 'list',
+	categories = [],
+	selectedCategoryId = null,
+	setSelectedCategoryId,
+	fetchCategories,
 }) => {
 	const PAGE_LIMIT = 50;
 	const parentRef = useRef<HTMLDivElement>(null);
@@ -177,6 +204,95 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 		'https://www.google.com'
 	]);
 	const [showSuggestions, setShowSuggestions] = useState(false);
+
+	// Ingestion subtabs
+	const [ingestTab, setIngestTab] = useState<'sub' | 'uri' | 'qr'>('sub');
+	// Inline Category creation
+	const [newCatName, setNewCatName] = useState('');
+	const [isCreatingCat, setIsCreatingCat] = useState(false);
+
+	const handleCreateCategory = async () => {
+		if (!newCatName.trim()) return;
+		try {
+			const token = localStorage.getItem('cc_client_token') || '';
+			const res = await fetch('/api/v2ray/client/categories', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${token}`
+				},
+				body: JSON.stringify({
+					name: newCatName.trim(),
+					type: 'custom',
+					color_hex: '#6366f1'
+				})
+			});
+			if (res.ok) {
+				setNewCatName('');
+				setIsCreatingCat(false);
+				if (fetchCategories) fetchCategories();
+			} else {
+				const data = await res.json();
+				alert(data.error || 'Failed to create category');
+			}
+		} catch (err: any) {
+			alert(err.message);
+		}
+	};
+
+	const handleDeleteCategory = async (id: number) => {
+		if (!window.confirm('Are you sure you want to delete this category? All its nodes will become ungrouped.')) return;
+		try {
+			const token = localStorage.getItem('cc_client_token') || '';
+			const res = await fetch(`/api/v2ray/client/categories/${id}`, {
+				method: 'DELETE',
+				headers: {
+					Authorization: `Bearer ${token}`
+				}
+			});
+			if (res.ok) {
+				if (selectedCategoryId === id) {
+					setSelectedCategoryId?.(null);
+				}
+				if (fetchCategories) fetchCategories();
+				fetchProfiles(0, true);
+			} else {
+				const data = await res.json();
+				alert(data.error || 'Failed to delete category');
+			}
+		} catch (err: any) {
+			alert(err.message);
+		}
+	};
+
+	const handleAssignCategory = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+		const catIdVal = e.target.value;
+		if (catIdVal === '') return;
+		const targetId = Number(catIdVal);
+		try {
+			const token = localStorage.getItem('cc_client_token') || '';
+			const res = await fetch('/api/v2ray/client/configs/assign-category', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${token}`
+				},
+				body: JSON.stringify({
+					ids: selectedProfileIds,
+					category_id: targetId
+				})
+			});
+			if (res.ok) {
+				setSelectedProfileIds([]);
+				fetchProfiles(0, true);
+			} else {
+				const data = await res.json();
+				alert(data.error || 'Failed to assign category');
+			}
+		} catch (err: any) {
+			alert(err.message);
+		}
+	};
 
 	useEffect(() => {
 		const loadTesterSettings = async () => {
@@ -583,39 +699,113 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 			<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
 				<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
 					<FiDownloadCloud style={{ color: 'var(--color-brand)', fontSize: 18 }} />
-					<span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Subscriptions & Profiles</span>
+					<span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+						{viewMode === 'ingestion' ? 'Feed Ingestion Hub' : 'Node Arena'}
+					</span>
 					<FiHelpCircle
 						style={{ cursor: 'pointer', color: 'var(--color-brand-muted)' }}
 						onClick={() =>
 							showHelp(
-								'Subscriptions & Profiles',
-								'Sync and import remote proxy configuration files. Add URL links to sync periodically, or paste raw URI configurations directly. Use QR image uploads or batch export profiles as PDF files.'
+								viewMode === 'ingestion' ? 'Feed Ingestion Hub' : 'Node Arena',
+								viewMode === 'ingestion'
+									? 'Consolidated intake panel. Manage subscriptions, manual configs, clipboard payloads, and QR codes.'
+									: 'Primary proxy list. Manage connections, categorizations, standard/custom group directories, and diagnostic sweeps.'
 							)
 						}
 					/>
 				</div>
-				<div style={{ display: 'flex', gap: 8 }}>
-					<button
-						className={`btn btn--sm ${isTesterPanelOpen ? 'btn--primary' : 'btn--secondary'}`}
-						onClick={() => setIsTesterPanelOpen(!isTesterPanelOpen)}
-					>
-						<FiSettings style={{ marginRight: 6 }} /> ⚡ Advanced Tester Queue
-					</button>
-					<button className="btn btn--sm btn--secondary" onClick={handleBulkTestAll} disabled={isLoading || testingStatus === 'running'}>
-						<FiActivity style={{ marginRight: 6 }} /> Standard Test
-					</button>
-					<button
-						className="btn btn--sm btn--primary"
-						onClick={handleExportPDF}
-						disabled={isLoading || selectedProfileIds.length === 0}
-					>
-						Export Selected PDF ({selectedProfileIds.length})
-					</button>
-				</div>
+				{viewMode === 'list' && (
+					<div style={{ display: 'flex', gap: 8 }}>
+						<button
+							className={`btn btn--sm ${isTesterPanelOpen ? 'btn--primary' : 'btn--secondary'}`}
+							onClick={() => setIsTesterPanelOpen(!isTesterPanelOpen)}
+						>
+							<FiSettings style={{ marginRight: 6 }} /> ⚡ Advanced Tester Queue
+						</button>
+						<button className="btn btn--sm btn--secondary" onClick={handleBulkTestAll} disabled={isLoading || testingStatus === 'running'}>
+							<FiActivity style={{ marginRight: 6 }} /> Standard Test
+						</button>
+						<button
+							className="btn btn--sm btn--secondary"
+							onClick={handleDeleteFailedNodes}
+							disabled={isLoading || profiles.length === 0 || testingStatus === 'running'}
+							style={{ border: '1px solid #d9534f', color: '#d9534f' }}
+						>
+							Delete Failed
+						</button>
+						<button
+							className="btn btn--sm btn--secondary"
+							onClick={handleDeleteAllNodes}
+							disabled={isLoading || profiles.length === 0 || testingStatus === 'running'}
+							style={{ border: '1px solid #dc3545', color: '#dc3545' }}
+						>
+							Delete All
+						</button>
+					</div>
+				)}
 			</div>
 
+			{/* Contextual Bulk Action Bar */}
+			{viewMode === 'list' && selectedProfileIds.length > 0 && (
+				<div style={{
+					display: 'flex',
+					alignItems: 'center',
+					gap: 12,
+					background: 'var(--color-brand-light)',
+					border: '1px solid var(--color-brand-border)',
+					borderRadius: 8,
+					padding: '8px 12px',
+					marginBottom: 16,
+					animation: 'slide-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+					flexWrap: 'wrap'
+				}}>
+					<span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand)' }}>
+						{selectedProfileIds.length} Nodes Selected:
+					</span>
+
+					<div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+						<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Assign Group:</label>
+						<select
+							value=""
+							onChange={handleAssignCategory}
+							style={{
+								padding: '4px 8px',
+								borderRadius: 6,
+								border: '1px solid var(--color-brand-border)',
+								background: 'var(--color-brand-card)',
+								fontSize: 11,
+								color: 'var(--color-brand-heading)',
+								fontWeight: 600
+							}}
+						>
+							<option value="">Choose Category...</option>
+							<option value="0">None / Ungrouped</option>
+							{categories?.map(c => (
+								<option key={c.id} value={c.id}>{c.name}</option>
+							))}
+						</select>
+					</div>
+
+					<button
+						className="btn btn--xs"
+						onClick={handleExportPDF}
+						style={{ background: 'var(--color-brand)', color: '#fff', border: 'none' }}
+					>
+						Export Selected PDF
+					</button>
+
+					<button
+						className="btn btn--xs"
+						onClick={handleDeleteSelectedNodes}
+						style={{ background: '#f0ad4e', color: '#fff', border: 'none' }}
+					>
+						Delete Selected
+					</button>
+				</div>
+			)}
+
 			{/* Advanced Tester Collapsible Settings Panel */}
-			{isTesterPanelOpen && (
+			{viewMode === 'list' && isTesterPanelOpen && (
 				<div style={{
 					background: 'var(--color-brand-bg)',
 					border: '1px solid var(--color-brand-border)',
@@ -635,7 +825,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 								type="button"
 								className="btn btn--secondary btn--xs"
 								style={{ padding: '2px 8px', fontSize: 10, borderRadius: 4 }}
-								title="Reset settings to defaults (except URL)"
+								title="Reset settings to defaults"
 							>
 								Reset Options
 							</button>
@@ -728,7 +918,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 							/>
 						</div>
 
-						{/* GFW Cooldown Delay */}
+						{/* Cooldown */}
 						<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
 							<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>GFW IP Cooldown (ms)</label>
 							<input
@@ -750,7 +940,6 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 						</div>
 					</div>
 
-					{/* Test URL */}
 					<div style={{ display: 'flex', flexDirection: 'column', gap: 4, position: 'relative' }}>
 						<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Test Probe URL (for URL test)</label>
 						<input
@@ -827,7 +1016,6 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 						})()}
 					</div>
 
-					{/* Test Buttons */}
 					<div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
 						{testingStatus === 'running' ? (
 							<button
@@ -861,7 +1049,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 			)}
 
 			{/* Bulk Testing Active Progress bar */}
-			{testingStatus === 'running' && (() => {
+			{viewMode === 'list' && testingStatus === 'running' && (() => {
 				const successCount = Object.values(nodeTestStates).filter(s => s.status === 'done').length;
 				const failCount = Object.values(nodeTestStates).filter(s => s.status === 'error').length;
 				return (
@@ -876,7 +1064,6 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 						flexDirection: 'column',
 						gap: 12
 					}}>
-						{/* Top Header */}
 						<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
 							<div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
 								<div 
@@ -897,7 +1084,6 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 							</span>
 						</div>
 
-						{/* Progress Bar Wrapper */}
 						<div style={{
 							width: '100%',
 							height: 10,
@@ -916,9 +1102,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 							}} />
 						</div>
 
-						{/* Counters & Live Results Hub */}
 						<div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16, marginTop: 4, alignItems: 'stretch' }}>
-							{/* Live Stats */}
 							<div style={{ 
 								display: 'flex', 
 								flexDirection: 'column', 
@@ -945,7 +1129,6 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 								</div>
 							</div>
 
-							{/* Recent Results sliding log */}
 							<div style={{ 
 								display: 'flex', 
 								flexDirection: 'column', 
@@ -1001,427 +1184,691 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 				);
 			})()}
 
-			{/* Input URL */}
-			<div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
-				<input
-					type="text"
-					placeholder="Subscription Link (HTTP/S Base64)"
-					value={subUrl}
-					onChange={(e) => setSubUrl(e.target.value)}
-					style={{
-						flex: 1,
-						padding: '8px 12px',
-						borderRadius: 8,
-						border: '1px solid var(--color-brand-border)',
-						background: 'var(--color-brand-card)',
-						fontSize: 13,
-						color: 'var(--color-brand-heading)',
-					}}
-				/>
-				<button className="btn btn--primary" onClick={handleImportSub} disabled={isLoading || testingStatus === 'running'}>
-					Import
-				</button>
-			</div>
-
-			{/* Manual import & QR Upload */}
-			<div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
-				<div style={{ display: 'flex', gap: 10 }}>
-					<input
-						type="text"
-						placeholder="Manual Config URI (vmess://, vless://, trojan://, ss://)"
-						value={manualUri}
-						onChange={(e) => setManualUri(e.target.value)}
-						style={{
-							flex: 1,
-							padding: '8px 12px',
-							borderRadius: 8,
-							border: '1px solid var(--color-brand-border)',
-							background: 'var(--color-brand-card)',
-							fontSize: 13,
-							color: 'var(--color-brand-heading)',
-						}}
-					/>
-					<button className="btn btn--secondary" onClick={handleManualImport} disabled={isLoading || testingStatus === 'running'}>
-						Import URI
-					</button>
-					<button
-						className="btn"
-						type="button"
-						onClick={openClipboardModal}
-						style={{ background: 'var(--color-brand)', color: '#fff', border: 'none', display: 'flex', alignItems: 'center' }}
-					>
-						Clipboard Import
-					</button>
-					<button
-						className="btn"
-						type="button"
-						onClick={handleDeleteAllNodes}
-						disabled={isLoading || profiles.length === 0 || testingStatus === 'running'}
-						style={{ background: '#dc3545', color: '#fff', border: 'none', display: 'flex', alignItems: 'center' }}
-					>
-						Delete All Nodes
-					</button>
-					<button
-						className="btn"
-						type="button"
-						onClick={handleDeleteFailedNodes}
-						disabled={isLoading || profiles.length === 0 || testingStatus === 'running'}
-						style={{ background: '#d9534f', color: '#fff', border: 'none', display: 'flex', alignItems: 'center' }}
-					>
-						Delete Failed Nodes
-					</button>
-					<button
-						className="btn"
-						type="button"
-						onClick={handleDeleteSelectedNodes}
-						disabled={isLoading || selectedProfileIds.length === 0 || testingStatus === 'running'}
-						style={{ background: '#f0ad4e', color: '#fff', border: 'none', display: 'flex', alignItems: 'center' }}
-					>
-						Delete Selected ({selectedProfileIds.length})
-					</button>
-				</div>
-				<div
-					style={{
-						display: 'flex',
-						alignItems: 'center',
-						gap: 10,
-						background: 'var(--color-brand-bg)',
-						padding: '10px 12px',
-						borderRadius: 8,
-						border: '1px solid var(--color-brand-border)',
-					}}
-				>
-					<span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
-						Import Config via QR Code Image:
-					</span>
-					<input
-						type="file"
-						accept="image/*"
-						ref={qrFileInputRef}
-						onChange={handleQRImport}
-						style={{ fontSize: 12, color: 'var(--color-brand-text)' }}
-						disabled={isLoading || testingStatus === 'running'}
-					/>
-				</div>
-			</div>
-
-			{/* Advanced Config Filter Panel */}
-			<div
-				style={{
-					background: 'var(--color-brand-card)',
+			{/* Ingestion Hub Tabbed Views */}
+			{viewMode === 'ingestion' && (
+				<div style={{
+					background: 'var(--color-brand-bg)',
 					border: '1px solid var(--color-brand-border)',
-					borderRadius: 10,
-					padding: 16,
-					marginBottom: 16,
+					borderRadius: 12,
+					padding: 20,
 					display: 'flex',
 					flexDirection: 'column',
-					gap: 12,
-				}}
-			>
-				<span style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)', display: 'flex', alignItems: 'center', gap: 6 }}>
-					🔍 Advanced Config Filter
-				</span>
-
-				<div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
-					{/* Text search */}
-					<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-						<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Text Search</label>
-						<input
-							type="text"
-							placeholder="Search name, host, uuid..."
-							value={tempSearch}
-							onChange={(e) => setTempSearch(e.target.value)}
+					gap: 16
+				}}>
+					<div style={{ display: 'flex', borderBottom: '1px solid var(--color-brand-border)', paddingBottom: 10, gap: 16, marginBottom: 10 }}>
+						<button
+							type="button"
+							onClick={() => setIngestTab('sub')}
 							style={{
-								padding: '6px 10px',
-								borderRadius: 6,
-								border: '1px solid var(--color-brand-border)',
-								background: 'var(--color-brand-bg)',
-								fontSize: 12,
-								color: 'var(--color-brand-heading)',
-							}}
-						/>
-					</div>
-
-					{/* Protocol */}
-					<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-						<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Protocol</label>
-						<select
-							value={tempProtocol}
-							onChange={(e) => setTempProtocol(e.target.value)}
-							style={{
-								padding: '6px 10px',
-								borderRadius: 6,
-								border: '1px solid var(--color-brand-border)',
-								background: 'var(--color-brand-bg)',
-								fontSize: 12,
-								color: 'var(--color-brand-heading)',
+								border: 'none',
+								background: 'none',
+								color: ingestTab === 'sub' ? 'var(--color-brand)' : 'var(--color-brand-muted)',
+								fontSize: 13,
+								fontWeight: ingestTab === 'sub' ? 700 : 500,
+								borderBottom: ingestTab === 'sub' ? '2px solid var(--color-brand)' : 'none',
+								paddingBottom: 6,
+								cursor: 'pointer'
 							}}
 						>
-							<option value="">All Protocols</option>
-							<option value="vmess">VMess</option>
-							<option value="vless">VLESS</option>
-							<option value="trojan">Trojan</option>
-							<option value="shadowsocks">Shadowsocks</option>
-						</select>
-					</div>
-
-					{/* Network */}
-					<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-						<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Transport</label>
-						<select
-							value={tempNetwork}
-							onChange={(e) => setTempNetwork(e.target.value)}
+							Add Subscription Link
+						</button>
+						<button
+							type="button"
+							onClick={() => setIngestTab('uri')}
 							style={{
-								padding: '6px 10px',
-								borderRadius: 6,
-								border: '1px solid var(--color-brand-border)',
-								background: 'var(--color-brand-bg)',
-								fontSize: 12,
-								color: 'var(--color-brand-heading)',
+								border: 'none',
+								background: 'none',
+								color: ingestTab === 'uri' ? 'var(--color-brand)' : 'var(--color-brand-muted)',
+								fontSize: 13,
+								fontWeight: ingestTab === 'uri' ? 700 : 500,
+								borderBottom: ingestTab === 'uri' ? '2px solid var(--color-brand)' : 'none',
+								paddingBottom: 6,
+								cursor: 'pointer'
 							}}
 						>
-							<option value="">All Networks</option>
-							<option value="tcp">TCP</option>
-							<option value="ws">WebSocket (WS)</option>
-							<option value="grpc">gRPC</option>
-							<option value="kcp">mKCP</option>
-							<option value="quic">QUIC</option>
-						</select>
-					</div>
-
-					{/* Port */}
-					<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-						<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Port</label>
-						<input
-							type="number"
-							placeholder="e.g. 443"
-							value={tempPort}
-							onChange={(e) => setTempPort(e.target.value)}
+							Paste Text / URIs
+						</button>
+						<button
+							type="button"
+							onClick={() => setIngestTab('qr')}
 							style={{
-								padding: '6px 10px',
-								borderRadius: 6,
-								border: '1px solid var(--color-brand-border)',
-								background: 'var(--color-brand-bg)',
-								fontSize: 12,
-								color: 'var(--color-brand-heading)',
-							}}
-						/>
-					</div>
-
-					{/* Ping status */}
-					<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-						<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Ping Status</label>
-						<select
-							value={tempPingStatus}
-							onChange={(e) => setTempPingStatus(e.target.value)}
-							style={{
-								padding: '6px 10px',
-								borderRadius: 6,
-								border: '1px solid var(--color-brand-border)',
-								background: 'var(--color-brand-bg)',
-								fontSize: 12,
-								color: 'var(--color-brand-heading)',
+								border: 'none',
+								background: 'none',
+								color: ingestTab === 'qr' ? 'var(--color-brand)' : 'var(--color-brand-muted)',
+								fontSize: 13,
+								fontWeight: ingestTab === 'qr' ? 700 : 500,
+								borderBottom: ingestTab === 'qr' ? '2px solid var(--color-brand)' : 'none',
+								paddingBottom: 6,
+								cursor: 'pointer'
 							}}
 						>
-							<option value="">All Statuses</option>
-							<option value="pass">Passed / Live</option>
-							<option value="fail">Failed / Dead</option>
-						</select>
+							Upload QR Image
+						</button>
 					</div>
 
-					{/* Sort By */}
-					<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-						<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Sort By</label>
-						<select
-							value={tempSortBy}
-							onChange={(e) => setTempSortBy(e.target.value)}
-							style={{
-								padding: '6px 10px',
-								borderRadius: 6,
-								border: '1px solid var(--color-brand-border)',
-								background: 'var(--color-brand-bg)',
-								fontSize: 12,
-								color: 'var(--color-brand-heading)',
-							}}
-						>
-							<option value="priority">Default (Priority)</option>
-							<option value="speed">Speed Test (Latency)</option>
-						</select>
-					</div>
-				</div>
+					{ingestTab === 'sub' && (
+						<div style={{ display: 'flex', gap: 10 }}>
+							<input
+								type="text"
+								placeholder="Subscription Link (HTTP/S Base64)"
+								value={subUrl}
+								onChange={(e) => setSubUrl(e.target.value)}
+								style={{
+									flex: 1,
+									padding: '10px 14px',
+									borderRadius: 8,
+									border: '1px solid var(--color-brand-border)',
+									background: 'var(--color-brand-card)',
+									fontSize: 13,
+									color: 'var(--color-brand-heading)',
+								}}
+							/>
+							<button className="btn btn--primary" onClick={handleImportSub} disabled={isLoading}>
+								Import
+							</button>
+						</div>
+					)}
 
-				<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
-					<button
-						className="btn btn--secondary btn--xs"
-						onClick={handleClearFilters}
-					>
-						Clear Filters
-					</button>
-					<button
-						className="btn btn--primary btn--xs"
-						onClick={handleApplyFilters}
-					>
-						Apply Filters
-					</button>
-				</div>
-			</div>
-
-			{/* Table of Profiles */}
-			<div ref={parentRef} style={{ maxHeight: 600, overflow: 'auto', border: '1px solid var(--color-brand-border)', borderRadius: 8 }}>
-				<table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, textAlign: 'left' }}>
-					<thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--color-brand-bg)' }}>
-						<tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
-							<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 50 }}>Active</th>
-							<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 50, textAlign: 'center' }}>
+					{ingestTab === 'uri' && (
+						<div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+							<div style={{ display: 'flex', gap: 10 }}>
 								<input
-									type="checkbox"
-									style={{ cursor: 'pointer', accentColor: 'var(--color-brand)', transform: 'scale(1.1)' }}
-									checked={profiles.length > 0 && profiles.every(p => selectedProfileIds.includes(p.ID))}
-									onChange={(e) => {
-										if (e.target.checked) {
-											const allIds = Array.from(new Set([...selectedProfileIds, ...profiles.map(p => p.ID)]));
-											setSelectedProfileIds(allIds);
-										} else {
-											const profileIds = profiles.map(p => p.ID);
-											setSelectedProfileIds(selectedProfileIds.filter(id => !profileIds.includes(id)));
-										}
+									type="text"
+									placeholder="Manual Config URI (vmess://, vless://, trojan://, ss://)"
+									value={manualUri}
+									onChange={(e) => setManualUri(e.target.value)}
+									style={{
+										flex: 1,
+										padding: '10px 14px',
+										borderRadius: 8,
+										border: '1px solid var(--color-brand-border)',
+										background: 'var(--color-brand-card)',
+										fontSize: 13,
+										color: 'var(--color-brand-heading)',
 									}}
-									disabled={testingStatus === 'running'}
-									title="Select / Deselect all filtered nodes"
 								/>
-							</th>
-							<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Name</th>
-							<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 80 }}>Protocol</th>
-							<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Address</th>
-							<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 200 }}>Ping & Diagnostics</th>
-							<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', textAlign: 'center', width: 90 }}>Actions</th>
-						</tr>
-					</thead>
-					<tbody>
-						{profiles.length === 0 ? (
-							<tr>
-								<td colSpan={7} style={{ padding: 20, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
-									No profiles imported. Add subscription URL or paste configs.
-								</td>
-							</tr>
-						) : (
-							<>
-								{rowVirtualizer.getVirtualItems()[0]?.start > 0 && (
-									<tr>
-										<td colSpan={7} style={{ height: rowVirtualizer.getVirtualItems()[0].start }} />
-									</tr>
-								)}
-								{rowVirtualizer.getVirtualItems().map((virtualRow) => {
-									const p = profiles[virtualRow.index];
-									if (!p) return null;
-									const isRowTesting = nodeTestStates[p.ID]?.status === 'testing';
+								<button className="btn btn--secondary" onClick={handleManualImport} disabled={isLoading}>
+									Import URI
+								</button>
+							</div>
+							<div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 }}>
+								<span style={{ fontSize: 12, color: 'var(--color-brand-muted)' }}>Or import multiple configurations from clipboard:</span>
+								<button
+									className="btn btn--sm"
+									type="button"
+									onClick={openClipboardModal}
+									style={{ background: 'var(--color-brand)', color: '#fff', border: 'none' }}
+								>
+									Clipboard Import
+								</button>
+							</div>
+						</div>
+					)}
 
-									return (
-										<tr
-											key={virtualRow.key}
-											className={isRowTesting ? 'pulse-testing' : ''}
+					{ingestTab === 'qr' && (
+						<div
+							style={{
+								display: 'flex',
+								alignItems: 'center',
+								gap: 12,
+								background: 'var(--color-brand-card)',
+								padding: '16px 20px',
+								borderRadius: 8,
+								border: '1px dashed var(--color-brand-border)',
+							}}
+						>
+							<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+								Import Config via QR Code Image:
+							</span>
+							<input
+								type="file"
+								accept="image/*"
+								ref={qrFileInputRef}
+								onChange={handleQRImport}
+								style={{
+									fontSize: 13,
+									color: 'var(--color-brand-text)',
+									cursor: 'pointer'
+								}}
+								disabled={isLoading}
+							/>
+						</div>
+					)}
+				</div>
+			)}
+
+			{/* List Arena directory side-by-side layout */}
+			{viewMode === 'list' && (
+				<div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 20, alignItems: 'start' }}>
+					{/* Left Sidebar Pane: Category Directory */}
+					<div style={{
+						background: 'var(--color-brand-bg)',
+						border: '1px solid var(--color-brand-border)',
+						borderRadius: 10,
+						padding: 12,
+						display: 'flex',
+						flexDirection: 'column',
+						gap: 12,
+						minHeight: 400
+					}}>
+						<span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+							📁 Categories
+						</span>
+						<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+							{/* All Nodes folder */}
+							<button
+								type="button"
+								onClick={() => setSelectedCategoryId?.(null)}
+								style={{
+									display: 'flex',
+									alignItems: 'center',
+									justifyContent: 'space-between',
+									padding: '8px 12px',
+									borderRadius: 6,
+									border: 'none',
+									background: selectedCategoryId === null ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedCategoryId === null ? 'var(--color-brand)' : 'var(--color-brand-heading)',
+									textAlign: 'left',
+									fontSize: 12,
+									fontWeight: selectedCategoryId === null ? 700 : 500,
+									cursor: 'pointer',
+									width: '100%'
+								}}
+							>
+								<span>📁 All Nodes</span>
+							</button>
+
+							{/* Ungrouped folder */}
+							<button
+								type="button"
+								onClick={() => setSelectedCategoryId?.(0)}
+								style={{
+									display: 'flex',
+									alignItems: 'center',
+									justifyContent: 'space-between',
+									padding: '8px 12px',
+									borderRadius: 6,
+									border: 'none',
+									background: selectedCategoryId === 0 ? 'var(--color-brand-light)' : 'transparent',
+									color: selectedCategoryId === 0 ? 'var(--color-brand)' : 'var(--color-brand-heading)',
+									textAlign: 'left',
+									fontSize: 12,
+									fontWeight: selectedCategoryId === 0 ? 700 : 500,
+									cursor: 'pointer',
+									width: '100%'
+								}}
+							>
+								<span>📁 Ungrouped</span>
+							</button>
+
+							{/* Dynamic Categories */}
+							{categories?.map(cat => {
+								const isSelected = selectedCategoryId === cat.id;
+								return (
+									<div
+										key={cat.id}
+										style={{
+											display: 'flex',
+											alignItems: 'center',
+											justifyContent: 'space-between',
+											borderRadius: 6,
+											background: isSelected ? 'var(--color-brand-light)' : 'transparent',
+											paddingRight: 6
+										}}
+									>
+										<button
+											type="button"
+											onClick={() => setSelectedCategoryId?.(cat.id)}
 											style={{
-												height: virtualRow.size,
-												borderBottom: '1px solid var(--color-brand-border)',
-												background: p.ID === activeProfileId ? 'var(--color-brand-light)' : 'none',
-												transition: 'background-color 0.2s ease'
+												display: 'flex',
+												alignItems: 'center',
+												gap: 6,
+												padding: '8px 12px',
+												border: 'none',
+												background: 'transparent',
+												color: isSelected ? 'var(--color-brand)' : 'var(--color-brand-heading)',
+												textAlign: 'left',
+												fontSize: 12,
+												fontWeight: isSelected ? 700 : 500,
+												cursor: 'pointer',
+												flex: 1,
+												overflow: 'hidden',
+												textOverflow: 'ellipsis',
+												whiteSpace: 'nowrap'
 											}}
 										>
-											<td style={{ padding: '10px 12px' }}>
-												<input
-													type="radio"
-													name="active_profile"
-													checked={p.ID === activeProfileId}
-													onChange={() => handleSelectProfile(p.ID)}
-													style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
-													disabled={testingStatus === 'running'}
-												/>
-											</td>
-											<td style={{ padding: '10px 12px' }}>
-												<input
-													type="checkbox"
-													checked={selectedProfileIds.includes(p.ID)}
-													onChange={(e) => {
-														if (e.target.checked) {
-															setSelectedProfileIds([...selectedProfileIds, p.ID]);
-														} else {
-															setSelectedProfileIds(selectedProfileIds.filter((id) => id !== p.ID));
-														}
-													}}
-													style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
-													disabled={testingStatus === 'running'}
-												/>
-											</td>
-											<td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>
-												{p.name}
-											</td>
-											<td style={{ padding: '10px 12px' }}>
-												{getProtocolBadge(p.protocol)}
-											</td>
-											<td style={{ padding: '10px 12px' }}>
-												{isIP(p.address) ? (
-													<span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-														<IPResolveBadge ip={p.address} />
-														<span style={{ color: 'var(--color-brand-muted)', opacity: 0.8 }}>:{p.port}</span>
-													</span>
-												) : (
-													<span style={{ color: 'var(--color-brand-text)', fontFamily: 'monospace' }}>
-														{p.address}:{p.port}
-													</span>
-												)}
-											</td>
-											<td 
-												style={{ padding: '10px 12px', cursor: 'pointer' }}
-												onDoubleClick={() => testSingleProfileAdvanced(p.ID, 'real_url', testUrl)}
-												title="Double click to test in background (URL Test)"
+											<span>📁 {cat.name}</span>
+										</button>
+										{cat.type === 'custom' && (
+											<button
+												type="button"
+												onClick={(e) => {
+													e.stopPropagation();
+													handleDeleteCategory(cat.id);
+												}}
+												style={{
+													background: 'none',
+													border: 'none',
+													color: '#ef4444',
+													cursor: 'pointer',
+													display: 'flex',
+													alignItems: 'center',
+													padding: 4
+												}}
+												title="Delete category"
 											>
-												{renderDiagnostics(p)}
-											</td>
-											<td style={{ padding: '10px 12px', textAlign: 'center', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10 }}>
-												<button
-													onClick={() => handleEditProfile(p)}
-													style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)' }}
-													title="Edit Configuration"
-													disabled={testingStatus === 'running'}
-												>
-													<FiEdit size={14} />
-												</button>
-												<button
-													onClick={() => handleDeleteProfile(p.ID)}
-													style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-red)' }}
-													title="Delete"
-													disabled={testingStatus === 'running'}
-												>
-													<FiTrash2 size={14} />
-												</button>
+												<FiTrash2 size={12} />
+											</button>
+										)}
+									</div>
+								);
+							})}
+						</div>
+
+						{/* New Category creation button */}
+						<div style={{ borderTop: '1px solid var(--color-brand-border)', paddingTop: 10, marginTop: 'auto' }}>
+							{isCreatingCat ? (
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+									<input
+										type="text"
+										placeholder="Category name..."
+										value={newCatName}
+										onChange={(e) => setNewCatName(e.target.value)}
+										style={{
+											padding: '6px 8px',
+											borderRadius: 6,
+											border: '1px solid var(--color-brand-border)',
+											background: 'var(--color-brand-card)',
+											fontSize: 11,
+											color: 'var(--color-brand-heading)'
+										}}
+									/>
+									<div style={{ display: 'flex', gap: 6 }}>
+										<button
+											type="button"
+											onClick={handleCreateCategory}
+											className="btn btn--primary btn--xs"
+											style={{ flex: 1, fontSize: 10 }}
+										>
+											Save
+										</button>
+										<button
+											type="button"
+											onClick={() => {
+												setIsCreatingCat(false);
+												setNewCatName('');
+											}}
+											className="btn btn--secondary btn--xs"
+											style={{ flex: 1, fontSize: 10 }}
+										>
+											Cancel
+										</button>
+									</div>
+								</div>
+							) : (
+								<button
+									type="button"
+									onClick={() => setIsCreatingCat(true)}
+									style={{
+										width: '100%',
+										padding: '6px 10px',
+										borderRadius: 6,
+										border: '1px dashed var(--color-brand-border)',
+										background: 'transparent',
+										color: 'var(--color-brand)',
+										fontSize: 11,
+										fontWeight: 600,
+										cursor: 'pointer',
+										display: 'flex',
+										alignItems: 'center',
+										justifyContent: 'center',
+										gap: 4
+									}}
+								>
+									<FiPlusCircle size={12} /> Add Category
+								</button>
+							)}
+						</div>
+					</div>
+
+					{/* Right Column: Advanced filters and Profiles list table */}
+					<div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+						{/* Advanced Config Filter Panel */}
+						<div
+							style={{
+								background: 'var(--color-brand-card)',
+								border: '1px solid var(--color-brand-border)',
+								borderRadius: 10,
+								padding: 16,
+								display: 'flex',
+								flexDirection: 'column',
+								gap: 12,
+							}}
+						>
+							<span style={{ fontWeight: 700, fontSize: 13, color: 'var(--color-brand-heading)', display: 'flex', alignItems: 'center', gap: 6 }}>
+								🔍 Advanced Config Filter
+							</span>
+
+							<div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12 }}>
+								{/* Text search */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Text Search</label>
+									<input
+										type="text"
+										placeholder="Search name, host, uuid..."
+										value={tempSearch}
+										onChange={(e) => setTempSearch(e.target.value)}
+										style={{
+											padding: '6px 10px',
+											borderRadius: 6,
+											border: '1px solid var(--color-brand-border)',
+											background: 'var(--color-brand-bg)',
+											fontSize: 12,
+											color: 'var(--color-brand-heading)',
+										}}
+									/>
+								</div>
+
+								{/* Protocol */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Protocol</label>
+									<select
+										value={tempProtocol}
+										onChange={(e) => setTempProtocol(e.target.value)}
+										style={{
+											padding: '6px 10px',
+											borderRadius: 6,
+											border: '1px solid var(--color-brand-border)',
+											background: 'var(--color-brand-bg)',
+											fontSize: 12,
+											color: 'var(--color-brand-heading)',
+										}}
+									>
+										<option value="">All Protocols</option>
+										<option value="vmess">VMess</option>
+										<option value="vless">VLESS</option>
+										<option value="trojan">Trojan</option>
+										<option value="shadowsocks">Shadowsocks</option>
+									</select>
+								</div>
+
+								{/* Network */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Transport</label>
+									<select
+										value={tempNetwork}
+										onChange={(e) => setTempNetwork(e.target.value)}
+										style={{
+											padding: '6px 10px',
+											borderRadius: 6,
+											border: '1px solid var(--color-brand-border)',
+											background: 'var(--color-brand-bg)',
+											fontSize: 12,
+											color: 'var(--color-brand-heading)',
+										}}
+									>
+										<option value="">All Networks</option>
+										<option value="tcp">TCP</option>
+										<option value="ws">WebSocket (WS)</option>
+										<option value="grpc">gRPC</option>
+										<option value="kcp">mKCP</option>
+										<option value="quic">QUIC</option>
+									</select>
+								</div>
+
+								{/* Port */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Port</label>
+									<input
+										type="number"
+										placeholder="e.g. 443"
+										value={tempPort}
+										onChange={(e) => setTempPort(e.target.value)}
+										style={{
+											padding: '6px 10px',
+											borderRadius: 6,
+											border: '1px solid var(--color-brand-border)',
+											background: 'var(--color-brand-bg)',
+											fontSize: 12,
+											color: 'var(--color-brand-heading)',
+										}}
+									/>
+								</div>
+
+								{/* Ping status */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Ping Status</label>
+									<select
+										value={tempPingStatus}
+										onChange={(e) => setTempPingStatus(e.target.value)}
+										style={{
+											padding: '6px 10px',
+											borderRadius: 6,
+											border: '1px solid var(--color-brand-border)',
+											background: 'var(--color-brand-bg)',
+											fontSize: 12,
+											color: 'var(--color-brand-heading)',
+										}}
+									>
+										<option value="">All Statuses</option>
+										<option value="pass">Passed / Live</option>
+										<option value="fail">Failed / Dead</option>
+									</select>
+								</div>
+
+								{/* Sort By */}
+								<div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+									<label style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)' }}>Sort By</label>
+									<select
+										value={tempSortBy}
+										onChange={(e) => setTempSortBy(e.target.value)}
+										style={{
+											padding: '6px 10px',
+											borderRadius: 6,
+											border: '1px solid var(--color-brand-border)',
+											background: 'var(--color-brand-bg)',
+											fontSize: 12,
+											color: 'var(--color-brand-heading)',
+										}}
+									>
+										<option value="priority">Default (Priority)</option>
+										<option value="speed">Speed Test (Latency)</option>
+									</select>
+								</div>
+							</div>
+
+							<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+								<button
+									className="btn btn--secondary btn--xs"
+									onClick={handleClearFilters}
+								>
+									Clear Filters
+								</button>
+								<button
+									className="btn btn--primary btn--xs"
+									onClick={handleApplyFilters}
+								>
+									Apply Filters
+								</button>
+							</div>
+						</div>
+
+						{/* Table of Profiles */}
+						<div ref={parentRef} style={{ maxHeight: 600, overflow: 'auto', border: '1px solid var(--color-brand-border)', borderRadius: 8 }}>
+							<table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, textAlign: 'left' }}>
+								<thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--color-brand-bg)' }}>
+									<tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
+										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 50 }}>Active</th>
+										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 50, textAlign: 'center' }}>
+											<input
+												type="checkbox"
+												style={{ cursor: 'pointer', accentColor: 'var(--color-brand)', transform: 'scale(1.1)' }}
+												checked={profiles.length > 0 && profiles.every(p => selectedProfileIds.includes(p.ID))}
+												onChange={(e) => {
+													if (e.target.checked) {
+														const allIds = Array.from(new Set([...selectedProfileIds, ...profiles.map(p => p.ID)]));
+														setSelectedProfileIds(allIds);
+													} else {
+														const profileIds = profiles.map(p => p.ID);
+														setSelectedProfileIds(selectedProfileIds.filter(id => !profileIds.includes(id)));
+													}
+												}}
+												disabled={testingStatus === 'running'}
+												title="Select / Deselect all filtered nodes"
+											/>
+										</th>
+										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Name</th>
+										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 80 }}>Protocol</th>
+										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Address</th>
+										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 200 }}>Ping & Diagnostics</th>
+										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', textAlign: 'center', width: 90 }}>Actions</th>
+									</tr>
+								</thead>
+								<tbody>
+									{profiles.length === 0 ? (
+										<tr>
+											<td colSpan={7} style={{ padding: 20, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+												No profiles found in this category. Go to Feed Ingestion to add remote subscription urls or paste manual configurations.
 											</td>
 										</tr>
-									);
-								})}
-								{rowVirtualizer.getVirtualItems().length > 0 && (
-									<tr>
-										<td
-											colSpan={7}
-											style={{
-												height:
-													rowVirtualizer.getTotalSize() -
-													rowVirtualizer.getVirtualItems()[rowVirtualizer.getVirtualItems().length - 1].end,
-											}}
-										/>
-									</tr>
-								)}
-								{isLoading && profiles.length < totalProfiles && (
-									<tr>
-										<td colSpan={7} style={{ padding: 10, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
-											Loading more...
-										</td>
-									</tr>
-								)}
-							</>
-						)}
-					</tbody>
-				</table>
-			</div>
+									) : (
+										<>
+											{rowVirtualizer.getVirtualItems()[0]?.start > 0 && (
+												<tr>
+													<td colSpan={7} style={{ height: rowVirtualizer.getVirtualItems()[0].start }} />
+												</tr>
+											)}
+											{rowVirtualizer.getVirtualItems().map((virtualRow) => {
+												const p = profiles[virtualRow.index];
+												if (!p) return null;
+												const isRowTesting = nodeTestStates[p.ID]?.status === 'testing';
+												const flag = getFlagEmoji(p.country_code);
+												const cat = categories?.find(c => c.id === p.category_id);
+
+												return (
+													<tr
+														key={virtualRow.key}
+														className={isRowTesting ? 'pulse-testing' : ''}
+														style={{
+															height: virtualRow.size,
+															borderBottom: '1px solid var(--color-brand-border)',
+															background: p.ID === activeProfileId ? 'var(--color-brand-light)' : 'none',
+															transition: 'background-color 0.2s ease'
+														}}
+													>
+														<td style={{ padding: '10px 12px' }}>
+															<input
+																type="radio"
+																name="active_profile"
+																checked={p.ID === activeProfileId}
+																onChange={() => handleSelectProfile(p.ID)}
+																style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+																disabled={testingStatus === 'running'}
+															/>
+														</td>
+														<td style={{ padding: '10px 12px' }}>
+															<input
+																type="checkbox"
+																checked={selectedProfileIds.includes(p.ID)}
+																onChange={(e) => {
+																	if (e.target.checked) {
+																		setSelectedProfileIds([...selectedProfileIds, p.ID]);
+																	} else {
+																		setSelectedProfileIds(selectedProfileIds.filter((id) => id !== p.ID));
+																	}
+																}}
+																style={{ cursor: 'pointer', accentColor: 'var(--color-brand)' }}
+																disabled={testingStatus === 'running'}
+															/>
+														</td>
+														<td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+															{flag && <span style={{ marginRight: 6, fontSize: 16 }}>{flag}</span>}
+															{p.name}
+															{cat && (
+																<span style={{
+																	marginLeft: 6,
+																	padding: '2px 6px',
+																	borderRadius: 4,
+																	background: 'rgba(99, 102, 241, 0.12)',
+																	color: '#6366f1',
+																	fontSize: 9,
+																	fontWeight: 600,
+																	border: '1px solid rgba(99, 102, 241, 0.2)'
+																}}>
+																	{cat.name}
+																</span>
+															)}
+														</td>
+														<td style={{ padding: '10px 12px' }}>
+															{getProtocolBadge(p.protocol)}
+														</td>
+														<td style={{ padding: '10px 12px' }}>
+															{isIP(p.address) ? (
+																<span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+																	<IPResolveBadge ip={p.address} />
+																	<span style={{ color: 'var(--color-brand-muted)', opacity: 0.8 }}>:{p.port}</span>
+																</span>
+															) : (
+																<span style={{ color: 'var(--color-brand-text)', fontFamily: 'monospace' }}>
+																	{p.address}:{p.port}
+																</span>
+															)}
+														</td>
+														<td 
+															style={{ padding: '10px 12px', cursor: 'pointer' }}
+															onDoubleClick={() => testSingleProfileAdvanced(p.ID, 'real_url', testUrl)}
+															title="Double click to test in background (URL Test)"
+														>
+															{renderDiagnostics(p)}
+														</td>
+														<td style={{ padding: '10px 12px', textAlign: 'center', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10 }}>
+															<button
+																onClick={() => handleEditProfile(p)}
+																style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)' }}
+																title="Edit Configuration"
+																disabled={testingStatus === 'running'}
+															>
+																<FiEdit size={14} />
+															</button>
+															<button
+																onClick={() => handleDeleteProfile(p.ID)}
+																style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-red)' }}
+																title="Delete"
+																disabled={testingStatus === 'running'}
+															>
+																<FiTrash2 size={14} />
+															</button>
+														</td>
+													</tr>
+												);
+											})}
+											{rowVirtualizer.getVirtualItems().length > 0 && (
+												<tr>
+													<td
+														colSpan={7}
+														style={{
+															height:
+																rowVirtualizer.getTotalSize() -
+																rowVirtualizer.getVirtualItems()[rowVirtualizer.getVirtualItems().length - 1].end,
+														}}
+													/>
+												</tr>
+											)}
+											{isLoading && profiles.length < totalProfiles && (
+												<tr>
+													<td colSpan={7} style={{ padding: 10, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+														Loading more...
+													</td>
+												</tr>
+											)}
+										</>
+									)}
+								</tbody>
+							</table>
+						</div>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 };

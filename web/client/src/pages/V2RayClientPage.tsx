@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { showGlobalAlert, showGlobalConfirm } from '../store/dialogStore';
-import { FiRefreshCw } from 'react-icons/fi';
+import { FiRefreshCw, FiActivity, FiDownloadCloud, FiSettings, FiTerminal } from 'react-icons/fi';
 
 // Skeleton fallbacks
 import {
@@ -272,6 +272,32 @@ export const V2RayClientPage: React.FC = () => {
 
   const logsContainerRef = useRef<HTMLDivElement | null>(null);
 
+  // Tabs Navigation
+  const [activeTab, setActiveTab] = useState<'arena' | 'ingestion' | 'hardening' | 'diagnostics'>('arena');
+
+  // Categories & Filtering
+  const [categories, setCategories] = useState<any[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+
+  const fetchCategories = async () => {
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/categories', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCategories(data || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch categories', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchProfiles(0, true, { categoryId: selectedCategoryId });
+  }, [selectedCategoryId]);
+
   // Clipboard Mass Import States
   const [isClipboardModalOpen, setIsClipboardModalOpen] = useState(false);
   const [clipboardCount, setClipboardCount] = useState(0);
@@ -340,6 +366,9 @@ export const V2RayClientPage: React.FC = () => {
 
       // Fetch logs
       fetchLogs();
+
+      // Fetch categories
+      fetchCategories();
     } catch (err) {
       console.error(err);
     } finally {
@@ -354,6 +383,7 @@ export const V2RayClientPage: React.FC = () => {
     port?: string;
     pingStatus?: string;
     sortBy?: string;
+    categoryId?: number | null;
   }) => {
     try {
       const token = localStorage.getItem('cc_client_token') || '';
@@ -364,6 +394,7 @@ export const V2RayClientPage: React.FC = () => {
       const portVal = customFilters?.port ?? filterPort;
       const pingStatusVal = customFilters?.pingStatus ?? filterPingStatus;
       const sortByVal = customFilters?.sortBy ?? filterSortBy;
+      const categoryIdVal = customFilters?.categoryId !== undefined ? customFilters.categoryId : selectedCategoryId;
 
       let url = `/api/v2ray/client/configs?offset=${offset}&limit=${PAGE_LIMIT}`;
       if (searchVal) url += `&search=${encodeURIComponent(searchVal)}`;
@@ -372,6 +403,9 @@ export const V2RayClientPage: React.FC = () => {
       if (portVal) url += `&port=${encodeURIComponent(portVal)}`;
       if (pingStatusVal) url += `&ping_status=${encodeURIComponent(pingStatusVal)}`;
       if (sortByVal) url += `&sort_by=${encodeURIComponent(sortByVal)}`;
+      if (categoryIdVal !== null && categoryIdVal !== undefined) {
+        url += `&category_id=${encodeURIComponent(categoryIdVal.toString())}`;
+      }
 
       const pResp = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
@@ -1363,39 +1397,72 @@ export const V2RayClientPage: React.FC = () => {
         </div>
       )}
 
-      {/* Realtime Stats Bar */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 20 }}>
-        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #64748b' }}>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>All Nodes</div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--color-brand-heading)', marginTop: 2 }}>{totalProfiles}</div>
-        </div>
-        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #8b5cf6' }}>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Tested</div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--color-brand-heading)', marginTop: 2 }}>{finalTested}</div>
-        </div>
-        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #10b981' }}>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Live Nodes</div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: '#10b981', marginTop: 2 }}>{finalLive}</div>
-        </div>
-        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #3b82f6' }}>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Avg Speed</div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: '#3b82f6', marginTop: 2 }}>{finalAvgPing}</div>
-        </div>
-        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #059669' }}>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Best Speed</div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: '#059669', marginTop: 2 }}>{finalMinPing}</div>
-        </div>
-        <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #f59e0b' }}>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Worst Speed</div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: '#f59e0b', marginTop: 2 }}>{finalMaxPing}</div>
-        </div>
+      {/* Tab Switcher */}
+      <div style={{ display: 'flex', gap: 12, borderBottom: '1px solid var(--color-brand-border)', paddingBottom: 12, marginBottom: 20 }}>
+        <button
+          type="button"
+          className={`btn btn--sm ${activeTab === 'arena' ? 'btn--primary' : 'btn--secondary'}`}
+          onClick={() => setActiveTab('arena')}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+        >
+          <FiActivity /> Node Arena
+        </button>
+        <button
+          type="button"
+          className={`btn btn--sm ${activeTab === 'ingestion' ? 'btn--primary' : 'btn--secondary'}`}
+          onClick={() => setActiveTab('ingestion')}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+        >
+          <FiDownloadCloud /> Feed Ingestion
+        </button>
+        <button
+          type="button"
+          className={`btn btn--sm ${activeTab === 'hardening' ? 'btn--primary' : 'btn--secondary'}`}
+          onClick={() => setActiveTab('hardening')}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+        >
+          <FiSettings /> Protocol & Hardening
+        </button>
+        <button
+          type="button"
+          className={`btn btn--sm ${activeTab === 'diagnostics' ? 'btn--primary' : 'btn--secondary'}`}
+          onClick={() => setActiveTab('diagnostics')}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+        >
+          <FiTerminal /> Diagnostics & Utilities
+        </button>
       </div>
 
-      {/* Grid Layout */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 24, alignItems: 'start' }}>
-        {/* Left Side: Outbounds, Configurations & Evasion */}
+      {activeTab === 'arena' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-          {/* Active Engine controls */}
+          {/* Realtime Stats Bar */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 0 }}>
+            <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #64748b' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>All Nodes</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--color-brand-heading)', marginTop: 2 }}>{totalProfiles}</div>
+            </div>
+            <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #8b5cf6' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Tested</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--color-brand-heading)', marginTop: 2 }}>{finalTested}</div>
+            </div>
+            <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #10b981' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Live Nodes</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: '#10b981', marginTop: 2 }}>{finalLive}</div>
+            </div>
+            <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #3b82f6' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Avg Speed</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: '#3b82f6', marginTop: 2 }}>{finalAvgPing}</div>
+            </div>
+            <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #059669' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Best Speed</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: '#059669', marginTop: 2 }}>{finalMinPing}</div>
+            </div>
+            <div className="g-card" style={{ padding: '8px 12px', borderLeft: '3px solid #f59e0b' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand-muted)' }}>Worst Speed</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: '#f59e0b', marginTop: 2 }}>{finalMaxPing}</div>
+            </div>
+          </div>
+
           <Suspense fallback={<CardSkeleton height={100} title="Core Supervisor" />}>
             <EngineStatusCard
               isRunning={isRunning}
@@ -1411,9 +1478,13 @@ export const V2RayClientPage: React.FC = () => {
             />
           </Suspense>
 
-          {/* Subscriptions & Profiles */}
           <Suspense fallback={<SubscriptionsSkeleton />}>
             <SubscriptionsCard
+              viewMode="list"
+              categories={categories}
+              selectedCategoryId={selectedCategoryId}
+              setSelectedCategoryId={setSelectedCategoryId}
+              fetchCategories={fetchCategories}
               isLoading={isLoading}
               subUrl={subUrl}
               setSubUrl={setSubUrl}
@@ -1451,22 +1522,58 @@ export const V2RayClientPage: React.FC = () => {
               selectedCore={selectedCore}
             />
           </Suspense>
+        </div>
+      )}
 
-          {/* CDN IP Scanner & Optimizer */}
-          <Suspense fallback={<CardSkeleton height={250} title="CDN Scanner" />}>
-            <CdnScannerCard
-              isLoading={isLoading}
-              cdnRanges={cdnRanges}
-              setCdnRanges={setCdnRanges}
-              cdnScannerActive={cdnScannerActive}
-              cdnScanStatus={cdnScanStatus}
-              handleStartCDNScan={handleStartCDNScan}
-              handleStopCDNScan={handleStopCDNScan}
-              showHelp={showHelp}
-            />
-          </Suspense>
+      {activeTab === 'ingestion' && (
+        <Suspense fallback={<SubscriptionsSkeleton />}>
+          <SubscriptionsCard
+            viewMode="ingestion"
+            categories={categories}
+            selectedCategoryId={selectedCategoryId}
+            setSelectedCategoryId={setSelectedCategoryId}
+            fetchCategories={fetchCategories}
+            isLoading={isLoading}
+            subUrl={subUrl}
+            setSubUrl={setSubUrl}
+            manualUri={manualUri}
+            setManualUri={setManualUri}
+            profiles={profiles}
+            totalProfiles={totalProfiles}
+            activeProfileId={activeProfileId}
+            selectedProfileIds={selectedProfileIds}
+            setSelectedProfileIds={setSelectedProfileIds}
+            handleTestLatency={handleTestLatency}
+            handleExportPDF={handleExportPDF}
+            handleImportSub={handleImportSub}
+            handleManualImport={handleManualImport}
+            handleDeleteAllNodes={handleDeleteAllNodes}
+            handleDeleteFailedNodes={handleDeleteFailedNodes}
+            handleDeleteSelectedNodes={handleDeleteSelectedNodes}
+            onApplyFilters={applyFilters}
+            handleQRImport={handleQRImport}
+            qrFileInputRef={qrFileInputRef}
+            fetchProfiles={fetchProfiles}
+            pageOffset={pageOffset}
+            handleSelectProfile={handleSelectProfile}
+            handleDeleteProfile={handleDeleteProfile}
+            handleEditProfile={handleEditProfile}
+            showHelp={showHelp}
+            openClipboardModal={() => setIsClipboardModalOpen(true)}
+            testingStatus={testingStatus}
+            testingProgress={testingProgress}
+            nodeTestStates={nodeTestStates}
+            recentResults={recentResults}
+            startAdvancedTest={startAdvancedTest}
+            stopAdvancedTest={stopAdvancedTest}
+            testSingleProfileAdvanced={testSingleProfileAdvanced}
+            selectedCore={selectedCore}
+          />
+        </Suspense>
+      )}
 
-          {/* Configuration Form */}
+      {activeTab === 'hardening' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 24, alignItems: 'start' }}>
           <Suspense fallback={<ConfigSettingsSkeleton />}>
             <ConfigSettingsCard
               isLoading={isLoading}
@@ -1508,73 +1615,7 @@ export const V2RayClientPage: React.FC = () => {
               showHelp={showHelp}
             />
           </Suspense>
-        </div>
 
-        {/* Right Side: Log terminal, diagnostic probers, wol, and debug proxy */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-          {/* Active Logs Terminal */}
-          <Suspense fallback={<LogsTerminalSkeleton />}>
-            <LogsTerminalCard
-              logs={logs}
-              logsQuery={logsQuery}
-              setLogsQuery={setLogsQuery}
-              logsContainerRef={logsContainerRef}
-            />
-          </Suspense>
-
-          {/* Diagnostic utilities: Port scanner */}
-          <Suspense fallback={<CardSkeleton height={150} title="Port Scanner" />}>
-            <PortScannerCard
-              isLoading={isLoading}
-              probeIP={probeIP}
-              setProbeIP={setProbeIP}
-              probePorts={probePorts}
-              setProbePorts={setProbePorts}
-              probeProto={probeProto}
-              setProbeProto={setProbeProto}
-              probeResults={probeResults}
-              handleProbePorts={handleProbePorts}
-              showHelp={showHelp}
-            />
-          </Suspense>
-
-          {/* Local Service Discovery */}
-          <Suspense fallback={<CardSkeleton height={120} title="Subnet Discovery" />}>
-            <DeviceDiscoveryCard
-              isDiscovering={isDiscovering}
-              discoveredDevices={discoveredDevices}
-              handleDiscoverDevices={handleDiscoverDevices}
-              showHelp={showHelp}
-            />
-          </Suspense>
-
-          {/* Wake on LAN */}
-          <Suspense fallback={<CardSkeleton height={120} title="Wake-on-LAN" />}>
-            <WakeOnLanCard
-              isLoading={isLoading}
-              wolMac={wolMac}
-              setWolMac={setWolMac}
-              wolBcast={wolBcast}
-              setWolBcast={setWolBcast}
-              handleSendWol={handleSendWol}
-              showHelp={showHelp}
-            />
-          </Suspense>
-
-          {/* Local Interception Debug Proxy */}
-          <Suspense fallback={<CardSkeleton height={120} title="Interception Proxy" />}>
-            <DebugProxyCard
-              isLoading={isLoading}
-              debugProxyPort={debugProxyPort}
-              setDebugProxyPort={setDebugProxyPort}
-              isDebugProxyActive={isDebugProxyActive}
-              debugProxyLogs={debugProxyLogs}
-              handleToggleDebugProxy={handleToggleDebugProxy}
-              showHelp={showHelp}
-            />
-          </Suspense>
-
-          {/* System Settings & Shortcuts */}
           <Suspense fallback={<CardSkeleton height={120} title="Keybindings" />}>
             <SystemSettingsCard
               hotkeys={hotkeys}
@@ -1592,8 +1633,85 @@ export const V2RayClientPage: React.FC = () => {
             />
           </Suspense>
         </div>
-      </div>
+      )}
 
+      {activeTab === 'diagnostics' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 24, alignItems: 'start' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+            <Suspense fallback={<LogsTerminalSkeleton />}>
+              <LogsTerminalCard
+                logs={logs}
+                logsQuery={logsQuery}
+                setLogsQuery={setLogsQuery}
+                logsContainerRef={logsContainerRef}
+              />
+            </Suspense>
+
+            <Suspense fallback={<CardSkeleton height={250} title="CDN Scanner" />}>
+              <CdnScannerCard
+                isLoading={isLoading}
+                cdnRanges={cdnRanges}
+                setCdnRanges={setCdnRanges}
+                cdnScannerActive={cdnScannerActive}
+                cdnScanStatus={cdnScanStatus}
+                handleStartCDNScan={handleStartCDNScan}
+                handleStopCDNScan={handleStopCDNScan}
+                showHelp={showHelp}
+              />
+            </Suspense>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+            <Suspense fallback={<CardSkeleton height={150} title="Port Scanner" />}>
+              <PortScannerCard
+                isLoading={isLoading}
+                probeIP={probeIP}
+                setProbeIP={setProbeIP}
+                probePorts={probePorts}
+                setProbePorts={setProbePorts}
+                probeProto={probeProto}
+                setProbeProto={setProbeProto}
+                probeResults={probeResults}
+                handleProbePorts={handleProbePorts}
+                showHelp={showHelp}
+              />
+            </Suspense>
+
+            <Suspense fallback={<CardSkeleton height={120} title="Subnet Discovery" />}>
+              <DeviceDiscoveryCard
+                isDiscovering={isDiscovering}
+                discoveredDevices={discoveredDevices}
+                handleDiscoverDevices={handleDiscoverDevices}
+                showHelp={showHelp}
+              />
+            </Suspense>
+
+            <Suspense fallback={<CardSkeleton height={120} title="Wake-on-LAN" />}>
+              <WakeOnLanCard
+                isLoading={isLoading}
+                wolMac={wolMac}
+                setWolMac={setWolMac}
+                wolBcast={wolBcast}
+                setWolBcast={setWolBcast}
+                handleSendWol={handleSendWol}
+                showHelp={showHelp}
+              />
+            </Suspense>
+
+            <Suspense fallback={<CardSkeleton height={120} title="Interception Proxy" />}>
+              <DebugProxyCard
+                isLoading={isLoading}
+                debugProxyPort={debugProxyPort}
+                setDebugProxyPort={setDebugProxyPort}
+                isDebugProxyActive={isDebugProxyActive}
+                debugProxyLogs={debugProxyLogs}
+                handleToggleDebugProxy={handleToggleDebugProxy}
+                showHelp={showHelp}
+              />
+            </Suspense>
+          </div>
+        </div>
+      )}
       {/* Help Modal Popup Dialog */}
       <Suspense fallback={null}>
         <HelpModal title={helpTitle} text={helpText} onClose={() => { setHelpTitle(null); setHelpText(null); }} />
