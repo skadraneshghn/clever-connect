@@ -73,7 +73,7 @@ func DeployWorkerScript(ctx context.Context, oauthConfig *oauth2.Config, account
 	}
 
 	// 3. Initialize Cloudflare SDK API Client
-	api, err := cloudflare.NewWithAPIToken(account.AccessToken)
+	api, err := GetAPIClient(account)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize Cloudflare client: %w", err)
 	}

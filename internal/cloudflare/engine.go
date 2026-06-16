@@ -83,6 +83,10 @@ func VerifyOAuthToken(ctx context.Context, oauthConfig *oauth2.Config, code stri
 
 // RefreshAccountToken checks if the token is expired, refreshes it using OAuth client credentials, and persists it to database.
 func RefreshAccountToken(ctx context.Context, oauthConfig *oauth2.Config, account *models.CloudflareAccount) error {
+	if account.AuthType == "token" || account.AuthType == "key" {
+		return nil
+	}
+
 	srcToken := &oauth2.Token{
 		AccessToken:  account.AccessToken,
 		RefreshToken: account.RefreshToken,
@@ -120,7 +124,7 @@ func GetStats(ctx context.Context, oauthConfig *oauth2.Config, account *models.C
 	}
 
 	// Instantiate the Cloudflare SDK with the current access token
-	api, err := cloudflare.NewWithAPIToken(account.AccessToken)
+	api, err := GetAPIClient(account)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
@@ -179,3 +183,53 @@ func GetStats(ctx context.Context, oauthConfig *oauth2.Config, account *models.C
 
 	return stats, nil
 }
+
+// GetAPIClient instantiates the Cloudflare API client based on the AuthType of the account
+func GetAPIClient(account *models.CloudflareAccount) (*cloudflare.API, error) {
+	if account.AuthType == "key" {
+		return cloudflare.New(account.AccessToken, account.Email)
+	}
+	return cloudflare.NewWithAPIToken(account.AccessToken)
+}
+
+// VerifyManualToken verifies manually entered credentials by auto-discovering the accounts
+func VerifyManualToken(ctx context.Context, authType string, token string, email string, defaultName string) ([]models.CloudflareAccount, error) {
+	var api *cloudflare.API
+	var err error
+	if authType == "key" {
+		api, err = cloudflare.New(token, email)
+	} else {
+		api, err = cloudflare.NewWithAPIToken(token)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Cloudflare client: %w", err)
+	}
+
+	accounts, _, err := api.Accounts(ctx, cloudflare.AccountsListParams{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list accounts: %w", err)
+	}
+
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("no accounts found with these credentials")
+	}
+
+	var results []models.CloudflareAccount
+	for _, acc := range accounts {
+		name := defaultName
+		if len(accounts) > 1 {
+			name = fmt.Sprintf("%s (%s)", defaultName, acc.Name)
+		}
+		results = append(results, models.CloudflareAccount{
+			AccountName: name,
+			AccountID:   acc.ID,
+			AccessToken: token,
+			Email:       email,
+			AuthType:    authType,
+			Status:      "active",
+		})
+	}
+
+	return results, nil
+}
+

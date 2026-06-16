@@ -206,6 +206,61 @@ func (h *CloudflareHandler) DeleteAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Account deleted successfully"})
 }
 
+type AddAccountRequest struct {
+	AccountName string `json:"account_name" binding:"required"`
+	AuthType    string `json:"auth_type" binding:"required,oneof=token key"`
+	Token       string `json:"token" binding:"required"`
+	Email       string `json:"email"`
+}
+
+// AddAccount POST /api/cloudflare/accounts
+func (h *CloudflareHandler) AddAccount(c *gin.Context) {
+	var req AddAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload: " + err.Error()})
+		return
+	}
+
+	if req.AuthType == "key" && req.Email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email is required when using a Global API Key"})
+		return
+	}
+
+	// Verify manual token and discover accounts
+	discovered, err := cloudflare.VerifyManualToken(c.Request.Context(), req.AuthType, req.Token, req.Email, req.AccountName)
+	if err != nil {
+		logger.Warn("CloudflareAPI", "Failed to verify manual Cloudflare credentials", "error", err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Authentication failed: " + err.Error()})
+		return
+	}
+
+	for _, acc := range discovered {
+		var existing models.CloudflareAccount
+		if err := db.DB.Where("account_id = ?", acc.AccountID).First(&existing).Error; err == nil {
+			// Update credentials of existing account
+			existing.AccountName = acc.AccountName
+			existing.AccessToken = acc.AccessToken
+			existing.Email = acc.Email
+			existing.AuthType = acc.AuthType
+			existing.Status = "active"
+			if err := db.DB.Save(&existing).Error; err != nil {
+				logger.Error("CloudflareAPI", "Failed to update existing account ID in database", "accountID", acc.AccountID, "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update account credentials"})
+				return
+			}
+		} else {
+			// Create new account entry
+			if err := db.DB.Create(&acc).Error; err != nil {
+				logger.Error("CloudflareAPI", "Failed to save new account in database", "accountID", acc.AccountID, "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save account details"})
+				return
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Manual account(s) added successfully", "count": len(discovered)})
+}
+
 // GetAccountStats GET /api/cloudflare/accounts/:id/stats
 func (h *CloudflareHandler) GetAccountStats(c *gin.Context) {
 	idParam := c.Param("id")
@@ -262,7 +317,7 @@ func (h *CloudflareHandler) GetZones(c *gin.Context) {
 		return
 	}
 
-	api, err := cfSdk.NewWithAPIToken(account.AccessToken)
+	api, err := cloudflare.GetAPIClient(&account)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize Cloudflare client: " + err.Error()})
 		return

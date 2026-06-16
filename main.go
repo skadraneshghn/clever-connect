@@ -502,6 +502,7 @@ func main() {
 
 			// Cloudflare API routes
 			protected.GET("/cloudflare/accounts", cloudflareHandler.ListAccounts)
+			protected.POST("/cloudflare/accounts", cloudflareHandler.AddAccount)
 			protected.PUT("/cloudflare/accounts/:id", cloudflareHandler.UpdateAccount)
 			protected.DELETE("/cloudflare/accounts/:id", cloudflareHandler.DeleteAccount)
 			protected.GET("/cloudflare/accounts/:id/stats", cloudflareHandler.GetAccountStats)

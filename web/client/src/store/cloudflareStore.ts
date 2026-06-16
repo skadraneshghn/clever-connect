@@ -62,6 +62,7 @@ interface CloudflareStore {
   deployWorker: (payload: { account_id: string; script_name: string; custom_domain?: string; zone_id?: string }) => Promise<void>;
   deleteDeployment: (id: number) => Promise<void>;
   checkDeploymentHealth: (id: number) => Promise<void>;
+  addManualAccount: (payload: { account_name: string; auth_type: 'token' | 'key'; token: string; email?: string }) => Promise<void>;
   clearError: () => void;
 }
 
@@ -284,6 +285,34 @@ export const useCloudflareStore = create<CloudflareStore>((set, get) => ({
       }
     } catch {
       // ignore network errors
+    }
+  },
+
+  addManualAccount: async (payload) => {
+    set({ isLoading: true, error: null });
+    try {
+      const response = await fetch('/api/cloudflare/accounts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (response.ok) {
+        await get().fetchAccounts();
+      } else {
+        const err = await response.json();
+        set({ error: err.error || 'Failed to add Cloudflare account' });
+        throw new Error(err.error || 'Failed to add Cloudflare account');
+      }
+    } catch (e: any) {
+      if (!get().error) {
+        set({ error: e.message || 'Network error while adding manual account' });
+      }
+      throw e;
+    } finally {
+      set({ isLoading: false });
     }
   },
 }));

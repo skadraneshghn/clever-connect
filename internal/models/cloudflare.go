@@ -12,9 +12,10 @@ type CloudflareAccount struct {
 	AccountName  string    `gorm:"size:191;not null" json:"account_name"`
 	AccountID    string    `gorm:"size:191;not null" json:"account_id"`
 	AccessToken  string    `gorm:"type:text;not null" json:"access_token"`
-	RefreshToken string    `gorm:"type:text;not null" json:"refresh_token"`
+	RefreshToken string    `gorm:"type:text" json:"refresh_token"`
 	TokenExpiry  time.Time `json:"token_expiry"`
 	Email        string    `gorm:"size:191" json:"email"`
+	AuthType     string    `gorm:"size:50;default:'oauth'" json:"auth_type"` // "oauth", "token", "key"
 	Status       string    `gorm:"size:50;default:'active'" json:"status"` // "active", "error"
 }
 
