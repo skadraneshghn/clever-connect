@@ -789,11 +789,27 @@ func (h *V2RayHandler) ImportSubscription(c *gin.Context) {
 
 	var toInsert []models.V2RayClientConfig
 	
-	allConfigs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+	allConfigs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{SubscriptionID: &subRecord.ID}, 0, 0)
 	existingMap := make(map[string]models.V2RayClientConfig)
 	for _, c := range allConfigs {
 		key := fmt.Sprintf("%s-%s-%d", c.UUID, c.Address, c.Port)
 		existingMap[key] = c
+	}
+
+	newLookup := make(map[string]bool)
+	for _, cfg := range configs {
+		key := fmt.Sprintf("%s-%s-%d", cfg.UUID, cfg.Address, cfg.Port)
+		newLookup[key] = true
+	}
+
+	var deletedActive bool
+	for key, cfg := range existingMap {
+		if !newLookup[key] {
+			if cfg.IsActive {
+				deletedActive = true
+			}
+			_ = pebble.DeleteClientConfig(cfg.ID)
+		}
 	}
 
 	for _, cfg := range configs {
@@ -829,6 +845,16 @@ func (h *V2RayHandler) ImportSubscription(c *gin.Context) {
 	if err := pebble.SaveClientConfigsBulk(toInsert); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Fallback to first available active server if current active server was deleted
+	if deletedActive {
+		allCfgs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+		if len(allCfgs) > 0 {
+			first := allCfgs[0]
+			first.IsActive = true
+			_ = pebble.SaveClientConfig(&first)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "imported", "count": len(configs), "subscription_id": subRecord.ID})

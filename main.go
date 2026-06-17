@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"embed"
 	"io/fs"
 	"net/http"
@@ -24,7 +23,6 @@ import (
 	"clever-connect/internal/telegram"
 	"clever-connect/internal/torrent"
 	"clever-connect/internal/v2ray/scanner"
-	"clever-connect/internal/v2ray/sub"
 	"clever-connect/internal/v2ray/traffic"
 	"clever-connect/internal/youtube"
 
@@ -115,8 +113,8 @@ func main() {
 				logger.Error("Ehco", "Failed to auto-start client tunnel", "error", err)
 			}
 		}
-		// Start client V2Ray subscription auto-update background worker
-		go sub.StartSubscriptionUpdater(context.Background())
+		// Start client V2Ray subscription auto-update background worker (disabled to prevent automatic loss of node testing results)
+		// go sub.StartSubscriptionUpdater(context.Background())
 	}
 
 	// Auto-start DMB Bonding Engine (Selector/Failover or True Bonding) if configured
