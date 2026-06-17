@@ -63,11 +63,13 @@ func (p *uploadProgress) Chunk(ctx context.Context, state uploader.ProgressState
 		percent = 100
 	}
 
-	// Update job status in database
-	db.DB.Model(p.job).Updates(map[string]interface{}{
-		"progress": percent,
-		"message":  fmt.Sprintf("Uploading: %s / %s (%d%%)", formatFileSize(state.Uploaded), formatFileSize(state.Total), percent),
-	})
+	// Update job status in database (throttled to once per 1.5s, or when finished at 100%)
+	if percent == 100 || time.Since(p.lastUpdate) > 1500*time.Millisecond {
+		db.DB.Model(p.job).Updates(map[string]interface{}{
+			"progress": percent,
+			"message":  fmt.Sprintf("Uploading: %s / %s (%d%%)", formatFileSize(state.Uploaded), formatFileSize(state.Total), percent),
+		})
+	}
 
 	// Throttle Telegram status message updates (max once per 1.5 seconds) to avoid rate limits
 	if time.Since(p.lastUpdate) > 1500*time.Millisecond {
@@ -903,11 +905,13 @@ func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn
 			percent = 100
 		}
 
-		// Update job progress in database
-		db.DB.Model(job).Updates(map[string]interface{}{
-			"progress": percent,
-			"message":  fmt.Sprintf("Downloading: %s / %s (%d%%)", FormatFileSize(downloaded), FormatFileSize(total), percent),
-		})
+		// Update job progress in database (throttled to once per 1.5s, or when finished at 100%)
+		if percent == 100 || time.Since(lastUpdate) > 1500*time.Millisecond {
+			db.DB.Model(job).Updates(map[string]interface{}{
+				"progress": percent,
+				"message":  fmt.Sprintf("Downloading: %s / %s (%d%%)", FormatFileSize(downloaded), FormatFileSize(total), percent),
+			})
+		}
 
 		// Throttle updates
 		if time.Since(lastUpdate) > 1500*time.Millisecond {

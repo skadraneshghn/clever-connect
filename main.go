@@ -470,6 +470,7 @@ func main() {
 			protected.POST("/telegram/auth/verify-code", telegramHandler.VerifyAuthCode)
 			protected.POST("/telegram/auth/verify-password", telegramHandler.VerifyAuthPassword)
 			protected.POST("/settings/favicon", handlers.UploadFavicon)
+			protected.GET("/settings/persistent-token", authHandler.GetPersistentToken)
 
 			// Enterprise Job Scheduler API Endpoints
 			protected.GET("/scheduler/jobs", schedulerHandler.ListJobs)

@@ -24,6 +24,26 @@ export const SettingsPage: React.FC = () => {
   const [faviconFile, setFaviconFile] = useState<File | null>(null);
   const [uploadingFavicon, setUploadingFavicon] = useState(false);
   const [faviconMsg, setFaviconMsg] = useState('');
+  const [persistentToken, setPersistentToken] = useState('');
+
+  useEffect(() => {
+    const fetchPersistentToken = async () => {
+      try {
+        const res = await fetch('/api/settings/persistent-token', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setPersistentToken(data.token);
+        }
+      } catch (e) {
+        console.error("Failed to fetch persistent token", e);
+      }
+    };
+    if (token) {
+      fetchPersistentToken();
+    }
+  }, [token]);
 
   const handleFaviconUpload = async () => {
     if (!faviconFile) return;
@@ -259,23 +279,23 @@ export const SettingsPage: React.FC = () => {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {/* Active JWT Access Token view */}
+              {/* Persistent JWT Access Token view */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    Active JWT Authentication Token
+                    Persistent API Authentication Token (Stable)
                   </label>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button 
-                      onClick={() => setShowToken(prev => !prev)} 
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
+                       onClick={() => setShowToken(prev => !prev)} 
+                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
                     >
                       {showToken ? <FiEyeOff size={13} /> : <FiEye size={13} />} {showToken ? 'Hide' : 'Show'}
                     </button>
                     <button 
-                      onClick={() => { token && navigator.clipboard.writeText(token); showGlobalAlert('JWT Token copied to clipboard!', { title: 'Copied', variant: 'success' }); }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
-                      disabled={!token}
+                       onClick={() => { persistentToken && navigator.clipboard.writeText(persistentToken); showGlobalAlert('Persistent API Token copied to clipboard!', { title: 'Copied', variant: 'success' }); }}
+                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
+                       disabled={!persistentToken}
                     >
                       <FiClipboard size={13} /> Copy Key
                     </button>
@@ -284,7 +304,7 @@ export const SettingsPage: React.FC = () => {
                 
                 <textarea 
                   readOnly 
-                  value={token || 'No active JWT token available'}
+                  value={persistentToken || 'No active persistent token available'}
                   style={{
                     width: '100%',
                     height: 80,

@@ -129,6 +129,8 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 			envToken = os.Getenv("CLIVER_SERVER_AUTH_TOKEN")
 		}
 		if envToken != "" && trimmedToken == strings.TrimSpace(envToken) {
+			c.Set("username", "admin")
+			c.Set("role", "admin")
 			c.Next()
 			return
 		}
@@ -137,11 +139,15 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 		if db.DB != nil {
 			var serverCfg models.EhcoServerConfig
 			if db.DB.First(&serverCfg).Error == nil && serverCfg.AuthToken != "" && trimmedToken == strings.TrimSpace(serverCfg.AuthToken) {
+				c.Set("username", "admin")
+				c.Set("role", "admin")
 				c.Next()
 				return
 			}
 			var clientCfg models.EhcoClientConfig
 			if db.DB.First(&clientCfg).Error == nil && clientCfg.AuthToken != "" && trimmedToken == strings.TrimSpace(clientCfg.AuthToken) {
+				c.Set("username", "admin")
+				c.Set("role", "admin")
 				c.Next()
 				return
 			}
@@ -162,6 +168,45 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 			return
 		}
 
+		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+			if username, ok := claims["username"].(string); ok {
+				c.Set("username", username)
+			}
+			if role, ok := claims["role"].(string); ok {
+				c.Set("role", role)
+			}
+		}
+
 		c.Next()
 	}
+}
+
+func (h *AuthHandler) GetPersistentToken(c *gin.Context) {
+	username, exists := c.Get("username")
+	usernameStr := "admin"
+	if exists {
+		usernameStr = username.(string)
+	} else {
+		usernameStr = h.cfg.AdminUsername
+	}
+
+	role, existsRole := c.Get("role")
+	roleStr := "admin"
+	if existsRole {
+		roleStr = role.(string)
+	}
+
+	// Generate persistent JWT token (without iat and exp) so that it remains static and never changes/expires
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"username": usernameStr,
+		"role":     roleStr,
+	})
+
+	tokenString, err := token.SignedString(h.cfg.JWTSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate persistent token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"token": tokenString})
 }
