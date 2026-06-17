@@ -581,7 +581,10 @@ export const V2RayClientPage: React.FC = () => {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
+        const data = await res.json();
         setIsRunning(true);
+        if (data.socks_port) setSocksPort(Number(data.socks_port));
+        if (data.http_port) setHttpPort(Number(data.http_port));
         setMessage({ type: 'success', text: 'V2Ray Client engine started successfully!' });
       } else {
         const data = await res.json();

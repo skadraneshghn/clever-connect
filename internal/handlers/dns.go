@@ -942,11 +942,9 @@ func (h *DNSHandler) ApplyActiveResolver(c *gin.Context) {
 			}
 
 			socksPortPublic := core.FindAvailablePort(socksPort)
-			socksPortInternal := core.FindAvailablePort(socksPortPublic + 1000, socksPortPublic)
-			httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic, socksPortInternal)
-			httpPortInternal := core.FindAvailablePort(httpPortPublic + 1000, socksPortPublic, socksPortInternal, httpPortPublic)
+			httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic)
 
-			configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortInternal, httpPortInternal, evasion, "")
+			configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortPublic, httpPortPublic, evasion, "")
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to recompile client config: " + err.Error()})
 				return
@@ -961,7 +959,6 @@ func (h *DNSHandler) ApplyActiveResolver(c *gin.Context) {
 				return
 			}
 
-			core.StartLocalProxyEngine(socksPortPublic, socksPortInternal, httpPortPublic, httpPortInternal)
 			restartSuccessful = true
 		}
 	}

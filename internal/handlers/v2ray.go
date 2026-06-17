@@ -364,11 +364,9 @@ func (h *V2RayHandler) StartClientCore(c *gin.Context) {
 
 	// Port availability verification & allocation
 	socksPortPublic := core.FindAvailablePort(socksPort)
-	socksPortInternal := core.FindAvailablePort(socksPortPublic + 1000, socksPortPublic)
-	httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic, socksPortInternal)
-	httpPortInternal := core.FindAvailablePort(httpPortPublic + 1000, socksPortPublic, socksPortInternal, httpPortPublic)
+	httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic)
 
-	configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortInternal, httpPortInternal, evasion, "")
+	configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortPublic, httpPortPublic, evasion, "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to compile config: " + err.Error()})
 		return
@@ -382,9 +380,6 @@ func (h *V2RayHandler) StartClientCore(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start core: " + err.Error()})
 		return
 	}
-
-	// Start strong SOCKS5+HTTP proxy wrapper with connection limit/timeout
-	core.StartLocalProxyEngine(socksPortPublic, socksPortInternal, httpPortPublic, httpPortInternal)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":     "started",

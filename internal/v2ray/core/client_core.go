@@ -3,6 +3,7 @@ package core
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -144,6 +145,69 @@ func StartClientCore(configPath string) error {
 	atomic.StoreInt64(&totalBytesTx, 0)
 	atomic.StoreInt64(&totalBytesRx, 0)
 
+	// Read ports from config JSON to enable system proxy if enabled in settings
+	var socksPort, httpPort int
+	if data, err := os.ReadFile(configPath); err == nil {
+		// Try to parse Xray/V2ray config first
+		var xrayCfg struct {
+			Inbounds []struct {
+				Tag      string      `json:"tag"`
+				Port     interface{} `json:"port"`
+				Protocol string      `json:"protocol"`
+			} `json:"inbounds"`
+		}
+		if json.Unmarshal(data, &xrayCfg) == nil {
+			for _, in := range xrayCfg.Inbounds {
+				if in.Tag == "socks-in" || in.Protocol == "socks" {
+					if pFloat, ok := in.Port.(float64); ok {
+						socksPort = int(pFloat)
+					} else if pStr, ok := in.Port.(string); ok {
+						socksPort, _ = strconv.Atoi(pStr)
+					}
+				} else if in.Tag == "http-in" || in.Protocol == "http" {
+					if pFloat, ok := in.Port.(float64); ok {
+						httpPort = int(pFloat)
+					} else if pStr, ok := in.Port.(string); ok {
+						httpPort, _ = strconv.Atoi(pStr)
+					}
+				}
+			}
+		}
+
+		// Try to parse Sing-Box config if ports not found
+		if socksPort == 0 || httpPort == 0 {
+			var sbCfg struct {
+				Inbounds []struct {
+					Tag        string `json:"tag"`
+					Type       string `json:"type"`
+					ListenPort int    `json:"listen_port"`
+				} `json:"inbounds"`
+			}
+			if json.Unmarshal(data, &sbCfg) == nil {
+				for _, in := range sbCfg.Inbounds {
+					if in.Tag == "socks-in" || in.Type == "socks" {
+						socksPort = in.ListenPort
+					} else if in.Tag == "http-in" || in.Type == "http" {
+						httpPort = in.ListenPort
+					}
+				}
+			}
+		}
+	}
+
+	// Toggle OS system proxy if enabled in settings
+	sysProxyEnabled := false
+	if db.DB != nil {
+		var setting models.V2RayClientSetting
+		if err := db.DB.Where("key = ?", "sys_proxy_enabled").First(&setting).Error; err == nil {
+			sysProxyEnabled = setting.Value == "true"
+		}
+	}
+	if sysProxyEnabled && socksPort > 0 && httpPort > 0 {
+		logger.Info("ClientProxy", "Setting OS system proxy from client config", "socksPort", socksPort, "httpPort", httpPort)
+		_ = sysproxy.SetSystemProxy(socksPort, httpPort)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	clientCancel = cancel
 
@@ -163,6 +227,10 @@ func StopClientCore() error {
 
 	// Stop wrappers
 	StopLocalProxyEngine()
+
+	// Always clear OS system proxy on stop
+	logger.Info("ClientProxy", "Clearing OS system proxy")
+	_ = sysproxy.ClearSystemProxy()
 
 	// Stop process
 	clientMu.Lock()

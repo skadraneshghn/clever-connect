@@ -333,6 +333,16 @@ func CompileSingBoxClientConfig(
 		}
 	}
 
+	// Strip out any TUN inbounds to guarantee it does not run in TUN mode
+	var filteredInbounds []SingBoxInbound
+	for _, in := range config.Inbounds {
+		if in.Type == "tun" || in.Tag == "tun-in" {
+			continue // Skip TUN inbounds
+		}
+		filteredInbounds = append(filteredInbounds, in)
+	}
+	config.Inbounds = filteredInbounds
+
 	foundSocks := false
 	foundHttp := false
 	for i, in := range config.Inbounds {

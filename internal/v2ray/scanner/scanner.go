@@ -1559,11 +1559,9 @@ func reloadClientCore() error {
 	}
 
 	socksPortPublic := core.FindAvailablePort(socksPort)
-	socksPortInternal := core.FindAvailablePort(socksPortPublic+1000, socksPortPublic)
-	httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic, socksPortInternal)
-	httpPortInternal := core.FindAvailablePort(httpPortPublic+1000, socksPortPublic, socksPortInternal, httpPortPublic)
+	httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic)
 
-	configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortInternal, httpPortInternal, evasion, "")
+	configBytes, err := compiler.CompileClientConfig(*activeConfig, socksPortPublic, httpPortPublic, evasion, "")
 	if err != nil {
 		return fmt.Errorf("failed to compile client config: %w", err)
 	}
@@ -1576,7 +1574,6 @@ func reloadClientCore() error {
 		return fmt.Errorf("failed to start client core: %w", err)
 	}
 
-	core.StartLocalProxyEngine(socksPortPublic, socksPortInternal, httpPortPublic, httpPortInternal)
 	return nil
 }
 
