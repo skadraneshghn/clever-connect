@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -668,10 +669,15 @@ func (h *WSHandler) ServeWSJobs(c *gin.Context) {
 			remoteWS = remoteWS[:idx]
 		}
 		remoteWS = strings.TrimSuffix(remoteWS, "/")
-		remoteWS += "/ws/jobs?token=" + remoteToken
+		remoteWS += "/ws/jobs?token=" + url.QueryEscape(remoteToken)
+
+		headers := make(http.Header)
+		if remoteToken != "" {
+			headers.Set("Authorization", "Bearer "+remoteToken)
+		}
 
 		// Dial remote server websocket
-		serverConn, _, err := websocket.DefaultDialer.Dial(remoteWS, nil)
+		serverConn, _, err := websocket.DefaultDialer.Dial(remoteWS, headers)
 		if err != nil {
 			logger.Error("WS", "Failed to connect to remote server jobs WebSocket", "error", err.Error())
 			return

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/logger"
@@ -98,6 +99,11 @@ func InitDB(cfg *config.Config) *gorm.DB {
 				"host", cfg.MySQLHost,
 				"database", cfg.MySQLDBName,
 			)
+			if sqlDB, err := DB.DB(); err == nil {
+				sqlDB.SetMaxOpenConns(100)
+				sqlDB.SetMaxIdleConns(10)
+				sqlDB.SetConnMaxLifetime(time.Hour)
+			}
 		}
 	}
 

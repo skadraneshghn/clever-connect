@@ -56,7 +56,12 @@ func (h *SchedulerHandler) proxyToServer(c *gin.Context, method string, apiPath 
 		remoteURL += "?" + c.Request.URL.RawQuery
 	}
 
-	req, err := http.NewRequest(method, remoteURL, c.Request.Body)
+	var reqBody io.Reader
+	if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions && method != http.MethodDelete {
+		reqBody = c.Request.Body
+	}
+
+	req, err := http.NewRequest(method, remoteURL, reqBody)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request", "details": err.Error()})
 		return true

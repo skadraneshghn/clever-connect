@@ -68,8 +68,13 @@ func (h *TelegramHandler) proxyToServer(c *gin.Context) bool {
 		remoteURL += "?" + c.Request.URL.RawQuery
 	}
 
+	var reqBody io.Reader
+	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead && c.Request.Method != http.MethodOptions && c.Request.Method != http.MethodDelete {
+		reqBody = c.Request.Body
+	}
+
 	// Create proxy request
-	req, err := http.NewRequest(c.Request.Method, remoteURL, c.Request.Body)
+	req, err := http.NewRequest(c.Request.Method, remoteURL, reqBody)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request", "details": err.Error()})
 		return true

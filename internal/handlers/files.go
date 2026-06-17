@@ -99,8 +99,13 @@ func (h *FileHandler) proxyToServer(c *gin.Context, method string, apiPath strin
 		remoteURL += "?" + c.Request.URL.RawQuery
 	}
 
+	var reqBody io.Reader
+	if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions && method != http.MethodDelete {
+		reqBody = c.Request.Body
+	}
+
 	// Create proxy request
-	req, err := http.NewRequest(method, remoteURL, c.Request.Body)
+	req, err := http.NewRequest(method, remoteURL, reqBody)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create proxy request", "details": err.Error()})
 		return true
