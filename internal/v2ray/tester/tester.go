@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"clever-connect/internal/db"
 	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/models"
 	"clever-connect/internal/v2ray/compiler"
@@ -316,10 +317,22 @@ func TestSingleConfig(ctx context.Context, cfg models.V2RayClientConfig, opts Te
 		}
 		defer releasePortPair(socksPort, httpPort)
 
-		configBytes, err := compiler.CompileClientConfigForCore(coreName, cfg, socksPort, httpPort, true, "")
+		evasionEnabled := true
+		if db.DB != nil {
+			var setting models.V2RayClientSetting
+			if err := db.DB.Where("key = ?", "evasion_enabled").First(&setting).Error; err == nil {
+				evasionEnabled = setting.Value == "true"
+			}
+		}
+
+		configBytes, err := compiler.CompileClientConfigForCore(coreName, cfg, socksPort, httpPort, evasionEnabled, "")
 		if err != nil {
 			res.Error = "compile error: " + err.Error()
 			return res
+		}
+
+		if cleanBytes, err := cleanConfigForTesting(configBytes, coreName); err == nil {
+			configBytes = cleanBytes
 		}
 
 		tempPath := filepath.Join(os.TempDir(), fmt.Sprintf("core_test_%d_%d.json", cfg.ID, socksPort))
@@ -644,4 +657,64 @@ func detectColo(socksHost string, socksPort int, timeout time.Duration) string {
 		}
 	}
 	return ""
+}
+
+func cleanConfigForTesting(configJSON []byte, coreName string) ([]byte, error) {
+	var m map[string]interface{}
+	if err := json.Unmarshal(configJSON, &m); err != nil {
+		return nil, err
+	}
+
+	if coreName == "sing-box" {
+		delete(m, "dns")
+		detourTarget := "proxy"
+		if outbounds, ok := m["outbounds"].([]interface{}); ok {
+			for _, out := range outbounds {
+				if outMap, ok := out.(map[string]interface{}); ok {
+					if tag, ok := outMap["tag"].(string); ok && tag == "balancer" {
+						detourTarget = "balancer"
+						break
+					}
+				}
+			}
+		}
+		m["route"] = map[string]interface{}{
+			"rules": []map[string]interface{}{
+				{
+					"outbound": detourTarget,
+				},
+			},
+		}
+	} else {
+		delete(m, "dns")
+		defaultOutboundTag := "proxy"
+		isBalancer := false
+		if routing, ok := m["routing"].(map[string]interface{}); ok {
+			if balancers, ok := routing["balancers"].([]interface{}); ok && len(balancers) > 0 {
+				defaultOutboundTag = "balancer"
+				isBalancer = true
+			}
+		}
+		rule := map[string]interface{}{
+			"type":    "field",
+			"network": "tcp,udp",
+		}
+		if isBalancer {
+			rule["balancerTag"] = defaultOutboundTag
+		} else {
+			rule["outboundTag"] = defaultOutboundTag
+		}
+		m["routing"] = map[string]interface{}{
+			"domainStrategy": "AsIs",
+			"rules": []map[string]interface{}{
+				{
+					"type":        "field",
+					"inboundTag":  []string{"api"},
+					"outboundTag": "api",
+				},
+				rule,
+			},
+		}
+	}
+	return json.MarshalIndent(m, "", "  ")
 }

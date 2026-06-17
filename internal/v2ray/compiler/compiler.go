@@ -1032,6 +1032,14 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 	}
 
 	evasionFingerprint := "chrome"
+	nodeFingerprint := ""
+	if dbTlsSettings != nil {
+		if fp, ok := dbTlsSettings["fingerprint"].(string); ok && fp != "" {
+			nodeFingerprint = fp
+		} else if fp, ok := dbTlsSettings["fp"].(string); ok && fp != "" {
+			nodeFingerprint = fp
+		}
+	}
 	evasionFragment := true
 	evasionTcpFastOpen := true
 	evasionMixedCase := false
@@ -1113,8 +1121,12 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 			Padding:     paddingSettings,
 		}
 
-		if evasionEnabled || evasionMixedCase || evasionPadding {
-			clientRealitySettings.Fingerprint = evasionFingerprint
+		if evasionEnabled || evasionMixedCase || evasionPadding || nodeFingerprint != "" {
+			if nodeFingerprint != "" {
+				clientRealitySettings.Fingerprint = nodeFingerprint
+			} else {
+				clientRealitySettings.Fingerprint = evasionFingerprint
+			}
 		}
 		clientStreamSettings.RealitySettings = clientRealitySettings
 	} else if security == "tls" {
@@ -1122,17 +1134,17 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 		sni, _ := dbTlsSettings["sni"].(string)
 		var alpn []string
 		allowInsecure := false
-		if tMap, ok := dbTlsSettings["tlsSettings"].(map[string]interface{}); ok {
-			if sn, ok := tMap["serverName"].(string); ok && sn != "" { sni = sn }
-			if alp, ok := tMap["alpn"].([]interface{}); ok {
-				for _, a := range alp {
-					if as, ok := a.(string); ok {
-						alpn = append(alpn, as)
-					}
-				}
-			}
-			if ins, ok := tMap["allowInsecure"].(bool); ok {
+		if dbTlsSettings != nil {
+			if ins, ok := dbTlsSettings["allowInsecure"].(bool); ok {
 				allowInsecure = ins
+			} else if insStr, ok := dbTlsSettings["allowInsecure"].(string); ok {
+				allowInsecure = (insStr == "1" || strings.ToLower(insStr) == "true")
+			} else if insNum, ok := dbTlsSettings["allowInsecure"].(float64); ok {
+				allowInsecure = (insNum == 1)
+			} else if tMap, ok := dbTlsSettings["tlsSettings"].(map[string]interface{}); ok {
+				if ins, ok := tMap["allowInsecure"].(bool); ok {
+					allowInsecure = ins
+				}
 			}
 		}
 
@@ -1154,8 +1166,12 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 			AllowInsecure: allowInsecure,
 			Padding:       paddingSettings,
 		}
-		if evasionEnabled || evasionMixedCase || evasionPadding {
-			clientTlsSettings.Fingerprint = evasionFingerprint
+		if evasionEnabled || evasionMixedCase || evasionPadding || nodeFingerprint != "" {
+			if nodeFingerprint != "" {
+				clientTlsSettings.Fingerprint = nodeFingerprint
+			} else {
+				clientTlsSettings.Fingerprint = evasionFingerprint
+			}
 
 			// Encrypted Client Hello (ECH) support
 			echEnabled := false

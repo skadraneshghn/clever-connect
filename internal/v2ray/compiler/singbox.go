@@ -80,6 +80,7 @@ type SingBoxPadding struct {
 type SingBoxOutboundTLS struct {
 	Enabled    bool                `json:"enabled"`
 	ServerName string              `json:"server_name,omitempty"`
+	Insecure   bool                `json:"insecure,omitempty"`
 	Utls       *SingBoxUtls        `json:"utls,omitempty"`
 	Reality    *SingBoxOutReality  `json:"reality,omitempty"`
 	Fragment   *SingBoxFragment    `json:"fragment,omitempty"`
@@ -585,10 +586,28 @@ func CompileSingBoxOutbound(activeConfig models.V2RayClientConfig, evasionEnable
 		tlsConfig := &SingBoxOutboundTLS{
 			Enabled: true,
 		}
+		nodeFingerprint := ""
+		allowInsecure := false
 		if dbTlsSettings != nil {
 			if sni, ok := dbTlsSettings["sni"].(string); ok {
 				tlsConfig.ServerName = sni
 			}
+			if fp, ok := dbTlsSettings["fingerprint"].(string); ok && fp != "" {
+				nodeFingerprint = fp
+			} else if fp, ok := dbTlsSettings["fp"].(string); ok && fp != "" {
+				nodeFingerprint = fp
+			}
+			if ins, ok := dbTlsSettings["allowInsecure"].(bool); ok {
+				allowInsecure = ins
+			} else if insStr, ok := dbTlsSettings["allowInsecure"].(string); ok {
+				allowInsecure = (insStr == "1" || strings.ToLower(insStr) == "true")
+			} else if insNum, ok := dbTlsSettings["allowInsecure"].(float64); ok {
+				allowInsecure = (insNum == 1)
+			}
+		}
+
+		if allowInsecure {
+			tlsConfig.Insecure = true
 		}
 
 		evasionMixedCase := false
@@ -608,7 +627,7 @@ func CompileSingBoxOutbound(activeConfig models.V2RayClientConfig, evasionEnable
 			tlsConfig.ServerName = RandomizeCase(tlsConfig.ServerName)
 		}
 
-		if evasionEnabled || evasionMixedCase || evasionPadding {
+		if evasionEnabled || evasionMixedCase || evasionPadding || nodeFingerprint != "" {
 			evasionFingerprint := "chrome"
 			if db.DB != nil {
 				var setting models.V2RayClientSetting
@@ -616,9 +635,13 @@ func CompileSingBoxOutbound(activeConfig models.V2RayClientConfig, evasionEnable
 					evasionFingerprint = setting.Value
 				}
 			}
+			fingerprintToUse := evasionFingerprint
+			if nodeFingerprint != "" {
+				fingerprintToUse = nodeFingerprint
+			}
 			tlsConfig.Utls = &SingBoxUtls{
 				Enabled:     true,
-				Fingerprint: evasionFingerprint,
+				Fingerprint: fingerprintToUse,
 			}
 
 			if evasionPadding {

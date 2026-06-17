@@ -172,12 +172,27 @@ func ParseProxyLink(link string) (models.V2RayClientConfig, error) {
 			network = "tcp"
 		}
 
+		fp := params.Get("fp")
+		if fp == "" {
+			fp = params.Get("fingerprint")
+		}
+		allowInsecureStr := params.Get("allowInsecure")
+		if allowInsecureStr == "" {
+			allowInsecureStr = params.Get("insecure")
+		}
+		allowInsecure := false
+		if allowInsecureStr == "1" || strings.ToLower(allowInsecureStr) == "true" {
+			allowInsecure = true
+		}
+
 		tlsSettings := map[string]interface{}{
-			"security":  params.Get("security"),
-			"sni":       params.Get("sni"),
-			"publicKey": params.Get("pbk"),
-			"shortId":   params.Get("sid"),
-			"path":      params.Get("path"),
+			"security":      params.Get("security"),
+			"sni":           params.Get("sni"),
+			"publicKey":     params.Get("pbk"),
+			"shortId":       params.Get("sid"),
+			"path":          params.Get("path"),
+			"fingerprint":   fp,
+			"allowInsecure": allowInsecure,
 		}
 		tlsSettingsBytes, _ := json.Marshal(tlsSettings)
 
@@ -213,9 +228,24 @@ func ParseProxyLink(link string) (models.V2RayClientConfig, error) {
 		port, _ := strconv.Atoi(portStr)
 
 		params := u.Query()
+		fp := params.Get("fp")
+		if fp == "" {
+			fp = params.Get("fingerprint")
+		}
+		allowInsecureStr := params.Get("allowInsecure")
+		if allowInsecureStr == "" {
+			allowInsecureStr = params.Get("insecure")
+		}
+		allowInsecure := false
+		if allowInsecureStr == "1" || strings.ToLower(allowInsecureStr) == "true" {
+			allowInsecure = true
+		}
+
 		tlsSettings := map[string]interface{}{
-			"security": "tls",
-			"sni":      params.Get("sni"),
+			"security":      "tls",
+			"sni":           params.Get("sni"),
+			"fingerprint":   fp,
+			"allowInsecure": allowInsecure,
 		}
 		tlsSettingsBytes, _ := json.Marshal(tlsSettings)
 
@@ -272,10 +302,28 @@ func ParseProxyLink(link string) (models.V2RayClientConfig, error) {
 			tlsMode = "none"
 		}
 
+		fp, _ := vmessMap["fp"].(string)
+		if fp == "" {
+			fp, _ = vmessMap["fingerprint"].(string)
+		}
+		allowInsecure := false
+		if insVal, ok := vmessMap["insecure"]; ok {
+			switch v := insVal.(type) {
+			case bool:
+				allowInsecure = v
+			case float64:
+				allowInsecure = (v == 1)
+			case string:
+				allowInsecure = (v == "1" || strings.ToLower(v) == "true")
+			}
+		}
+
 		tlsSettings := map[string]interface{}{
-			"security": tlsMode,
-			"sni":      vmessMap["host"],
-			"path":     vmessMap["path"],
+			"security":      tlsMode,
+			"sni":           vmessMap["host"],
+			"path":          vmessMap["path"],
+			"fingerprint":   fp,
+			"allowInsecure": allowInsecure,
 		}
 		tlsSettingsBytes, _ := json.Marshal(tlsSettings)
 
