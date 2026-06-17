@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, lazy } from 'react';
+import React, { Suspense, useEffect, lazy, useState } from 'react';
 import { createBrowserRouter, RouterProvider, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { PanelLayout } from './components/templates/PanelLayout';
@@ -159,9 +159,91 @@ const router = createBrowserRouter([
   { path: '*', element: <Navigate to="/dashboard" replace /> },
 ]);
 
+const TopLoadingBar: React.FC = () => {
+  const [active, setActive] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const handleLoadingChange = (e: Event) => {
+      const customEvent = e as CustomEvent<{ active: boolean; count: number }>;
+      setActive(customEvent.detail.active);
+    };
+
+    window.addEventListener('api-loading-change', handleLoadingChange);
+    return () => {
+      window.removeEventListener('api-loading-change', handleLoadingChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    let interval: any;
+    if (active) {
+      setVisible(true);
+      setProgress(10);
+      interval = setInterval(() => {
+        setProgress(prev => {
+          if (prev >= 90) return prev;
+          const remaining = 90 - prev;
+          const step = Math.max(1, Math.floor(remaining * 0.15));
+          return prev + step;
+        });
+      }, 200);
+    } else {
+      setProgress(100);
+      const timer = setTimeout(() => {
+        setVisible(false);
+        setProgress(0);
+      }, 400);
+      return () => {
+        clearTimeout(timer);
+      };
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [active]);
+
+  if (!visible) return null;
+
+  return (
+    <>
+      <style>{`
+        @keyframes loading-glow {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        @keyframes loading-pulse {
+          0% { box-shadow: 0 0 8px rgba(255, 107, 44, 0.8), 0 0 4px rgba(255, 107, 44, 0.5); }
+          50% { box-shadow: 0 0 16px rgba(255, 107, 44, 1), 0 0 8px rgba(255, 107, 44, 0.8); }
+          100% { box-shadow: 0 0 8px rgba(255, 107, 44, 0.8), 0 0 4px rgba(255, 107, 44, 0.5); }
+        }
+      `}</style>
+      <div
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: `${progress}%`,
+          height: '3px',
+          background: 'linear-gradient(90deg, #ff6b2c, #ff9e7d, #ff6b2c, #ffa88a, #ff6b2c)',
+          backgroundSize: '200% 100%',
+          animation: 'loading-glow 1.5s linear infinite, loading-pulse 1.5s ease-in-out infinite',
+          zIndex: 999999,
+          transition: progress === 100 ? 'width 0.3s ease-out, opacity 0.3s ease-out' : 'width 0.2s ease-out',
+          opacity: progress === 100 ? 0 : 1,
+        }}
+      />
+    </>
+  );
+};
+
 export default function App() {
   return (
     <>
+      <TopLoadingBar />
       <RouterProvider router={router} />
       <GlobalDialog />
     </>

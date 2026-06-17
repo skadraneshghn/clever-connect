@@ -1,15 +1,20 @@
 package ehcocore
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
+	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
@@ -47,8 +52,12 @@ type EhcoConfig struct {
 }
 
 var (
-	cmdInstance *exec.Cmd
-	mu          sync.Mutex
+	cmdInstance  *exec.Cmd
+	mu           sync.Mutex
+	expectedRun  bool          // whether the engine is expected to be running
+	stopChan     chan struct{} // to signal supervisor loop to stop
+	isServerMode bool          // whether we are running in server mode vs client mode
+	restartDelay time.Duration // current restart delay for backoff
 )
 
 // getEhcoBinPath ensures we look for 'ehco' in the exact same directory as 'clever-connect'
@@ -98,6 +107,43 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 		return err
 	}
 
+	if err := startServerEngineLocked(dbCfg); err != nil {
+		return err
+	}
+
+	expectedRun = true
+	isServerMode = true
+	restartDelay = 1 * time.Second
+	stopChan = make(chan struct{})
+	startSupervisor()
+
+	return nil
+}
+
+// StartClientEngine runs locally, capturing a local port and proxying to the remote Clever Cloud WebSocket tunnel
+func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if err := StopEngineLocked(); err != nil {
+		return err
+	}
+
+	if err := startClientEngineLocked(dbCfg); err != nil {
+		return err
+	}
+
+	expectedRun = true
+	isServerMode = false
+	restartDelay = 1 * time.Second
+	stopChan = make(chan struct{})
+	startSupervisor()
+
+	return nil
+}
+
+// startServerEngineLocked launches the ehco relayer using Server DB configs (must hold mu)
+func startServerEngineLocked(dbCfg *models.EhcoServerConfig) error {
 	if err := EnsureBinary(); err != nil {
 		return err
 	}
@@ -125,7 +171,7 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 	cfg := &EhcoConfig{
 		WebPort:    0,
 		WebToken:   "",
-		EnablePing: false,
+		EnablePing: true, // Optimized: Enable ping/keepalive for stability
 		LogLevel:   "info",
 		RelayConfigs: []*RelayConfig{
 			{
@@ -137,6 +183,7 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 					EnableUDP:          true,
 					EnableMultipathTCP: true,
 					IdleTimeoutSec:     idleTimeout,
+					DialTimeoutSec:     10, // Optimized: fast dial timeout to detect disconnects quickly
 					WSConfig: &WSConfig{
 						Path: authPath,
 					},
@@ -168,31 +215,53 @@ func StartServerEngine(dbCfg *models.EhcoServerConfig) error {
 		"keep_alive", idleTimeout,
 	)
 
-	// Launch process
+	// Launch process with high performance buffer size: 262144 (256KB)
 	binPath := getEhcoBinPath()
-	cmdInstance = exec.Command(binPath, "-c", configPath)
+	cmdInstance = exec.Command(binPath, "-c", configPath, "--buffer_size", "262144")
 
-	// --- Suppress noisy I/O streams in production ---
-	cmdInstance.Stdout = nil
-	cmdInstance.Stderr = nil
+	stdoutPipe, err := cmdInstance.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+	stderrPipe, err := cmdInstance.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stderr pipe: %w", err)
+	}
 
 	if err := cmdInstance.Start(); err != nil {
 		cmdInstance = nil
 		return fmt.Errorf("failed to start ehco server process: %w", err)
 	}
 
+	// Read stdout in background
+	go func(pipe io.ReadCloser) {
+		defer pipe.Close()
+		scanner := bufio.NewScanner(pipe)
+		for scanner.Scan() {
+			logger.Info("EhcoSub", scanner.Text())
+		}
+	}(stdoutPipe)
+
+	// Read stderr in background
+	go func(pipe io.ReadCloser) {
+		defer pipe.Close()
+		scanner := bufio.NewScanner(pipe)
+		for scanner.Scan() {
+			logger.Error("EhcoSub", scanner.Text())
+		}
+	}(stderrPipe)
+
+	// Reap process and log when it exits
+	go func(cmd *exec.Cmd) {
+		err := cmd.Wait()
+		logger.Warn("Ehco", "Subprocess exited", "error", err)
+	}(cmdInstance)
+
 	return nil
 }
 
-// StartClientEngine runs locally, capturing a local port and proxying to the remote Clever Cloud WebSocket tunnel
-func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if err := StopEngineLocked(); err != nil {
-		return err
-	}
-
+// startClientEngineLocked runs locally, capturing a local port and proxying to the remote Clever Cloud WebSocket tunnel (must hold mu)
+func startClientEngineLocked(dbCfg *models.EhcoClientConfig) error {
 	if err := EnsureBinary(); err != nil {
 		return err
 	}
@@ -274,7 +343,7 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 	cfg := &EhcoConfig{
 		WebPort:    0,
 		WebToken:   "",
-		EnablePing: false,
+		EnablePing: true, // Optimized: Enable ping/keepalive for stability
 		LogLevel:   "info",
 		RelayConfigs: []*RelayConfig{
 			{
@@ -286,6 +355,7 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 					EnableUDP:          true,
 					EnableMultipathTCP: true,
 					IdleTimeoutSec:     idleTimeout,
+					DialTimeoutSec:     10, // Optimized: fast dial timeout to detect disconnects quickly
 					WSConfig: &WSConfig{
 						Path: authPath,
 					},
@@ -320,18 +390,47 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 		"bypass_ir", dbCfg.BypassIR,
 	)
 
-	// Launch process
+	// Launch process with high performance buffer size: 262144 (256KB)
 	binPath := getEhcoBinPath()
-	cmdInstance = exec.Command(binPath, "-c", configPath)
+	cmdInstance = exec.Command(binPath, "-c", configPath, "--buffer_size", "262144")
 
-	// --- Suppress noisy I/O streams in production ---
-	cmdInstance.Stdout = nil
-	cmdInstance.Stderr = nil
+	stdoutPipe, err := cmdInstance.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+	stderrPipe, err := cmdInstance.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stderr pipe: %w", err)
+	}
 
 	if err := cmdInstance.Start(); err != nil {
 		cmdInstance = nil
 		return fmt.Errorf("failed to start ehco client process: %w", err)
 	}
+
+	// Read stdout in background
+	go func(pipe io.ReadCloser) {
+		defer pipe.Close()
+		scanner := bufio.NewScanner(pipe)
+		for scanner.Scan() {
+			logger.Info("EhcoSub", scanner.Text())
+		}
+	}(stdoutPipe)
+
+	// Read stderr in background
+	go func(pipe io.ReadCloser) {
+		defer pipe.Close()
+		scanner := bufio.NewScanner(pipe)
+		for scanner.Scan() {
+			logger.Error("EhcoSub", scanner.Text())
+		}
+	}(stderrPipe)
+
+	// Reap process and log when it exits
+	go func(cmd *exec.Cmd) {
+		err := cmd.Wait()
+		logger.Warn("Ehco", "Subprocess exited", "error", err)
+	}(cmdInstance)
 
 	return nil
 }
@@ -344,11 +443,21 @@ func StopEngine() {
 }
 
 func StopEngineLocked() error {
+	expectedRun = false
+	if stopChan != nil {
+		close(stopChan)
+		stopChan = nil
+	}
+	return stopEngineLockedOnly()
+}
+
+func stopEngineLockedOnly() error {
 	if cmdInstance != nil {
 		logger.Info("Ehco", "Terminating active ehco tunnel process")
-		// Kill the process group or process directly
-		if err := cmdInstance.Process.Kill(); err != nil {
-			logger.Error("Ehco", "Failed to kill ehco process", "error", err)
+		if cmdInstance.Process != nil {
+			if err := cmdInstance.Process.Kill(); err != nil {
+				logger.Error("Ehco", "Failed to kill ehco process", "error", err)
+			}
 		}
 		_ = cmdInstance.Wait()
 		cmdInstance = nil
@@ -360,5 +469,116 @@ func StopEngineLocked() error {
 func IsRunning() bool {
 	mu.Lock()
 	defer mu.Unlock()
-	return cmdInstance != nil && cmdInstance.Process != nil
+	if cmdInstance == nil || cmdInstance.Process == nil {
+		return false
+	}
+	if cmdInstance.ProcessState != nil && cmdInstance.ProcessState.Exited() {
+		return false
+	}
+	err := cmdInstance.Process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+// startSupervisor spawns the background monitoring loop (must hold lock to setup/initialize variables)
+func startSupervisor() {
+	go func() {
+		for {
+			mu.Lock()
+			if !expectedRun {
+				mu.Unlock()
+				return
+			}
+
+			// Check liveness
+			isAlive := false
+			if cmdInstance != nil && cmdInstance.Process != nil {
+				if cmdInstance.ProcessState != nil && cmdInstance.ProcessState.Exited() {
+					isAlive = false
+				} else {
+					err := cmdInstance.Process.Signal(syscall.Signal(0))
+					isAlive = (err == nil)
+				}
+			}
+			curStopChan := stopChan
+			mu.Unlock()
+
+			if !isAlive {
+				logger.Warn("Ehco", "Subprocess is not running. Initiating auto-restart.")
+
+				mu.Lock()
+				if restartDelay == 0 {
+					restartDelay = 1 * time.Second
+				} else {
+					restartDelay *= 2
+					if restartDelay > 30*time.Second {
+						restartDelay = 30 * time.Second
+					}
+				}
+				delay := restartDelay
+				mu.Unlock()
+
+				select {
+				case <-curStopChan:
+					return
+				case <-time.After(delay):
+				}
+
+				// Double check if expectedRun was disabled during the sleep
+				mu.Lock()
+				stillExpected := expectedRun
+				mu.Unlock()
+
+				if !stillExpected {
+					return
+				}
+
+				if err := restartEngineFromDB(); err != nil {
+					logger.Error("Ehco", "Failed to auto-restart engine", "error", err)
+				} else {
+					logger.Info("Ehco", "Subprocess auto-restarted successfully")
+					mu.Lock()
+					restartDelay = 1 * time.Second
+					mu.Unlock()
+				}
+			} else {
+				select {
+				case <-curStopChan:
+					return
+				case <-time.After(3 * time.Second):
+				}
+			}
+		}
+	}()
+}
+
+// restartEngineFromDB loads settings from SQLite and restarts the process (holds internal lock)
+func restartEngineFromDB() error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !expectedRun {
+		return nil
+	}
+
+	if isServerMode {
+		var serverCfg models.EhcoServerConfig
+		if err := db.DB.First(&serverCfg).Error; err != nil {
+			return err
+		}
+		if !serverCfg.IsActive {
+			return fmt.Errorf("server tunnel config is no longer active in DB")
+		}
+		_ = stopEngineLockedOnly()
+		return startServerEngineLocked(&serverCfg)
+	} else {
+		var clientCfg models.EhcoClientConfig
+		if err := db.DB.First(&clientCfg).Error; err != nil {
+			return err
+		}
+		if !clientCfg.IsActive {
+			return fmt.Errorf("client tunnel config is no longer active in DB")
+		}
+		_ = stopEngineLockedOnly()
+		return startClientEngineLocked(&clientCfg)
+	}
 }
