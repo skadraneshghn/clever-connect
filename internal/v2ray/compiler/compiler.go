@@ -1444,6 +1444,14 @@ func cleanMapForV2Ray(m map[string]interface{}) {
 			delete(m, k)
 			continue
 		}
+		// 6. Convert array address to single string address for V2Ray compatibility
+		if k == "address" {
+			if slice, ok := v.([]interface{}); ok && len(slice) > 0 {
+				if firstStr, ok := slice[0].(string); ok {
+					m[k] = firstStr
+				}
+			}
+		}
 
 		// Recurse
 		if childMap, ok := v.(map[string]interface{}); ok {

@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -107,3 +108,45 @@ func TestCompilePadding(t *testing.T) {
 		t.Errorf("expected Sing-Box Fragment to be nil due to mutual exclusion with padding")
 	}
 }
+
+func TestCleanXrayConfigForV2RayAddress(t *testing.T) {
+	inputJSON := `{
+		"outbounds": [
+			{
+				"settings": {
+					"vnext": [
+						{
+							"address": ["185.143.234.235", "185.143.233.235"],
+							"port": 443
+						}
+					]
+				}
+			}
+		]
+	}`
+
+	cleaned, err := CleanXrayConfigForV2Ray([]byte(inputJSON))
+	if err != nil {
+		t.Fatalf("failed to clean: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(cleaned, &m); err != nil {
+		t.Fatalf("failed to unmarshal cleaned: %v", err)
+	}
+
+	outbounds := m["outbounds"].([]interface{})
+	outbound := outbounds[0].(map[string]interface{})
+	settings := outbound["settings"].(map[string]interface{})
+	vnext := settings["vnext"].([]interface{})
+	target := vnext[0].(map[string]interface{})
+
+	addrVal, ok := target["address"].(string)
+	if !ok {
+		t.Errorf("expected address to be cleaned to a single string, got: %v", target["address"])
+	}
+	if addrVal != "185.143.234.235" {
+		t.Errorf("expected address to be 185.143.234.235, got: %s", addrVal)
+	}
+}
+
