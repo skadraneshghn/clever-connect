@@ -304,10 +304,9 @@ func RunTelegramUploadJob(ctx context.Context, job *models.SchedulerJob, logFn f
 		downloadPath += fmt.Sprintf("&token=%s", url.QueryEscape(tokenString))
 	}
 
-	// Determine base host from Ehco config
-	var ehcoCfg models.EhcoClientConfig
-	if err := db.DB.First(&ehcoCfg).Error; err == nil && ehcoCfg.RemoteURL != "" {
-		domain := ehcoCfg.RemoteURL
+	// Determine base host from ServerURL config
+	if appCfg.ServerURL != "" {
+		domain := appCfg.ServerURL
 		domain = strings.Replace(domain, "wss://", "https://", 1)
 		domain = strings.Replace(domain, "ws://", "http://", 1)
 		domain = strings.TrimSuffix(domain, "/ws")
@@ -794,9 +793,8 @@ func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn
 				downloadPath += fmt.Sprintf("&token=%s", url.QueryEscape(tokenString))
 			}
 
-			var ehcoCfg models.EhcoClientConfig
-			if err := db.DB.First(&ehcoCfg).Error; err == nil && ehcoCfg.RemoteURL != "" {
-				domain := ehcoCfg.RemoteURL
+			if appCfg.ServerURL != "" {
+				domain := appCfg.ServerURL
 				domain = strings.Replace(domain, "wss://", "https://", 1)
 				domain = strings.Replace(domain, "ws://", "http://", 1)
 				domain = strings.TrimSuffix(domain, "/ws")
@@ -1005,9 +1003,8 @@ func RunTelegramDownloadJob(ctx context.Context, job *models.SchedulerJob, logFn
 		downloadPath += fmt.Sprintf("&token=%s", url.QueryEscape(tokenString))
 	}
 
-	var ehcoCfg models.EhcoClientConfig
-	if err := db.DB.First(&ehcoCfg).Error; err == nil && ehcoCfg.RemoteURL != "" {
-		domain := ehcoCfg.RemoteURL
+	if appCfg.ServerURL != "" {
+		domain := appCfg.ServerURL
 		domain = strings.Replace(domain, "wss://", "https://", 1)
 		domain = strings.Replace(domain, "ws://", "http://", 1)
 		domain = strings.TrimSuffix(domain, "/ws")

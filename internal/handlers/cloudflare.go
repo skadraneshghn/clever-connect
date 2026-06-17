@@ -33,22 +33,13 @@ func (h *CloudflareHandler) proxyToServer(c *gin.Context, method string, apiPath
 		return false
 	}
 
-	var remoteURLTarget string
-	var remoteToken string
-
-	var clientCfg models.EhcoClientConfig
-	dbErr := db.DB.First(&clientCfg).Error
-
-	if dbErr == nil && clientCfg.RemoteURL != "" {
-		remoteURLTarget = strings.TrimSpace(clientCfg.RemoteURL)
-		remoteToken = strings.TrimSpace(clientCfg.AuthToken)
-	} else if h.cfg.ServerURL != "" {
-		remoteURLTarget = strings.TrimSpace(h.cfg.ServerURL)
-		remoteToken = strings.TrimSpace(h.cfg.ServerAuthToken)
-	} else {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No remote server connection configured in client panel"})
+	if h.cfg.ServerURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No remote server API connection configured (missing SERVER_URL in environment)"})
 		return true
 	}
+
+	remoteURLTarget := strings.TrimSpace(h.cfg.ServerURL)
+	remoteToken := strings.TrimSpace(h.cfg.ServerAuthToken)
 
 	remoteHost := remoteURLTarget
 	remoteHost = strings.Replace(remoteHost, "wss://", "https://", 1)

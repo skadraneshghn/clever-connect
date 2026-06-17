@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -120,9 +121,20 @@ func AuthMiddleware(jwtSecret []byte) gin.HandlerFunc {
 			return
 		}
 
+		trimmedToken := strings.TrimSpace(tokenString)
+
+		// Check if the token matches the environment SERVER_AUTH_TOKEN
+		envToken := os.Getenv("SERVER_AUTH_TOKEN")
+		if envToken == "" {
+			envToken = os.Getenv("CLIVER_SERVER_AUTH_TOKEN")
+		}
+		if envToken != "" && trimmedToken == strings.TrimSpace(envToken) {
+			c.Next()
+			return
+		}
+
 		// Check if the token matches Ehco server or client auth token from DB (with robust trim check)
 		if db.DB != nil {
-			trimmedToken := strings.TrimSpace(tokenString)
 			var serverCfg models.EhcoServerConfig
 			if db.DB.First(&serverCfg).Error == nil && serverCfg.AuthToken != "" && trimmedToken == strings.TrimSpace(serverCfg.AuthToken) {
 				c.Next()
