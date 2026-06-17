@@ -320,6 +320,7 @@ func main() {
 			protected.POST("/v2ray/client/profiles/import-bulk", v2rayHandler.ImportBulkConfigs)
 			protected.GET("/v2ray/client/subscriptions", v2rayHandler.ListSubscriptions)
 			protected.POST("/v2ray/client/subscriptions", v2rayHandler.ImportSubscription)
+			protected.POST("/v2ray/client/subscriptions/:id/update", v2rayHandler.UpdateSubscription)
 			protected.DELETE("/v2ray/client/subscriptions/:id", v2rayHandler.DeleteSubscription)
 			protected.POST("/v2ray/client/export-pdf", v2rayHandler.ExportSelectedConfigsPDF)
 			protected.POST("/v2ray/client/import", v2rayHandler.ImportSubscription)

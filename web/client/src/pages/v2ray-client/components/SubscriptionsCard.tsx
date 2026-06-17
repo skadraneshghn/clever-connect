@@ -12,6 +12,7 @@ import {
 	FiLoader,
 	FiSettings,
 	FiPlusCircle,
+	FiRefreshCw,
 } from 'react-icons/fi';
 import { IPResolveBadge } from '../../../components/atoms/IPResolveBadge';
 
@@ -82,6 +83,8 @@ interface SubscriptionsCardProps {
 	selectedCategoryId?: number | null;
 	setSelectedCategoryId?: (id: number | null) => void;
 	fetchCategories?: () => void;
+	subscriptions?: any[];
+	fetchSubscriptions?: () => void;
 }
 
 const isIP = (str: string) => {
@@ -183,6 +186,8 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 	selectedCategoryId = null,
 	setSelectedCategoryId,
 	fetchCategories,
+	subscriptions = [],
+	fetchSubscriptions,
 }) => {
 	const PAGE_LIMIT = 50;
 	const parentRef = useRef<HTMLDivElement>(null);
@@ -210,6 +215,9 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 	// Inline Category creation
 	const [newCatName, setNewCatName] = useState('');
 	const [isCreatingCat, setIsCreatingCat] = useState(false);
+	const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
+	const [editingCatName, setEditingCatName] = useState('');
+	const [syncingSubId, setSyncingSubId] = useState<number | null>(null);
 
 	const handleCreateCategory = async () => {
 		if (!newCatName.trim()) return;
@@ -255,6 +263,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 					setSelectedCategoryId?.(null);
 				}
 				if (fetchCategories) fetchCategories();
+				if (fetchSubscriptions) fetchSubscriptions();
 				fetchProfiles(0, true);
 			} else {
 				const data = await res.json();
@@ -262,6 +271,60 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 			}
 		} catch (err: any) {
 			alert(err.message);
+		}
+	};
+
+	const handleUpdateCategory = async (id: number) => {
+		if (!editingCatName.trim()) return;
+		try {
+			const token = localStorage.getItem('cc_client_token') || '';
+			const res = await fetch(`/api/v2ray/client/categories/${id}`, {
+				method: 'PUT',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${token}`
+				},
+				body: JSON.stringify({
+					name: editingCatName.trim()
+				})
+			});
+			if (res.ok) {
+				setEditingCategoryId(null);
+				setEditingCatName('');
+				if (fetchCategories) fetchCategories();
+				if (fetchSubscriptions) fetchSubscriptions();
+				fetchProfiles(0, true);
+			} else {
+				const data = await res.json();
+				alert(data.error || 'Failed to update category');
+			}
+		} catch (err: any) {
+			alert(err.message);
+		}
+	};
+
+	const handleSyncSubscription = async (subId: number) => {
+		setSyncingSubId(subId);
+		try {
+			const token = localStorage.getItem('cc_client_token') || '';
+			const res = await fetch(`/api/v2ray/client/subscriptions/${subId}/update`, {
+				method: 'POST',
+				headers: {
+					Authorization: `Bearer ${token}`
+				}
+			});
+			if (res.ok) {
+				const data = await res.json();
+				showGlobalAlert(`Successfully updated subscription! ${data.count} nodes retrieved.`, { title: 'Update Successful', variant: 'success' });
+				fetchProfiles(0, true);
+			} else {
+				const data = await res.json();
+				showGlobalAlert(data.error || 'Failed to update subscription', { title: 'Update Failed', variant: 'error' });
+			}
+		} catch (err: any) {
+			showGlobalAlert(err.message, { title: 'Update Error', variant: 'error' });
+		} finally {
+			setSyncingSubId(null);
 		}
 	};
 
@@ -1404,6 +1467,63 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 							{/* Dynamic Categories */}
 							{categories?.map(cat => {
 								const isSelected = selectedCategoryId === cat.id;
+								const subMatch = subscriptions?.find((s: any) => s.name === cat.name);
+								const isEditing = editingCategoryId === cat.id;
+
+								if (isEditing) {
+									return (
+										<div
+											key={cat.id}
+											style={{
+												display: 'flex',
+												flexDirection: 'column',
+												gap: 6,
+												padding: '8px 12px',
+												borderRadius: 6,
+												background: 'var(--color-brand-light)',
+												marginBottom: 4
+											}}
+										>
+											<input
+												type="text"
+												value={editingCatName}
+												onChange={(e) => setEditingCatName(e.target.value)}
+												style={{
+													padding: '4px 8px',
+													borderRadius: 6,
+													border: '1px solid var(--color-brand-border)',
+													background: 'var(--color-brand-card)',
+													fontSize: 11,
+													color: 'var(--color-brand-heading)',
+													width: '100%'
+												}}
+												autoFocus
+											/>
+											<div style={{ display: 'flex', gap: 6 }}>
+												<button
+													type="button"
+													onClick={() => handleUpdateCategory(cat.id)}
+													className="btn btn--primary btn--xs"
+													style={{ flex: 1, fontSize: 10, padding: '2px 4px' }}
+												>
+													Save
+												</button>
+												<button
+													type="button"
+													onClick={() => {
+														setEditingCategoryId(null);
+														setEditingCatName('');
+													}}
+													className="btn btn--secondary btn--xs"
+													style={{ flex: 1, fontSize: 10, padding: '2px 4px' }}
+												>
+													Cancel
+												</button>
+											</div>
+										</div>
+									);
+								}
+
 								return (
 									<div
 										key={cat.id}
@@ -1439,27 +1559,82 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 										>
 											<span>📁 {cat.name}</span>
 										</button>
-										{cat.type === 'custom' && (
-											<button
-												type="button"
-												onClick={(e) => {
-													e.stopPropagation();
-													handleDeleteCategory(cat.id);
-												}}
-												style={{
-													background: 'none',
-													border: 'none',
-													color: '#ef4444',
-													cursor: 'pointer',
-													display: 'flex',
-													alignItems: 'center',
-													padding: 4
-												}}
-												title="Delete category"
-											>
-												<FiTrash2 size={12} />
-											</button>
-										)}
+										<div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+											{/* Sync button for subscriptions */}
+											{subMatch && (
+												<button
+													type="button"
+													onClick={(e) => {
+														e.stopPropagation();
+														handleSyncSubscription(subMatch.ID);
+													}}
+													disabled={syncingSubId === subMatch.ID}
+													style={{
+														background: 'none',
+														border: 'none',
+														color: '#10b981',
+														cursor: 'pointer',
+														display: 'flex',
+														alignItems: 'center',
+														padding: 4
+													}}
+													title="Sync / Update nodes from subscription"
+												>
+													{syncingSubId === subMatch.ID ? (
+														<FiLoader className="spin-animation" size={12} />
+													) : (
+														<FiRefreshCw size={12} />
+													)}
+												</button>
+											)}
+
+											{/* Edit button */}
+											{(cat.type === 'custom' || subMatch) && (
+												<button
+													type="button"
+													onClick={(e) => {
+														e.stopPropagation();
+														setEditingCategoryId(cat.id);
+														setEditingCatName(cat.name);
+													}}
+													style={{
+														background: 'none',
+														border: 'none',
+														color: 'var(--color-brand)',
+														cursor: 'pointer',
+														display: 'flex',
+														alignItems: 'center',
+														padding: 4
+													}}
+													title="Edit category name"
+												>
+													<FiEdit size={12} />
+												</button>
+											)}
+
+											{/* Delete button */}
+											{(cat.type === 'custom' || subMatch) && (
+												<button
+													type="button"
+													onClick={(e) => {
+														e.stopPropagation();
+														handleDeleteCategory(cat.id);
+													}}
+													style={{
+														background: 'none',
+														border: 'none',
+														color: '#ef4444',
+														cursor: 'pointer',
+														display: 'flex',
+														alignItems: 'center',
+														padding: 4
+													}}
+													title="Delete category"
+												>
+													<FiTrash2 size={12} />
+												</button>
+											)}
+										</div>
 									</div>
 								);
 							})}
@@ -1720,6 +1895,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Name</th>
 										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 80 }}>Protocol</th>
 										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)' }}>Address</th>
+										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 120 }}>Category</th>
 										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', width: 200 }}>Ping & Diagnostics</th>
 										<th style={{ padding: '10px 12px', color: 'var(--color-brand-heading)', textAlign: 'center', width: 90 }}>Actions</th>
 									</tr>
@@ -1727,7 +1903,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 								<tbody>
 									{profiles.length === 0 ? (
 										<tr>
-											<td colSpan={7} style={{ padding: 20, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+											<td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
 												No profiles found in this category. Go to Feed Ingestion to add remote subscription urls or paste manual configurations.
 											</td>
 										</tr>
@@ -1735,7 +1911,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 										<>
 											{rowVirtualizer.getVirtualItems()[0]?.start > 0 && (
 												<tr>
-													<td colSpan={7} style={{ height: rowVirtualizer.getVirtualItems()[0].start }} />
+													<td colSpan={8} style={{ height: rowVirtualizer.getVirtualItems()[0].start }} />
 												</tr>
 											)}
 											{rowVirtualizer.getVirtualItems().map((virtualRow) => {
@@ -1784,20 +1960,6 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 														<td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--color-brand-heading)' }}>
 															{flag && <span style={{ marginRight: 6, fontSize: 16 }}>{flag}</span>}
 															{p.name}
-															{cat && (
-																<span style={{
-																	marginLeft: 6,
-																	padding: '2px 6px',
-																	borderRadius: 4,
-																	background: 'rgba(99, 102, 241, 0.12)',
-																	color: '#6366f1',
-																	fontSize: 9,
-																	fontWeight: 600,
-																	border: '1px solid rgba(99, 102, 241, 0.2)'
-																}}>
-																	{cat.name}
-																</span>
-															)}
 														</td>
 														<td style={{ padding: '10px 12px' }}>
 															{getProtocolBadge(p.protocol)}
@@ -1812,6 +1974,23 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 																<span style={{ color: 'var(--color-brand-text)', fontFamily: 'monospace' }}>
 																	{p.address}:{p.port}
 																</span>
+															)}
+														</td>
+														<td style={{ padding: '10px 12px' }}>
+															{cat ? (
+																<span style={{
+																	padding: '2px 6px',
+																	borderRadius: 4,
+																	background: cat.color_hex ? `${cat.color_hex}1f` : 'rgba(99, 102, 241, 0.12)',
+																	color: cat.color_hex || '#6366f1',
+																	fontSize: 10,
+																	fontWeight: 600,
+																	border: `1px solid ${cat.color_hex ? `${cat.color_hex}33` : 'rgba(99, 102, 241, 0.2)'}`
+																}}>
+																	{cat.name}
+																</span>
+															) : (
+																<span style={{ color: 'var(--color-brand-muted)', fontSize: 10 }}>Ungrouped</span>
 															)}
 														</td>
 														<td 
@@ -1845,7 +2024,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 											{rowVirtualizer.getVirtualItems().length > 0 && (
 												<tr>
 													<td
-														colSpan={7}
+														colSpan={8}
 														style={{
 															height:
 																rowVirtualizer.getTotalSize() -
@@ -1856,7 +2035,7 @@ export const SubscriptionsCard: React.FC<SubscriptionsCardProps> = ({
 											)}
 											{isLoading && profiles.length < totalProfiles && (
 												<tr>
-													<td colSpan={7} style={{ padding: 10, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
+													<td colSpan={8} style={{ padding: 10, textAlign: 'center', color: 'var(--color-brand-muted)' }}>
 														Loading more...
 													</td>
 												</tr>

@@ -445,6 +445,144 @@ func StartSubscriptionUpdater(ctx context.Context) {
 	}
 }
 
+// UpdateSubscriptionByID fetches, parses, diffs and updates a single client-side subscription in place
+func UpdateSubscriptionByID(subID uint) (int, error) {
+	if db.DB == nil {
+		return 0, fmt.Errorf("database not initialized")
+	}
+
+	var s models.V2RayClientSubscription
+	if err := db.DB.First(&s, subID).Error; err != nil {
+		return 0, err
+	}
+
+	configs, err := FetchAndImportSubscription(s.URL)
+	if err != nil {
+		return 0, err
+	}
+
+	// Fetch current configs for this subscription from PebbleDB
+	currentConfigs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{SubscriptionID: &s.ID}, 0, 0)
+
+	newLookup := make(map[string]models.V2RayClientConfig)
+	for _, cfg := range configs {
+		key := fmt.Sprintf("%s-%s-%d", cfg.UUID, cfg.Address, cfg.Port)
+		newLookup[key] = cfg
+	}
+
+	currentLookup := make(map[string]models.V2RayClientConfig)
+	for _, cfg := range currentConfigs {
+		key := fmt.Sprintf("%s-%s-%d", cfg.UUID, cfg.Address, cfg.Port)
+		currentLookup[key] = cfg
+	}
+
+	var deletedActive bool
+
+	// Delete config records that are no longer in the subscription
+	for key, cfg := range currentLookup {
+		if _, ok := newLookup[key]; !ok {
+			if cfg.IsActive {
+				deletedActive = true
+			}
+			_ = pebble.DeleteClientConfig(cfg.ID)
+		}
+	}
+
+	// Find or create auto category for the subscription
+	var cat models.NodeCategory
+	catID := uint(0)
+	if err := db.DB.Where("name = ? AND type = ?", s.Name, "auto").First(&cat).Error; err != nil {
+		cat = models.NodeCategory{
+			Name:     s.Name,
+			Type:     "auto",
+			ColorHex: "#3b82f6",
+		}
+		if err := db.DB.Create(&cat).Error; err == nil {
+			catID = cat.ID
+		}
+	} else {
+		catID = cat.ID
+	}
+
+	// Detect country code helper
+	detectCountryCode := func(name string) string {
+		name = strings.ToUpper(name)
+		countries := map[string]string{
+			"US": "US", "UNITED STATES": "US", "🇺🇸": "US",
+			"HK": "HK", "HONG KONG": "HK", "🇭🇰": "HK",
+			"DE": "DE", "GERMANY": "DE", "🇩🇪": "DE",
+			"GB": "GB", "UNITED KINGDOM": "GB", "UK": "GB", "🇬🇧": "GB",
+			"FR": "FR", "FRANCE": "FR", "🇫🇷": "FR",
+			"NL": "NL", "NETHERLANDS": "NL", "🇳🇱": "NL",
+			"SG": "SG", "SINGAPORE": "SG", "🇸🇬": "SG",
+			"JP": "JP", "JAPAN": "JP", "🇯🇵": "JP",
+			"KR": "KR", "KOREA": "KR", "🇰🇷": "KR",
+			"TR": "TR", "TURKEY": "TR", "🇹🇷": "TR",
+			"IR": "IR", "IRAN": "IR", "🇮🇷": "IR",
+			"FI": "FI", "FINLAND": "FI", "🇫🇮": "FI",
+			"SE": "SE", "SWEDEN": "SE", "🇸🇪": "SE",
+			"CA": "CA", "CANADA": "CA", "🇨🇦": "CA",
+		}
+		for kw, cc := range countries {
+			if strings.Contains(name, kw) {
+				return cc
+			}
+		}
+		return ""
+	}
+
+	// Insert new ones, or update existing fields
+	var toSave []models.V2RayClientConfig
+	for key, cfg := range newLookup {
+		cfg.SubscriptionID = s.ID
+		cfg.SourceVector = "subscription"
+		cfg.CountryCode = detectCountryCode(cfg.Name)
+
+		if existing, ok := currentLookup[key]; ok {
+			existing.Name = cfg.Name
+			existing.TLSSettings = cfg.TLSSettings
+			existing.SubscriptionID = s.ID
+			existing.SourceVector = "subscription"
+			existing.CountryCode = cfg.CountryCode
+			// Keep manual category assignments intact if custom type
+			if existing.CategoryID > 0 {
+				var nodeCat models.NodeCategory
+				if err := db.DB.First(&nodeCat, existing.CategoryID).Error; err == nil && nodeCat.Type == "custom" {
+					// Keep
+				} else {
+					existing.CategoryID = catID
+				}
+			} else {
+				existing.CategoryID = catID
+			}
+			toSave = append(toSave, existing)
+		} else {
+			cfg.CategoryID = catID
+			toSave = append(toSave, cfg)
+		}
+	}
+
+	if len(toSave) > 0 {
+		_ = pebble.SaveClientConfigsBulk(toSave)
+	}
+
+	s.LastUpdatedAt = time.Now()
+	db.DB.Save(&s)
+
+	// Fallback to first available active server if current active server was deleted
+	if deletedActive {
+		allCfgs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+		if len(allCfgs) > 0 {
+			first := allCfgs[0]
+			first.IsActive = true
+			_ = pebble.SaveClientConfig(&first)
+			logger.Info("SubUpdater", "Active client server deleted from subscription. Auto-selected alternative active server", "name", first.Name)
+		}
+	}
+
+	return len(configs), nil
+}
+
 // UpdateAllSubscriptions fetches, parses, diffs and updates all client-side subscriptions
 func UpdateAllSubscriptions() {
 	if db.DB == nil {
@@ -468,129 +606,9 @@ func UpdateAllSubscriptions() {
 		}
 
 		logger.Info("SubUpdater", "Periodically updating V2Ray subscription", "name", s.Name, "url", s.URL)
-		configs, err := FetchAndImportSubscription(s.URL)
+		_, err := UpdateSubscriptionByID(s.ID)
 		if err != nil {
 			logger.Error("SubUpdater", "Failed to auto-update subscription", "url", s.URL, "error", err)
-			continue
-		}
-
-		// Fetch current configs for this subscription from PebbleDB
-		currentConfigs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{SubscriptionID: &s.ID}, 0, 0)
-
-		newLookup := make(map[string]models.V2RayClientConfig)
-		for _, cfg := range configs {
-			key := fmt.Sprintf("%s:%s:%d", cfg.UUID, cfg.Address, cfg.Port)
-			newLookup[key] = cfg
-		}
-
-		currentLookup := make(map[string]models.V2RayClientConfig)
-		for _, cfg := range currentConfigs {
-			key := fmt.Sprintf("%s:%s:%d", cfg.UUID, cfg.Address, cfg.Port)
-			currentLookup[key] = cfg
-		}
-
-		var deletedActive bool
-
-		// Delete config records that are no longer in the subscription
-		for key, cfg := range currentLookup {
-			if _, ok := newLookup[key]; !ok {
-				if cfg.IsActive {
-					deletedActive = true
-				}
-				_ = pebble.DeleteClientConfig(cfg.ID)
-			}
-		}
-
-		// Find or create auto category for the subscription
-		var cat models.NodeCategory
-		catID := uint(0)
-		if err := db.DB.Where("name = ? AND type = ?", s.Name, "auto").First(&cat).Error; err != nil {
-			cat = models.NodeCategory{
-				Name:     s.Name,
-				Type:     "auto",
-				ColorHex: "#3b82f6",
-			}
-			if err := db.DB.Create(&cat).Error; err == nil {
-				catID = cat.ID
-			}
-		} else {
-			catID = cat.ID
-		}
-
-		// Detect country code helper
-		detectCountryCode := func(name string) string {
-			name = strings.ToUpper(name)
-			countries := map[string]string{
-				"US": "US", "UNITED STATES": "US", "🇺🇸": "US",
-				"HK": "HK", "HONG KONG": "HK", "🇭🇰": "HK",
-				"DE": "DE", "GERMANY": "DE", "🇩🇪": "DE",
-				"GB": "GB", "UNITED KINGDOM": "GB", "UK": "GB", "🇬🇧": "GB",
-				"FR": "FR", "FRANCE": "FR", "🇫🇷": "FR",
-				"NL": "NL", "NETHERLANDS": "NL", "🇳🇱": "NL",
-				"SG": "SG", "SINGAPORE": "SG", "🇸🇬": "SG",
-				"JP": "JP", "JAPAN": "JP", "🇯🇵": "JP",
-				"KR": "KR", "KOREA": "KR", "🇰🇷": "KR",
-				"TR": "TR", "TURKEY": "TR", "🇹🇷": "TR",
-				"IR": "IR", "IRAN": "IR", "🇮🇷": "IR",
-				"FI": "FI", "FINLAND": "FI", "🇫🇮": "FI",
-				"SE": "SE", "SWEDEN": "SE", "🇸🇪": "SE",
-				"CA": "CA", "CANADA": "CA", "🇨🇦": "CA",
-			}
-			for kw, cc := range countries {
-				if strings.Contains(name, kw) {
-					return cc
-				}
-			}
-			return ""
-		}
-
-		// Insert new ones, or update existing fields
-		var toSave []models.V2RayClientConfig
-		for key, cfg := range newLookup {
-			cfg.SubscriptionID = s.ID
-			cfg.SourceVector = "subscription"
-			cfg.CountryCode = detectCountryCode(cfg.Name)
-
-			if existing, ok := currentLookup[key]; ok {
-				existing.Name = cfg.Name
-				existing.TLSSettings = cfg.TLSSettings
-				existing.SubscriptionID = s.ID
-				existing.SourceVector = "subscription"
-				existing.CountryCode = cfg.CountryCode
-				// Keep manual category assignments intact if custom type
-				if existing.CategoryID > 0 {
-					var nodeCat models.NodeCategory
-					if err := db.DB.First(&nodeCat, existing.CategoryID).Error; err == nil && nodeCat.Type == "custom" {
-						// Keep
-					} else {
-						existing.CategoryID = catID
-					}
-				} else {
-					existing.CategoryID = catID
-				}
-				toSave = append(toSave, existing)
-			} else {
-				cfg.CategoryID = catID
-				toSave = append(toSave, cfg)
-			}
-		}
-
-		if len(toSave) > 0 {
-			_ = pebble.SaveClientConfigsBulk(toSave)
-		}
-
-		s.LastUpdatedAt = time.Now()
-		db.DB.Save(&s)
-
-		// Fallback to first available active server if current active server was deleted
-		if deletedActive {
-			allCfgs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
-			if len(allCfgs) > 0 {
-				first := allCfgs[0]
-				first.IsActive = true
-				_ = pebble.SaveClientConfig(&first)
-				logger.Info("SubUpdater", "Active client server deleted from subscription. Auto-selected alternative active server", "name", first.Name)
-			}
 		}
 	}
 }

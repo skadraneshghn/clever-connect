@@ -1014,11 +1014,34 @@ func (h *V2RayHandler) DeleteSubscription(c *gin.Context) {
 	}
 
 	tx := db.DB.Begin()
+	var subRecord models.V2RayClientSubscription
+	if err := tx.First(&subRecord, id).Error; err == nil {
+		tx.Where("name = ? AND type = ?", subRecord.Name, "auto").Delete(&models.NodeCategory{})
+	}
 	tx.Delete(&models.V2RayClientSubscription{}, id)
 	tx.Commit()
 
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
+
+// UpdateSubscription handles POST /api/v2ray/client/subscriptions/:id/update
+func (h *V2RayHandler) UpdateSubscription(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid subscription ID"})
+		return
+	}
+
+	count, err := sub.UpdateSubscriptionByID(uint(id))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "updated", "count": count})
+}
+
 
 // ExportSelectedConfigsPDF handles POST /api/v2ray/client/export-pdf
 func (h *V2RayHandler) ExportSelectedConfigsPDF(c *gin.Context) {
@@ -2161,6 +2184,8 @@ func (h *V2RayHandler) UpdateCategory(c *gin.Context) {
 		return
 	}
 
+	oldName := cat.Name
+
 	if req.Name != "" {
 		cat.Name = req.Name
 	}
@@ -2172,6 +2197,16 @@ func (h *V2RayHandler) UpdateCategory(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Rename matching subscription if it's an auto/subscription category
+	if cat.Type == "auto" && req.Name != "" {
+		var subRecord models.V2RayClientSubscription
+		if err := db.DB.Where("name = ?", oldName).First(&subRecord).Error; err == nil {
+			subRecord.Name = req.Name
+			db.DB.Save(&subRecord)
+		}
+	}
+
 	c.JSON(http.StatusOK, cat)
 }
 
@@ -2180,17 +2215,33 @@ func (h *V2RayHandler) DeleteCategory(c *gin.Context) {
 	idStr := c.Param("id")
 	id, _ := strconv.Atoi(idStr)
 
-	// Fetch all nodes to clear this CategoryID in PebbleDB
-	configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
-	var updated []models.V2RayClientConfig
-	for _, cfg := range configs {
-		if cfg.CategoryID == uint(id) {
-			cfg.CategoryID = 0
-			updated = append(updated, cfg)
+	var cat models.NodeCategory
+	if err := db.DB.First(&cat, id).Error; err == nil {
+		if cat.Type == "auto" {
+			// Check if it represents a subscription and clean it up
+			var subRecord models.V2RayClientSubscription
+			if err := db.DB.Where("name = ?", cat.Name).First(&subRecord).Error; err == nil {
+				subID := subRecord.ID
+				configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{SubscriptionID: &subID}, 0, 0)
+				for _, cfg := range configs {
+					pebble.DeleteClientConfig(cfg.ID)
+				}
+				db.DB.Delete(&models.V2RayClientSubscription{}, subRecord.ID)
+			}
+		} else {
+			// Fetch all nodes to clear this CategoryID in PebbleDB for non-auto custom categories
+			configs, _ := pebble.ListClientConfigs(pebble.ConfigFilter{}, 0, 0)
+			var updated []models.V2RayClientConfig
+			for _, cfg := range configs {
+				if cfg.CategoryID == uint(id) {
+					cfg.CategoryID = 0
+					updated = append(updated, cfg)
+				}
+			}
+			if len(updated) > 0 {
+				_ = pebble.SaveClientConfigsBulk(updated)
+			}
 		}
-	}
-	if len(updated) > 0 {
-		_ = pebble.SaveClientConfigsBulk(updated)
 	}
 
 	if err := db.DB.Delete(&models.NodeCategory{}, id).Error; err != nil {

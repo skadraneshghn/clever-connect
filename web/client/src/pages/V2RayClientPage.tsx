@@ -278,6 +278,7 @@ export const V2RayClientPage: React.FC = () => {
   // Categories & Filtering
   const [categories, setCategories] = useState<any[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+  const [subscriptions, setSubscriptions] = useState<any[]>([]);
 
   const fetchCategories = async () => {
     try {
@@ -294,9 +295,25 @@ export const V2RayClientPage: React.FC = () => {
     }
   };
 
+  const fetchSubscriptions = async () => {
+    try {
+      const token = localStorage.getItem('cc_client_token') || '';
+      const res = await fetch('/api/v2ray/client/subscriptions', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSubscriptions(data || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch subscriptions', err);
+    }
+  };
+
   useEffect(() => {
     fetchProfiles(0, true, { categoryId: selectedCategoryId });
   }, [selectedCategoryId]);
+
 
   // Clipboard Mass Import States
   const [isClipboardModalOpen, setIsClipboardModalOpen] = useState(false);
@@ -369,6 +386,9 @@ export const V2RayClientPage: React.FC = () => {
 
       // Fetch categories
       fetchCategories();
+
+      // Fetch subscriptions
+      fetchSubscriptions();
     } catch (err) {
       console.error(err);
     } finally {
@@ -1485,6 +1505,8 @@ export const V2RayClientPage: React.FC = () => {
               selectedCategoryId={selectedCategoryId}
               setSelectedCategoryId={setSelectedCategoryId}
               fetchCategories={fetchCategories}
+              subscriptions={subscriptions}
+              fetchSubscriptions={fetchSubscriptions}
               isLoading={isLoading}
               subUrl={subUrl}
               setSubUrl={setSubUrl}
@@ -1533,6 +1555,8 @@ export const V2RayClientPage: React.FC = () => {
             selectedCategoryId={selectedCategoryId}
             setSelectedCategoryId={setSelectedCategoryId}
             fetchCategories={fetchCategories}
+            subscriptions={subscriptions}
+            fetchSubscriptions={fetchSubscriptions}
             isLoading={isLoading}
             subUrl={subUrl}
             setSubUrl={setSubUrl}
