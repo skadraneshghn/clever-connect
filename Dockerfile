@@ -18,10 +18,13 @@ RUN cd web/server && bun run build
 FROM golang:1.26.3 AS go-builder
 WORKDIR /app
 
-# Pre-fetch Go dependencies
+# Pre-fetch Go dependencies for the main module
 COPY go.mod go.sum ./
 COPY internal/ehco-patched ./internal/ehco-patched
 RUN go mod download
+
+# Pre-fetch Go dependencies for the nested ehco module
+RUN cd internal/ehco-patched && go mod download
 
 # Copy the compiled server frontend from Stage 1
 COPY --from=frontend-builder /app/web/server/dist ./web/server/dist
@@ -35,8 +38,8 @@ COPY . .
 # Compile Go backend binary with embedded SPA assets (optimizing RAM usage with concurrency limit)
 RUN CGO_ENABLED=0 GOGC=50 go build -p 1 -ldflags "-s -w" -o bin/clever-connect main.go
 
-# Compile Ehco binary directly
-RUN CGO_ENABLED=0 GOGC=50 go build -p 1 -ldflags "-s -w" -o bin/ehco github.com/Ehco1996/ehco/cmd/ehco
+# Compile Ehco binary from its nested module directory
+RUN cd internal/ehco-patched && CGO_ENABLED=0 GOGC=50 go build -p 1 -ldflags "-s -w" -o /app/bin/ehco ./cmd/ehco
 
 # ==========================================
 # STAGE 3: MINIMAL RUNTIME CONTAINER
