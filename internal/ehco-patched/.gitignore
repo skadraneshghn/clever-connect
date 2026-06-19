@@ -21,8 +21,8 @@ cert.pem
 key.pem
 .DS_Store
 monitor/data/
-main
-ehco
+/main
+/ehco
 
 cmd/test/
 localdev/
