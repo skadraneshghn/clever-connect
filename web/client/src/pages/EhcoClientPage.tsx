@@ -4,6 +4,7 @@ import { FiSliders, FiCpu, FiGlobe, FiKey, FiPlay, FiSquare, FiSave, FiRefreshCw
 export const EhcoClientPage: React.FC = () => {
   const [localPort, setLocalPort] = useState('1080');
   const [remoteURL, setRemoteURL] = useState('');
+  const [secondaryURL, setSecondaryURL] = useState('');
   const [authToken, setAuthToken] = useState('');
   
   // NEW CTO CONFIGS
@@ -38,6 +39,7 @@ export const EhcoClientPage: React.FC = () => {
         if (data.config) {
           setLocalPort(data.config.local_port || '1080');
           setRemoteURL(data.config.remote_url || '');
+          setSecondaryURL(data.config.secondary_url || '');
           setAuthToken(data.config.auth_token || '');
           setSni(data.config.sni || '');
           setEnableMux(data.config.enable_mux !== undefined ? data.config.enable_mux : true);
@@ -75,6 +77,7 @@ export const EhcoClientPage: React.FC = () => {
         body: JSON.stringify({
           local_port: localPort,
           remote_url: remoteURL,
+          secondary_url: secondaryURL,
           auth_token: authToken,
           sni: sni,
           enable_mux: enableMux,
@@ -92,6 +95,7 @@ export const EhcoClientPage: React.FC = () => {
         if (data.config) {
           setLocalPort(data.config.local_port || '1080');
           setRemoteURL(data.config.remote_url || '');
+          setSecondaryURL(data.config.secondary_url || '');
           setAuthToken(data.config.auth_token || '');
           setSni(data.config.sni || '');
           setEnableMux(data.config.enable_mux !== undefined ? data.config.enable_mux : true);
@@ -224,6 +228,28 @@ export const EhcoClientPage: React.FC = () => {
                   required
                 />
               </div>
+            </div>
+
+            <div style={{ marginBottom: 4 }}>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Secondary Fallback Address (Bypass CDN)</label>
+              <input
+                type="text"
+                value={secondaryURL}
+                onChange={(e) => setSecondaryURL(e.target.value)}
+                placeholder="e.g. app-xxx.cleverapps.io"
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: '1px solid var(--color-brand-border)',
+                  background: 'var(--color-brand-card)',
+                  color: 'var(--color-brand-heading)',
+                  fontSize: 13
+                }}
+              />
+              <span style={{ fontSize: 9, color: 'var(--color-brand-text)', marginTop: 4, display: 'block' }}>
+                Optional fallback address to bypass the primary CDN when it drops or encounters routing errors.
+              </span>
             </div>
 
             <div style={{ marginBottom: 4 }}>

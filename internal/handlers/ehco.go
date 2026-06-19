@@ -62,6 +62,7 @@ func (h *EhcoHandler) GetConfig(c *gin.Context) {
 			clientCfg = models.EhcoClientConfig{
 				LocalPort:    "1080",
 				RemoteURL:    "",
+				SecondaryURL: "",
 				AuthToken:    "",
 				SNI:          "",
 				EnableMux:    true,
@@ -139,6 +140,7 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 		var req struct {
 			LocalPort    string `json:"local_port"`
 			RemoteURL    string `json:"remote_url"`
+			SecondaryURL string `json:"secondary_url"`
 			AuthToken    string `json:"auth_token"`
 			SNI          string `json:"sni"`
 			EnableMux    bool   `json:"enable_mux"`
@@ -158,6 +160,7 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 		if err := db.DB.First(&clientCfg).Error; err == nil {
 			clientCfg.LocalPort = req.LocalPort
 			clientCfg.RemoteURL = strings.TrimSpace(req.RemoteURL)
+			clientCfg.SecondaryURL = strings.TrimSpace(req.SecondaryURL)
 			clientCfg.AuthToken = strings.TrimSpace(req.AuthToken)
 			clientCfg.SNI = req.SNI
 			clientCfg.EnableMux = req.EnableMux
@@ -171,6 +174,7 @@ func (h *EhcoHandler) SaveConfig(c *gin.Context) {
 			clientCfg = models.EhcoClientConfig{
 				LocalPort:    req.LocalPort,
 				RemoteURL:    strings.TrimSpace(req.RemoteURL),
+				SecondaryURL: strings.TrimSpace(req.SecondaryURL),
 				AuthToken:    strings.TrimSpace(req.AuthToken),
 				SNI:          req.SNI,
 				EnableMux:    req.EnableMux,

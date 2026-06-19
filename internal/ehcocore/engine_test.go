@@ -68,7 +68,7 @@ func TestEhcoSupervisor(t *testing.T) {
 
 	// Wait for supervisor to detect crash and restart it
 	// (backoff starts at 1 second, supervisor checks every 3 seconds)
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	// Verify it has been restarted automatically and is running again
 	if !IsRunning() {

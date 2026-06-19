@@ -1,0 +1,41 @@
+# Make sure to check the documentation at http://goreleaser.com
+before:
+  hooks:
+    - go mod download
+builds:
+  - id: ehco
+    main: ./cmd/ehco/main.go
+    flags:
+      - -trimpath
+    tags:
+      - nofibrechannel
+      - nomountstats
+    ldflags:
+      - -w -s
+      - -X github.com/Ehco1996/ehco/internal/constant.GitBranch={{.Branch}}
+      - -X github.com/Ehco1996/ehco/internal/constant.GitRevision={{.ShortCommit}}
+      - -X github.com/Ehco1996/ehco/internal/constant.BuildTime={{.Date}}
+      - -X github.com/Ehco1996/ehco/internal/constant.Version={{.Version}}
+    goarch:
+      - amd64
+      - arm64
+    goarm:
+      - 7
+    goos:
+      - linux
+    binary: "ehco_{{ .Os }}_{{ .Arch }}"
+archives:
+  - format: binary
+    name_template: "{{ .Binary }}"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+upx:
+  - enabled: true
+    compress: 9
+
+release:
+  prerelease: auto

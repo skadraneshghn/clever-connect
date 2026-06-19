@@ -2,9 +2,11 @@ package ehcocore
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -58,6 +60,7 @@ var (
 	stopChan     chan struct{} // to signal supervisor loop to stop
 	isServerMode bool          // whether we are running in server mode vs client mode
 	restartDelay time.Duration // current restart delay for backoff
+	activeURL    string        // tracks which URL (primary vs secondary) is currently running
 )
 
 // getEhcoBinPath ensures we look for 'ehco' in the exact same directory as 'clever-connect'
@@ -129,6 +132,12 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 		return err
 	}
 
+	primaryURL := dbCfg.RemoteURL
+	if dbCfg.EnableBridge && dbCfg.BridgeURL != "" {
+		primaryURL = dbCfg.BridgeURL
+	}
+	activeURL = primaryURL
+
 	if err := startClientEngineLocked(dbCfg); err != nil {
 		return err
 	}
@@ -138,6 +147,10 @@ func StartClientEngine(dbCfg *models.EhcoClientConfig) error {
 	restartDelay = 1 * time.Second
 	stopChan = make(chan struct{})
 	startSupervisor()
+
+	if dbCfg.SecondaryURL != "" {
+		go startFailoverMonitor(dbCfg, stopChan)
+	}
 
 	return nil
 }
@@ -273,10 +286,14 @@ func startClientEngineLocked(dbCfg *models.EhcoClientConfig) error {
 		authPath = "/tunnel/" + dbCfg.AuthToken
 	}
 
-	// Select URL to parse (dynamic bridge override vs direct)
-	urlToParse := dbCfg.RemoteURL
-	if dbCfg.EnableBridge && dbCfg.BridgeURL != "" {
-		urlToParse = dbCfg.BridgeURL
+	// Select URL to parse (activeURL vs database config fallback)
+	urlToParse := activeURL
+	if urlToParse == "" {
+		urlToParse = dbCfg.RemoteURL
+		if dbCfg.EnableBridge && dbCfg.BridgeURL != "" {
+			urlToParse = dbCfg.BridgeURL
+		}
+		activeURL = urlToParse
 	}
 
 	// Parse selected URL
@@ -580,5 +597,139 @@ func restartEngineFromDB() error {
 		}
 		_ = stopEngineLockedOnly()
 		return startClientEngineLocked(&clientCfg)
+	}
+}
+
+// checkAddressHealth performs a WebSocket upgrade HTTP handshake probe
+func checkAddressHealth(address string, authToken string, enableMux bool) bool {
+	if !strings.Contains(address, "://") {
+		address = "wss://" + address
+	}
+	u, err := url.Parse(address)
+	if err != nil {
+		return false
+	}
+
+	scheme := u.Scheme
+	if scheme == "wss" || scheme == "https" {
+		scheme = "https"
+	} else {
+		scheme = "http"
+	}
+
+	path := u.Path
+	if path == "" || path == "/" {
+		path = "/tunnel"
+	}
+	if authToken != "" && !strings.HasSuffix(path, authToken) {
+		path = strings.TrimSuffix(path, "/") + "/" + authToken
+	}
+
+	probeURL := fmt.Sprintf("%s://%s%s", scheme, u.Host, path)
+	if enableMux {
+		probeURL += "%3Fmux=true"
+	} else {
+		probeURL += "%3Fmux=false"
+	}
+
+	client := &http.Client{
+		Timeout: 4 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	req, err := http.NewRequest("GET", probeURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 101 {
+		return false
+	}
+	return true
+}
+
+// startFailoverMonitor monitors the primary endpoint and fails over to secondary, or fails back
+func startFailoverMonitor(dbCfg *models.EhcoClientConfig, currentStopChan chan struct{}) {
+	primaryURL := dbCfg.RemoteURL
+	if dbCfg.EnableBridge && dbCfg.BridgeURL != "" {
+		primaryURL = dbCfg.BridgeURL
+	}
+	secondaryURL := dbCfg.SecondaryURL
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	consecutiveFailures := 0
+	consecutiveSuccesses := 0
+
+	for {
+		select {
+		case <-currentStopChan:
+			return
+		case <-ticker.C:
+			mu.Lock()
+			if !expectedRun || isServerMode {
+				mu.Unlock()
+				return
+			}
+			mu.Unlock()
+
+			primaryHealthy := checkAddressHealth(primaryURL, dbCfg.AuthToken, dbCfg.EnableMux)
+
+			mu.Lock()
+			if !expectedRun {
+				mu.Unlock()
+				return
+			}
+
+			if activeURL == primaryURL {
+				if !primaryHealthy {
+					consecutiveFailures++
+					consecutiveSuccesses = 0
+					logger.Warn("EhcoFailover", "Primary URL probe failed", "url", primaryURL, "consecutiveFailures", consecutiveFailures)
+					if consecutiveFailures >= 3 {
+						logger.Error("EhcoFailover", "Primary URL down. Failing over to secondary URL.", "primary", primaryURL, "secondary", secondaryURL)
+						activeURL = secondaryURL
+						consecutiveFailures = 0
+						_ = stopEngineLockedOnly()
+						if err := startClientEngineLocked(dbCfg); err != nil {
+							logger.Error("EhcoFailover", "Failed to start client engine with secondary URL", "error", err)
+						}
+					}
+				} else {
+					consecutiveFailures = 0
+				}
+			} else if activeURL == secondaryURL {
+				if primaryHealthy {
+					consecutiveSuccesses++
+					consecutiveFailures = 0
+					logger.Info("EhcoFailover", "Primary URL probe succeeded while on secondary", "url", primaryURL, "consecutiveSuccesses", consecutiveSuccesses)
+					if consecutiveSuccesses >= 3 {
+						logger.Info("EhcoFailover", "Primary URL has recovered. Failing back to primary URL.", "primary", primaryURL)
+						activeURL = primaryURL
+						consecutiveSuccesses = 0
+						_ = stopEngineLockedOnly()
+						if err := startClientEngineLocked(dbCfg); err != nil {
+							logger.Error("EhcoFailover", "Failed to start client engine with primary URL", "error", err)
+						}
+					}
+				} else {
+					consecutiveSuccesses = 0
+				}
+			}
+			mu.Unlock()
+		}
 	}
 }

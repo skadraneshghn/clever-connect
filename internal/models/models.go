@@ -46,9 +46,10 @@ type EhcoServerConfig struct {
 // EhcoClientConfig stores how the local machine connects to Clever Cloud
 type EhcoClientConfig struct {
 	gorm.Model
-	LocalPort string `json:"local_port" gorm:"default:'1080'"`
-	RemoteURL string `json:"remote_url"` // e.g., wss://app.cleverapps.io/tunnel
-	AuthToken string `json:"auth_token"`
+	LocalPort    string `json:"local_port" gorm:"default:'1080'"`
+	RemoteURL    string `json:"remote_url"` // e.g., wss://app.cleverapps.io/tunnel
+	SecondaryURL string `json:"secondary_url"`
+	AuthToken    string `json:"auth_token"`
 
 	// --- NEW CTO CONFIGS ---
 	SNI       string `json:"sni"` // Essential for TLS obfuscation

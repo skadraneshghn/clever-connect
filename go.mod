@@ -414,3 +414,5 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	zombiezen.com/go/sqlite v0.13.1 // indirect
 )
+
+replace github.com/Ehco1996/ehco => ./internal/ehco-patched

@@ -485,6 +485,33 @@ export const EhcoServerPage: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Connection Endpoints */}
+          <div className="g-card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+              <FiGlobe style={{ color: 'var(--color-brand)', fontSize: 16 }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Connection Endpoints</span>
+            </div>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Primary CDN (Requires Client Setup)</span>
+                <p style={{ margin: '4px 0 0', fontSize: 14, fontWeight: 600, color: 'var(--color-brand-heading)' }}>
+                  ondata.ir
+                </p>
+              </div>
+              
+              <div style={{ borderTop: '1px solid var(--color-brand-border)', paddingTop: 10 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase' }}>Direct Clever Cloud Fallback (Bypass CDN)</span>
+                <p style={{ margin: '4px 0 0', fontSize: 14, fontWeight: 600, color: 'var(--color-brand)', fontFamily: 'Fira Code' }}>
+                  {window.location.hostname}
+                </p>
+                <span style={{ fontSize: 9, color: 'var(--color-brand-text)', display: 'block', marginTop: 4 }}>
+                  Copy this hostname into the Client's Secondary Address field.
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
 
       </div>
