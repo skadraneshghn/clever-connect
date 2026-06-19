@@ -20,6 +20,7 @@ WORKDIR /app
 
 # Pre-fetch Go dependencies
 COPY go.mod go.sum ./
+COPY internal/ehco-patched ./internal/ehco-patched
 RUN go mod download
 
 # Copy the compiled server frontend from Stage 1
