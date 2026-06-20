@@ -628,8 +628,9 @@ func main() {
 	router.Use(serveEmbeddedSPA(embedFS))
 
 	// Start Gin Server
-	logger.Info("Core", "Orchestrator listening", "addr", "http://127.0.0.1:"+cfg.Port)
-	if err := router.Run(":" + cfg.Port); err != nil {
+	bindAddr := "0.0.0.0:" + cfg.Port
+	logger.Info("Core", "Orchestrator listening", "addr", "http://"+bindAddr)
+	if err := router.Run(bindAddr); err != nil {
 		logger.Fatal("Core", "Failed to run server", "error", err)
 	}
 }

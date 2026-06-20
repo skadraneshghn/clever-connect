@@ -62,6 +62,14 @@ print_diagnostics() {
         echo -e "    ${CLR_RED}${ICON_WARN} Ehco Tunnel Subprocess:${CLR_NC} Dormant"
     fi
 
+    # Check TrustTunnel Client/Endpoint
+    if pgrep -f "trusttunnel_" > /dev/null; then
+        PID_TT=$(pgrep -f "trusttunnel_" | head -n 1)
+        echo -e "    ${CLR_GREEN}${ICON_CHECK} TrustTunnel Subprocess:${CLR_NC} Running (PID: $PID_TT)"
+    else
+        echo -e "    ${CLR_RED}${ICON_WARN} TrustTunnel Subprocess:${CLR_NC} Dormant"
+    fi
+
     # 3. Check Nginx Multiplexer
     if pgrep -x "nginx" > /dev/null; then
         echo -e "    ${CLR_GREEN}${ICON_CHECK} Nginx Port Multiplexer:${CLR_NC} Active"
@@ -111,6 +119,12 @@ kill_all() {
     if pgrep -f "bin/ehco" > /dev/null; then
         pkill -9 -f "bin/ehco"
         echo -e "  - Terminated Ehco Tunnel subprocesses aggressively."
+    fi
+
+    # Kill trusttunnel processes aggressively
+    if pgrep -f "trusttunnel_" > /dev/null; then
+        pkill -9 -f "trusttunnel_"
+        echo -e "  - Terminated TrustTunnel subprocesses aggressively."
     fi
 
     # 4. Kill Nginx (local development if running sudo/user)

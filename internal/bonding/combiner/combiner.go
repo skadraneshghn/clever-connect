@@ -277,20 +277,34 @@ func (c *Combiner) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn.SetReadLimit(maxMessageSize)
-	conn.SetReadDeadline(time.Now().Add(pongWait))
-	// Respond to native WebSocket Ping control frames from the client.
-	// Gorilla does this automatically, but we also reset the read deadline here
-	// so the server-side timeout stays in sync with the client's 20s ping cadence.
-	conn.SetPingHandler(func(appData string) error {
-		_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
-		_ = conn.WriteMessage(websocket.PongMessage, nil)
-		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
-	})
+
+	// 1. Clear default deadlines to hand control over to our internal ticker
+	conn.SetReadDeadline(time.Time{})
+	conn.SetWriteDeadline(time.Time{})
+
+	// 2. Register a robust Pong handler to refresh stability state
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(pongWait))
+		conn.SetReadDeadline(time.Time{})
 		return nil
 	})
+
+	// 3. Spawn a dedicated keep-alive heartbeat loop for this specific connection
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-ticker.C:
+				_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					logger.Warn("WS", "Ping failed, closing connection", "remote", conn.RemoteAddr(), "error", err)
+					conn.Close()
+					return
+				}
+			}
+		}
+	}()
 
 	ac := &arteryConn{
 		conn:     conn,

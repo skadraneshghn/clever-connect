@@ -81,12 +81,16 @@ RUN curl -fSL https://github.com/TrustTunnel/TrustTunnel/releases/download/v1.0.
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY mediamtx.yml /etc/mediamtx.yml
 
-# Create and configure runtime data storage
-RUN mkdir -p data && chmod 777 data
+# Create and configure runtime data storage and download GeoIP databases
+RUN mkdir -p data/geo && \
+    curl -fSL https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb -o data/geo/GeoLite2-City.mmdb && \
+    curl -fSL https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb -o data/geo/GeoLite2-ASN.mmdb && \
+    curl -fSL https://github.com/metowolf/qqwry.dat/releases/latest/download/qqwry.dat -o data/geo/qqwry.dat && \
+    chmod -R 777 data
 
 # Default environment parameters
 ENV APP_MODE=server
 ENV PORT=8080
 
 # Run Nginx, Gost, and MediaMTX services in the background and boot Clever Connect Gin server
-CMD service nginx start && /usr/local/bin/gost -L socks5://127.0.0.1:10805 & /usr/local/bin/mediamtx /etc/mediamtx.yml & export PORT=3000 && exec ./bin/clever-connect
+CMD service nginx start && /usr/local/bin/gost -L socks5://127.0.0.1:10805 & /usr/local/bin/mediamtx /etc/mediamtx.yml & exec ./bin/clever-connect

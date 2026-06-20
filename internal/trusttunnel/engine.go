@@ -35,11 +35,28 @@ func getBinPath(mode string) string {
 		binName = "trusttunnel_endpoint"
 	}
 
-	exe, err := os.Executable()
-	if err != nil {
-		return filepath.Join("bin", binName)
+	// 1. Try relative to the executable's directory
+	if exe, err := os.Executable(); err == nil {
+		path := filepath.Join(filepath.Dir(exe), binName)
+		if _, err := os.Stat(path); err == nil {
+			if absPath, err := filepath.Abs(path); err == nil {
+				return absPath
+			}
+			return path
+		}
 	}
-	return filepath.Join(filepath.Dir(exe), binName)
+
+	// 2. Fall back to current working directory (e.g., bin/trusttunnel_client)
+	path := filepath.Join("bin", binName)
+	if _, err := os.Stat(path); err == nil {
+		if absPath, err := filepath.Abs(path); err == nil {
+			return absPath
+		}
+		return path
+	}
+
+	// 3. Fallback to just the binary name in case it's in the PATH
+	return binName
 }
 
 // getConfigDir returns a writable temp directory for TrustTunnel TOML configs.
@@ -54,42 +71,53 @@ func generateServerTOML(cfg *models.TrustTunnelConfig) error {
 		return fmt.Errorf("failed to create trusttunnel config dir: %w", err)
 	}
 
-	// vpn.toml — Core server settings
-	vpnTOML := fmt.Sprintf(`[server]
-listen = "%s"
-forced_transport = "%s"
-auth_failure_status_code = %d
+	// Format listen_protocols configuration based on forced transport
+	var listenProtocols string
+	switch cfg.ForcedTransport {
+	case "http1":
+		listenProtocols = `[listen_protocols.http1]
+upload_buffer_size = 32768`
+	case "quic":
+		listenProtocols = `[listen_protocols.quic]
+recv_udp_payload_size = 1350
+send_udp_payload_size = 1350`
+	default: // http2
+		listenProtocols = fmt.Sprintf(`[listen_protocols.http2]
+initial_connection_window_size = %d
+initial_stream_window_size = %d`, cfg.H2InitialConnWindowSize, cfg.H2InitialStreamWindowSize)
+	}
+
+	// vpn.toml — Core server settings (root properties in Settings struct)
+	vpnTOML := fmt.Sprintf(`listen_address = "%s"
 tls_handshake_timeout_secs = %d
+auth_failure_status_code = %d
+credentials_file = "credentials.toml"
+rules_file = "rules.toml"
+ipv6_available = true
+allow_private_network_connections = false
 
-[obfuscation]
-client_random_prefix = "%s"
-
-[http2]
-h2_initial_stream_window_size = %d
-h2_initial_connection_window_size = %d
+[listen_protocols]
+%s
 `,
 		cfg.ListenAddress,
-		cfg.ForcedTransport,
-		cfg.AuthFailureStatusCode,
 		cfg.TlsHandshakeTimeoutSecs,
-		cfg.ClientRandomPrefix,
-		cfg.H2InitialStreamWindowSize,
-		cfg.H2InitialConnWindowSize,
+		cfg.AuthFailureStatusCode,
+		listenProtocols,
 	)
 
 	if err := os.WriteFile(filepath.Join(dir, "vpn.toml"), []byte(vpnTOML), 0644); err != nil {
 		return fmt.Errorf("failed to write vpn.toml: %w", err)
 	}
 
-	// hosts.toml — TLS certificate configuration
+	// hosts.toml — TLS certificate configuration (uses main_hosts array)
 	hostsTOML := ""
 	if cfg.ServerHostname != "" {
-		hostsTOML = fmt.Sprintf(`[[hosts]]
+		hostsTOML = fmt.Sprintf(`[[main_hosts]]
 hostname = "%s"
 `, cfg.ServerHostname)
 		if cfg.TlsCertPath != "" && cfg.TlsKeyPath != "" {
-			hostsTOML += fmt.Sprintf(`tls_cert_path = "%s"
-tls_key_path = "%s"
+			hostsTOML += fmt.Sprintf(`cert_chain_path = "%s"
+private_key_path = "%s"
 `, cfg.TlsCertPath, cfg.TlsKeyPath)
 		}
 	}
@@ -97,13 +125,13 @@ tls_key_path = "%s"
 		return fmt.Errorf("failed to write hosts.toml: %w", err)
 	}
 
-	// credentials.toml — User authentication
+	// credentials.toml — User authentication (uses client array)
 	var users []models.TrustTunnelUser
 	db.DB.Where("is_active = ?", true).Find(&users)
 
 	credsTOML := ""
 	for _, u := range users {
-		credsTOML += fmt.Sprintf(`[[credentials]]
+		credsTOML += fmt.Sprintf(`[[client]]
 username = "%s"
 password = "%s"
 
@@ -113,17 +141,29 @@ password = "%s"
 		return fmt.Errorf("failed to write credentials.toml: %w", err)
 	}
 
-	// rules.toml — Firewall / bypass rules
+	// rules.toml — Firewall / bypass rules (uses rule array)
+	rulesToml := ""
+	if cfg.ClientRandomPrefix != "" {
+		rulesToml += fmt.Sprintf(`[[rule]]
+client_random_prefix = "%s"
+action = "allow"
+
+`, cfg.ClientRandomPrefix)
+	}
+
 	var rules []models.TrustTunnelFirewallRule
 	db.DB.Find(&rules)
 
-	rulesToml := ""
 	for _, r := range rules {
-		rulesToml += fmt.Sprintf(`[[rules]]
-target_cidr = "%s"
-bypass_strategy = "%s"
+		action := "allow"
+		if r.BypassStrategy == "deny" {
+			action = "deny"
+		}
+		rulesToml += fmt.Sprintf(`[[rule]]
+cidr = "%s"
+action = "%s"
 
-`, r.TargetCIDR, r.BypassStrategy)
+`, r.TargetCIDR, action)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "rules.toml"), []byte(rulesToml), 0644); err != nil {
 		return fmt.Errorf("failed to write rules.toml: %w", err)
