@@ -71,7 +71,7 @@ setup-husky:
 download-trusttunnel:
 	@echo "=== Downloading TrustTunnel stealth protocol binaries ==="
 	@mkdir -p bin
-	curl -fSL https://github.com/TrustTunnel/TrustTunnel/releases/latest/download/trusttunnel_endpoint-linux-amd64 -o bin/trusttunnel_endpoint
-	curl -fSL https://github.com/TrustTunnel/TrustTunnel/releases/latest/download/trusttunnel_client-linux-amd64 -o bin/trusttunnel_client
+	curl -fSL https://github.com/TrustTunnel/TrustTunnel/releases/download/v1.0.33/trusttunnel-v1.0.33-linux-x86_64.tar.gz | tar -xz -C bin --strip-components=1 trusttunnel-v1.0.33-linux-x86_64/trusttunnel_endpoint
+	curl -fSL https://github.com/TrustTunnel/TrustTunnelClient/releases/download/v1.0.49/trusttunnel_client-v1.0.49-linux-x86_64.tar.gz | tar -xz -C bin --strip-components=1 trusttunnel_client-v1.0.49-linux-x86_64/trusttunnel_client
 	chmod +x bin/trusttunnel_endpoint bin/trusttunnel_client
 	@echo "TrustTunnel binaries downloaded to bin/"
