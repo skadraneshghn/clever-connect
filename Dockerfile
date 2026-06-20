@@ -92,5 +92,5 @@ RUN mkdir -p data/geo && \
 ENV APP_MODE=server
 ENV PORT=8080
 
-# Run Nginx, Gost, and MediaMTX services in the background and boot Clever Connect Gin server
-CMD service nginx start && /usr/local/bin/gost -L socks5://127.0.0.1:10805 & /usr/local/bin/mediamtx /etc/mediamtx.yml & exec ./bin/clever-connect
+# Run Nginx (with dynamic port translation matching Clever Cloud), Gost, and MediaMTX services in the background and boot Clever Connect Gin server
+CMD sed -i "s/listen 8080;/listen ${PORT:-8080};/g" /etc/nginx/nginx.conf && service nginx start && /usr/local/bin/gost -L socks5://127.0.0.1:10805 & /usr/local/bin/mediamtx /etc/mediamtx.yml & export PORT=3000 && exec ./bin/clever-connect
