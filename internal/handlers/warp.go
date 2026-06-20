@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"sync/atomic"
+	"time"
 
 	"clever-connect/internal/config"
 	"clever-connect/internal/db"
@@ -516,9 +518,20 @@ func (h *WarpHandler) StartTunnel(c *gin.Context) {
 	cfg.IsActive = true
 	db.DB.Save(&cfg)
 
-	// Run initial trace check in background
+	// Run initial trace check in background after a settlement delay.
+	// For masque_h2/wireguard the TCP+TLS+H2+auth handshake needs time to settle
+	// before we probe; otherwise we trigger a false rotation immediately.
 	go func() {
-		if err := warp.AutoRotateOnFailure(&cfg); err != nil {
+		settleDelay := 10 * time.Second
+		if cfg.TransportMode == "masque_h2" || cfg.TransportMode == "wireguard" {
+			settleDelay = 30 * time.Second
+		}
+		time.Sleep(settleDelay)
+
+		// Fresh counter: the on-demand check gets its own counter so it doesn't
+		// interfere with the periodic checker's consecutive-failure tracking.
+		var onDemandFails atomic.Int32
+		if err := warp.AutoRotateOnFailure(&cfg, &onDemandFails); err != nil {
 			logger.Warn("WARP", "Initial trace check failed", "error", err)
 		}
 	}()

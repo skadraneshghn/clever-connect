@@ -117,20 +117,7 @@ func (e *WarpEngine) StartEngine(cfg *models.WarpGlobalConfig, account *models.W
 		"httpPort", cfg.HTTPPort,
 	)
 
-	// Resolve best endpoint from PebbleDB
-	endpoint, err := pebble.GetBestWarpEndpoint(cfg.TransportMode)
-	if err != nil {
-		e.state.Store(int32(EngineStateStopped))
-		return fmt.Errorf("no available endpoints: %w (run a scan first)", err)
-	}
-
-	logger.Info("WARP", "Selected optimal endpoint",
-		"ip", endpoint.IPAddress,
-		"port", endpoint.Port,
-		"latency", fmt.Sprintf("%.0fms", endpoint.LatencyMs),
-	)
-
-	// Verify port availability
+	// Verify port availability before touching network
 	if err := checkPortAvailable(cfg.SocksPort); err != nil {
 		e.state.Store(int32(EngineStateStopped))
 		return fmt.Errorf("SOCKS port %d unavailable: %w", cfg.SocksPort, err)
@@ -140,49 +127,92 @@ func (e *WarpEngine) StartEngine(cfg *models.WarpGlobalConfig, account *models.W
 		return fmt.Errorf("HTTP port %d unavailable: %w", cfg.HTTPPort, err)
 	}
 
-	// Create parent context
-	e.ctx, e.cancel = context.WithCancel(context.Background())
-	e.cfg = cfg
-	e.account = account
-	e.activeEndpoint = endpoint
-	e.startTime = time.Now()
+	// ── Ranked endpoint retry loop ────────────────────────────────────────────
+	// GetRankedEndpoints returns all stored endpoints in quality order:
+	//   Tier 1: QUIC-capable,  zero fails,  highest score first
+	//   Tier 2: TCP-only,      zero fails,  highest score first
+	//   Tier 3: any endpoint with prior failures (last resort)
+	//
+	// On each attempt: try to establish the transport. If it fails, increment
+	// the endpoint's FailCount in PebbleDB (permanently lowers its rank), then
+	// move to the next candidate.
+	const maxEndpointAttempts = 5
 
-	// Start transport based on mode
-	switch cfg.TransportMode {
-	case "masque":
-		if err := e.startMASQUETransport(); err != nil {
-			e.cancel()
-			e.state.Store(int32(EngineStateStopped))
-			return fmt.Errorf("failed to start MASQUE transport: %w", err)
-		}
-	case "masque_h2":
-		// MASQUE over HTTP/2 TCP — for ISPs that block all UDP (Iran, etc.)
-		if err := e.startMASQUEH2Transport(); err != nil {
-			e.cancel()
-			e.state.Store(int32(EngineStateStopped))
-			return fmt.Errorf("failed to start MASQUE/H2 transport: %w", err)
-		}
-	case "wireguard":
-		if err := e.startWireGuardTransport(); err != nil {
-			e.cancel()
-			e.state.Store(int32(EngineStateStopped))
-			return fmt.Errorf("failed to start WireGuard transport: %w", err)
-		}
-	default:
-		e.cancel()
+	candidates, err := pebble.GetRankedEndpoints(cfg.TransportMode)
+	if err != nil {
 		e.state.Store(int32(EngineStateStopped))
-		return fmt.Errorf("unsupported transport mode: %s (valid: masque, masque_h2, wireguard)", cfg.TransportMode)
+		return fmt.Errorf("no available endpoints: %w", err)
 	}
 
-	e.state.Store(int32(EngineStateRunning))
+	if len(candidates) > maxEndpointAttempts {
+		candidates = candidates[:maxEndpointAttempts]
+	}
 
-	logger.Info("WARP", "WARP+ engine started successfully",
-		"mode", cfg.TransportMode,
-		"endpoint", fmt.Sprintf("%s:%d", endpoint.IPAddress, endpoint.Port),
-		"socksPort", cfg.SocksPort,
-	)
+	var lastErr error
+	for i, endpoint := range candidates {
+		ep := endpoint // capture loop variable
+		logger.Info("WARP", "Trying endpoint",
+			"attempt", fmt.Sprintf("%d/%d", i+1, len(candidates)),
+			"ip", ep.IPAddress,
+			"port", ep.Port,
+			"latency", fmt.Sprintf("%.0fms", ep.LatencyMs),
+			"score", fmt.Sprintf("%.1f", ep.Score),
+			"failCount", ep.FailCount,
+			"restricted", ep.IsRestricted,
+		)
 
-	return nil
+		// Set up fresh context for this attempt
+		e.ctx, e.cancel = context.WithCancel(context.Background())
+		e.cfg = cfg
+		e.account = account
+		e.activeEndpoint = &ep
+		e.startTime = time.Now()
+
+		// Attempt transport dial
+		var transportErr error
+		switch cfg.TransportMode {
+		case "masque":
+			transportErr = e.startMASQUETransport()
+		case "masque_h2":
+			transportErr = e.startMASQUEH2Transport()
+		case "wireguard":
+			transportErr = e.startWireGuardTransport()
+		default:
+			e.cancel()
+			e.state.Store(int32(EngineStateStopped))
+			return fmt.Errorf("unsupported transport mode: %s (valid: masque, masque_h2, wireguard)", cfg.TransportMode)
+		}
+
+		if transportErr == nil {
+			// Success — engine is up on this endpoint
+			e.state.Store(int32(EngineStateRunning))
+			logger.Info("WARP", "WARP+ engine started successfully",
+				"mode", cfg.TransportMode,
+				"endpoint", fmt.Sprintf("%s:%d", ep.IPAddress, ep.Port),
+				"score", fmt.Sprintf("%.1f", ep.Score),
+				"socksPort", cfg.SocksPort,
+			)
+			return nil
+		}
+
+		// Failure — penalise this endpoint and try the next one
+		lastErr = transportErr
+		logger.Warn("WARP", "Endpoint failed, trying next",
+			"ip", ep.IPAddress,
+			"port", ep.Port,
+			"error", transportErr.Error(),
+		)
+		// Cancel context before next attempt
+		e.cancel()
+		e.cancel = nil
+
+		// Increment failure count in PebbleDB (lowers score for future connections)
+		_ = pebble.IncrementEndpointFailCount(cfg.TransportMode, ep.IPAddress, ep.Port)
+	}
+
+	// All candidates exhausted
+	e.state.Store(int32(EngineStateStopped))
+	return fmt.Errorf("all %d endpoints failed for mode %s; last error: %w", len(candidates), cfg.TransportMode, lastErr)
 }
 
 // StopEngine safely tears down the WARP tunnel engine.

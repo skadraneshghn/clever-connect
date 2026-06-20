@@ -1,5 +1,27 @@
 package warp
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Captive Portal Trace Validator (Pillar 5)
+//
+// Tests the performance and path integrity of a WARP proxy connection
+// before routing production user traffic. Verifies that traffic is actually
+// flowing through Cloudflare WARP by checking the /cdn-cgi/trace endpoint.
+//
+// Key design decisions for Iran (UDP-blocked, high-latency):
+//
+//   1. Settlement grace period — TCP+TLS+H2+CONNECT auth takes multiple RTTs.
+//      We wait before probing so we don't trigger a false rotation.
+//
+//   2. Consecutive failure counter — don't rotate on the first failed check.
+//      Transient congestion on CF's edge is common; require 2 consecutive
+//      failures before deciding the endpoint is truly dead.
+//
+//   3. Fallback connectivity probe — if /cdn-cgi/trace fails (ISP DPI may
+//      drop requests containing that path string), try a plain HEAD request
+//      to cloudflare.com. If that succeeds the tunnel is up but the trace
+//      URL is being filtered; we skip rotation in this case.
+// ──────────────────────────────────────────────────────────────────────────────
+
 import (
 	"bufio"
 	"context"
@@ -7,6 +29,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"clever-connect/internal/db"
@@ -17,16 +40,9 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Captive Portal Trace Validator (Pillar 5)
-//
-// Tests the performance and path integrity of a WARP proxy connection
-// before routing production user traffic. Verifies that traffic is actually
-// flowing through Cloudflare WARP by checking the /cdn-cgi/trace endpoint.
-// ──────────────────────────────────────────────────────────────────────────────
-
 const (
-	traceURL = "https://connectivity.cloudflareclient.com/cdn-cgi/trace"
+	traceURL    = "https://connectivity.cloudflareclient.com/cdn-cgi/trace"
+	fallbackURL = "https://cloudflare.com" // plain HEAD — unaffected by trace-path DPI
 )
 
 // TraceResult contains the parsed results from a Cloudflare trace check.
@@ -59,11 +75,13 @@ func TraceCheck(socksPort int) (*TraceResult, error) {
 		return nil, fmt.Errorf("warp: failed to create SOCKS5 dialer: %w", err)
 	}
 
+	dialFn := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.Dial(network, addr)
+	}
+
 	// Build HTTP client with the SOCKS5 transport
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
-		},
+		DialContext:         dialFn,
 		TLSHandshakeTimeout: 15 * time.Second, // increased for H2 chains
 	}
 
@@ -72,10 +90,26 @@ func TraceCheck(socksPort int) (*TraceResult, error) {
 		Timeout:   25 * time.Second, // increased: accounts for multi-stage negotiation
 	}
 
-	// Make the trace request
+	// ── Primary probe: /cdn-cgi/trace ────────────────────────────────────────
 	resp, err := client.Get(traceURL)
 	if err != nil {
-		return nil, fmt.Errorf("warp: trace request failed: %w", err)
+		// ── Fallback probe: plain HEAD to cloudflare.com ──────────────────────
+		// Some ISPs use DPI to drop requests containing "/cdn-cgi/trace" in the URL.
+		// A successful HEAD to cloudflare.com proves the tunnel is alive even if
+		// the trace URL is filtered.
+		logger.Warn("WARP", "Primary trace check failed, trying fallback probe", "error", err)
+		fbResp, fbErr := client.Head(fallbackURL)
+		if fbErr == nil {
+			fbResp.Body.Close()
+			logger.Info("WARP", "Fallback probe succeeded — tunnel is UP (trace URL may be DPI-filtered)")
+			// Return a synthetic result: tunnel is working but we can't read trace fields
+			return &TraceResult{
+				WarpStatus: "on",
+				IsWarpOK:   true,
+				Colo:       "DPI-filtered",
+			}, nil
+		}
+		return nil, fmt.Errorf("warp: both trace and fallback probes failed: trace=%v, fallback=%v", err, fbErr)
 	}
 	defer resp.Body.Close()
 
@@ -144,56 +178,67 @@ func TraceCheck(socksPort int) (*TraceResult, error) {
 // AutoRotateOnFailure performs a trace check and, if it fails, marks the
 // current endpoint as restricted, pulls the next best endpoint from PebbleDB,
 // and restarts the engine with the new endpoint.
-func AutoRotateOnFailure(cfg *models.WarpGlobalConfig) error {
+//
+// The consecutiveFails counter prevents rotating on transient failures.
+// Only rotate after maxConsecutiveFails consecutive failures.
+func AutoRotateOnFailure(cfg *models.WarpGlobalConfig, consecutiveFails *atomic.Int32) error {
 	result, err := TraceCheck(cfg.SocksPort)
 
 	// Update the trace status in the database
 	if err != nil || (result != nil && !result.IsWarpOK) {
+		fails := consecutiveFails.Add(1)
+		const maxConsecutiveFails = 2
+
+		if fails < maxConsecutiveFails {
+			logger.Warn("WARP", "Trace check failed (transient?) — waiting for confirmation",
+				"consecutiveFails", fails,
+				"requiredToRotate", maxConsecutiveFails,
+			)
+			return nil // Don't rotate yet — wait for next interval
+		}
+
 		cfg.LastTraceOK = false
 		db.DB.Save(cfg)
 
-		logger.Warn("WARP", "Trace validation failed, initiating endpoint rotation")
+		logger.Warn("WARP", "Trace validation failed consecutively, initiating endpoint rotation",
+			"consecutiveFails", fails,
+		)
 
 		engine := GetEngine()
 
-		// Mark current endpoint as restricted
+		// Penalise the current endpoint — increments FailCount which lowers its score.
+		// Do NOT call MarkWarpEndpointRestricted here; that flag is set by the scanner
+		// and means "UDP/QUIC is blocked" — it has nothing to do with tunnel health.
 		if engine.activeEndpoint != nil {
-			_ = pebble.MarkWarpEndpointRestricted(
+			_ = pebble.IncrementEndpointFailCount(
 				cfg.TransportMode,
 				engine.activeEndpoint.IPAddress,
 				engine.activeEndpoint.Port,
 			)
-			logger.Info("WARP", "Marked endpoint as restricted",
+			logger.Info("WARP", "Penalised failed endpoint (FailCount++)",
 				"ip", engine.activeEndpoint.IPAddress,
 				"port", engine.activeEndpoint.Port,
 			)
 		}
 
-		// Get next best endpoint
-		nextEndpoint, err := pebble.GetBestWarpEndpoint(cfg.TransportMode)
-		if err != nil {
-			return fmt.Errorf("warp: no backup endpoints available for rotation: %w", err)
-		}
-
-		logger.Info("WARP", "Rotating to next endpoint",
-			"ip", nextEndpoint.IPAddress,
-			"port", nextEndpoint.Port,
-			"latency", fmt.Sprintf("%.0fms", nextEndpoint.LatencyMs),
-		)
-
-		// Stop and restart engine with new endpoint
+		// Stop and restart — StartEngine's ranked retry loop will automatically
+		// skip the penalised endpoint (lower score) and pick the next best one.
 		_ = engine.StopEngine()
 
-		// Fetch the active account
 		var account models.WarpAccount
 		if err := db.DB.First(&account, cfg.ActiveAccountID).Error; err != nil {
 			return fmt.Errorf("warp: failed to load active account: %w", err)
 		}
 
-		return engine.StartEngine(cfg, &account)
+		err = engine.StartEngine(cfg, &account)
+		if err == nil {
+			consecutiveFails.Store(0)
+		}
+		return err
 	}
 
-	// Trace passed
+	// Trace passed — reset consecutive failure counter
+	consecutiveFails.Store(0)
 	cfg.LastTraceOK = true
 	db.DB.Save(cfg)
 
@@ -202,17 +247,30 @@ func AutoRotateOnFailure(cfg *models.WarpGlobalConfig) error {
 
 // RunPeriodicTraceCheck starts a background goroutine that periodically
 // validates the WARP connection and auto-rotates on failure.
+//
+// settlementDelay: extra wait before the FIRST probe. Use a larger value
+// for masque_h2 (TCP+H2 handshake is slow) vs masque (QUIC is faster).
 func RunPeriodicTraceCheck(ctx context.Context, cfg *models.WarpGlobalConfig, interval time.Duration) {
 	if interval <= 0 {
 		interval = 2 * time.Minute
 	}
 
+	// Settlement delay before the FIRST probe:
+	// masque_h2 needs TCP+TLS+H2+CONNECT to fully establish before we probe.
+	// A 30s delay prevents false-positive rotations right after engine start.
+	initialDelay := 10 * time.Second
+	if cfg.TransportMode == "masque_h2" || cfg.TransportMode == "wireguard" {
+		initialDelay = 30 * time.Second
+	}
+
+	var consecutiveFails atomic.Int32
+
 	go func() {
-		// Initial check after a short delay
+		// Wait for the tunnel to settle before first probe
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(10 * time.Second):
+		case <-time.After(initialDelay):
 		}
 
 		ticker := time.NewTicker(interval)
@@ -228,7 +286,7 @@ func RunPeriodicTraceCheck(ctx context.Context, cfg *models.WarpGlobalConfig, in
 					continue
 				}
 
-				if err := AutoRotateOnFailure(cfg); err != nil {
+				if err := AutoRotateOnFailure(cfg, &consecutiveFails); err != nil {
 					logger.Error("WARP", "Periodic trace check auto-rotation failed", "error", err)
 				}
 			}

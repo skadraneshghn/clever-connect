@@ -415,6 +415,26 @@ func (c *ObfuscatedClient) upgradeLicense(deviceID, token, licenseKey string) (*
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
+		// Parse Cloudflare's structured error response: {"code":N,"message":"..."}
+		var cfErr struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}
+		if jsonErr := json.Unmarshal(respBody, &cfErr); jsonErr == nil && cfErr.Code != 0 {
+			switch cfErr.Code {
+			case 1056:
+				// "Too many connected devices" — license key is already bound to the
+				// maximum number of devices in Cloudflare's system.
+				// The user must remove devices via the official WARP app (Settings →
+				// Account → Manage devices) before adding another.
+				return nil, fmt.Errorf(
+					"license key rejected: too many devices registered (CF error 1056). "+
+						"Remove old devices in the WARP app (Settings → Account → Manage Devices) and try again",
+				)
+			default:
+				return nil, fmt.Errorf("license upgrade rejected by Cloudflare (code %d): %s", cfErr.Code, cfErr.Message)
+			}
+		}
 		return nil, fmt.Errorf("license upgrade failed (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}
 

@@ -305,17 +305,19 @@ const QuotaMeter: React.FC<{ used: number; total: number }> = ({ used, total }) 
 // ─────────────────────────────────────────────────────────────────────────────
 const ScanResultRow: React.FC<{ result: WarpScanResult; rank: number }> = ({ result, rank }) => {
   const latColor = result.latency_ms < 100 ? '#10b981' : result.latency_ms < 300 ? '#f59e0b' : '#ef4444';
+  const score = result.score ?? 0;
+  const scoreColor = score > 800 ? '#10b981' : score > 500 ? '#f59e0b' : '#ef4444';
 
   return (
     <div style={{
       display: 'grid',
-      gridTemplateColumns: '28px 1fr 80px 80px 90px auto',
+      gridTemplateColumns: '28px 1fr 70px 70px 100px 50px auto',
       alignItems: 'center',
       padding: '10px 16px',
       borderBottom: '1px solid var(--color-brand-border)',
       fontSize: 12,
       gap: 8,
-      opacity: result.is_restricted ? 0.45 : 1,
+      opacity: result.is_restricted && !result.fail_count ? 0.7 : 1,
       transition: 'background 0.15s ease',
     }}>
       <span style={{ fontSize: 10, color: 'var(--color-brand-muted)', fontWeight: 700 }}>#{rank}</span>
@@ -325,15 +327,21 @@ const ScanResultRow: React.FC<{ result: WarpScanResult; rank: number }> = ({ res
       <span style={{ color: latColor, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
         {result.latency_ms.toFixed(0)}<span style={{ fontSize: 9, color: 'var(--color-brand-muted)', marginLeft: 2 }}>ms</span>
       </span>
-      <span style={{ color: 'var(--color-brand-text)', fontVariantNumeric: 'tabular-nums' }}>
-        {result.packet_loss.toFixed(1)}<span style={{ fontSize: 9, color: 'var(--color-brand-muted)', marginLeft: 2 }}>%loss</span>
+      <span style={{ color: scoreColor, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+        {score.toFixed(0)}<span style={{ fontSize: 9, color: 'var(--color-brand-muted)', marginLeft: 2 }}>pts</span>
       </span>
       <span style={{ color: 'var(--color-brand-muted)', fontSize: 10 }}>
         {result.supported_alpns?.join(', ') || '—'}
       </span>
+      <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 11 }}>
+        {(result.fail_count ?? 0) > 0
+          ? <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 8, background: 'rgba(239,68,68,0.12)', color: '#ef4444' }}>✗{result.fail_count}</span>
+          : <span style={{ fontSize: 9, color: 'var(--color-brand-muted)' }}>0</span>
+        }
+      </span>
       {result.is_restricted
-        ? <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}>BLOCKED</span>
-        : <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: 'rgba(16,185,129,0.1)', color: '#10b981' }}>OK</span>
+        ? <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: 'rgba(245,158,11,0.1)', color: '#f59e0b' }}>TCP only</span>
+        : <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: 'rgba(16,185,129,0.1)', color: '#10b981' }}>QUIC+TCP</span>
       }
     </div>
   );
@@ -1272,7 +1280,7 @@ const ScanResultsTable: React.FC = () => {
           <>
             <div style={{
               display: 'grid',
-              gridTemplateColumns: '28px 1fr 80px 80px 90px auto',
+              gridTemplateColumns: '28px 1fr 70px 70px 100px 50px auto',
               padding: '8px 16px',
               fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1,
               color: 'var(--color-brand-muted)',
@@ -1282,8 +1290,9 @@ const ScanResultsTable: React.FC = () => {
               <span>#</span>
               <span>Endpoint</span>
               <span>Latency</span>
-              <span>Loss</span>
+              <span>Score</span>
               <span>ALPN</span>
+              <span>Fails</span>
               <span>Status</span>
             </div>
             <div style={{ maxHeight: 280, overflowY: 'auto' }}>

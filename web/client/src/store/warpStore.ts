@@ -58,6 +58,9 @@ export interface WarpScanResult {
   supported_alpns: string[];
   last_scanned: string;
   is_restricted: boolean;
+  fail_count: number;    // connection failures since last scan (penalises score)
+  last_failed: string;   // RFC3339 timestamp of last failure
+  score: number;         // computed ranking score (higher = better)
 }
 
 export interface ScanProgress {
