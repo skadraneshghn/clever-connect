@@ -377,3 +377,206 @@ func DeleteDiscoveredClientConfigs() (int, error) {
 	return count, err
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// WARP+ Scan Result KV Helpers (Prefixed Key Namespace)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// WarpScanResult represents a scanned Cloudflare edge endpoint.
+type WarpScanResult struct {
+	IPAddress             string   `json:"ip_address"`
+	Port                  int      `json:"port"`
+	LatencyMs             float64  `json:"latency_ms"`
+	PacketLoss            float64  `json:"packet_loss"`
+	ThroughputBytesPerSec float64  `json:"throughput_bps"`
+	SupportedALPNs        []string `json:"supported_alpns"`
+	LastScanned           string   `json:"last_scanned"`
+	IsRestricted          bool     `json:"is_restricted"` // Flagged by trace validator
+}
+
+// warpKeyPrefix returns the PebbleDB key prefix for a given transport mode.
+func warpKeyPrefix(mode string) string {
+	if mode == "wireguard" || mode == "wg" {
+		return "cf:node:wg:"
+	}
+	return "cf:node:masque:"
+}
+
+// warpKey builds a full PebbleDB key for a WARP scan result.
+func warpKey(mode, ipAddress string, port int) []byte {
+	prefix := warpKeyPrefix(mode)
+	return []byte(fmt.Sprintf("%s%s:%d", prefix, ipAddress, port))
+}
+
+// SaveWarpScanResult saves a scan result to PebbleDB under the appropriate prefix.
+func SaveWarpScanResult(mode string, result *WarpScanResult) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
+	key := warpKey(mode, result.IPAddress, result.Port)
+	val, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	return DB.Set(key, val, pebble.Sync)
+}
+
+// SaveWarpScanResultsBulk saves multiple scan results atomically.
+func SaveWarpScanResultsBulk(mode string, results []WarpScanResult) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
+	if len(results) == 0 {
+		return nil
+	}
+
+	batch := DB.NewBatch()
+	for i := range results {
+		key := warpKey(mode, results[i].IPAddress, results[i].Port)
+		val, err := json.Marshal(results[i])
+		if err != nil {
+			continue
+		}
+		batch.Set(key, val, pebble.Sync)
+	}
+
+	err := batch.Commit(pebble.Sync)
+	batch.Close()
+	return err
+}
+
+// ListWarpScanResults returns all scan results for a given transport mode,
+// sorted by latency ascending (best first). Non-restricted only by default.
+func ListWarpScanResults(mode string) ([]WarpScanResult, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("pebble database is not initialized")
+	}
+
+	prefix := []byte(warpKeyPrefix(mode))
+	upperBound := func(b []byte) []byte {
+		end := make([]byte, len(b))
+		copy(end, b)
+		for i := len(end) - 1; i >= 0; i-- {
+			end[i]++
+			if end[i] != 0 {
+				break
+			}
+		}
+		return end
+	}
+
+	iter, err := DB.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: upperBound(prefix),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	var results []WarpScanResult
+	for iter.First(); iter.Valid(); iter.Next() {
+		var r WarpScanResult
+		if err := json.Unmarshal(iter.Value(), &r); err == nil {
+			results = append(results, r)
+		}
+	}
+
+	// Sort by latency ascending (lowest first)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].LatencyMs < results[j].LatencyMs
+	})
+
+	return results, nil
+}
+
+// GetBestWarpEndpoint returns the lowest-latency endpoint.
+// It first prefers endpoints where QUIC/UDP is available (IsRestricted=false).
+// If none are available (e.g. ISP blocks UDP), it falls back to TCP-only
+// (IsRestricted=true) endpoints so the engine can still attempt a connection.
+func GetBestWarpEndpoint(mode string) (*WarpScanResult, error) {
+	results, err := ListWarpScanResults(mode)
+	if err != nil {
+		return nil, err
+	}
+
+	// Prefer QUIC-capable endpoints first
+	for _, r := range results {
+		if !r.IsRestricted {
+			return &r, nil
+		}
+	}
+
+	// Fall back to TCP-only (restricted) endpoints
+	for _, r := range results {
+		return &r, nil // already sorted by latency; pick lowest
+	}
+
+	return nil, fmt.Errorf("no available WARP endpoints found for mode %s (run a scan first)", mode)
+}
+
+// MarkWarpEndpointRestricted flags a specific endpoint as restricted in PebbleDB.
+func MarkWarpEndpointRestricted(mode, ipAddress string, port int) error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
+	key := warpKey(mode, ipAddress, port)
+	val, closer, err := DB.Get(key)
+	if err != nil {
+		return err
+	}
+
+	var r WarpScanResult
+	if err := json.Unmarshal(val, &r); err != nil {
+		closer.Close()
+		return err
+	}
+	closer.Close()
+
+	r.IsRestricted = true
+	newVal, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return DB.Set(key, newVal, pebble.Sync)
+}
+
+// DeleteWarpScanResults purges all WARP scan entries (both masque and wg prefixes).
+func DeleteWarpScanResults() error {
+	if DB == nil {
+		return fmt.Errorf("pebble database is not initialized")
+	}
+
+	prefixes := []string{"cf:node:masque:", "cf:node:wg:"}
+	batch := DB.NewBatch()
+
+	for _, pfx := range prefixes {
+		prefix := []byte(pfx)
+		upperBound := func(b []byte) []byte {
+			end := make([]byte, len(b))
+			copy(end, b)
+			for i := len(end) - 1; i >= 0; i-- {
+				end[i]++
+				if end[i] != 0 {
+					break
+				}
+			}
+			return end
+		}
+
+		iter, err := DB.NewIter(&pebble.IterOptions{
+			LowerBound: prefix,
+			UpperBound: upperBound(prefix),
+		})
+		if err != nil {
+			continue
+		}
+		for iter.First(); iter.Valid(); iter.Next() {
+			batch.Delete(iter.Key(), pebble.Sync)
+		}
+		iter.Close()
+	}
+
+	err := batch.Commit(pebble.Sync)
+	batch.Close()
+	return err
+}

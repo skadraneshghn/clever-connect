@@ -157,6 +157,8 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&models.CloudflareAccount{},
 		&models.CloudflareWorkerDeployment{},
 		&models.NovaForwarderConfig{},
+		&models.WarpGlobalConfig{},
+		&models.WarpAccount{},
 	); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
@@ -222,6 +224,18 @@ func InitDB(cfg *config.Config) *gorm.DB {
 				LossDemotePct: 5.0,
 				CooldownSec:   30,
 				ErrorBudget:   5,
+			})
+		}
+
+		// Seed default WarpGlobalConfig
+		var warpCfg models.WarpGlobalConfig
+		if err := DB.First(&warpCfg).Error; err != nil {
+			logger.Info("DB", "Seeding default WARP+ engine configuration")
+			DB.Create(&models.WarpGlobalConfig{
+				TransportMode: "masque",
+				TargetSNI:     "consumer-masque.cloudflareclient.com",
+				SocksPort:     10880,
+				HTTPPort:      10881,
 			})
 		}
 	}

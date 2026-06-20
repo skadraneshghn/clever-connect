@@ -24,6 +24,7 @@ import (
 	"clever-connect/internal/torrent"
 	"clever-connect/internal/v2ray/scanner"
 	"clever-connect/internal/v2ray/traffic"
+	"clever-connect/internal/warp"
 	"clever-connect/internal/youtube"
 
 	"github.com/gin-gonic/gin"
@@ -136,6 +137,20 @@ func main() {
 		}
 	}
 
+	// Auto-start WARP+ engine if configured (client mode only)
+	if cfg.AppMode == "client" {
+		var warpCfg models.WarpGlobalConfig
+		if err := db.DB.First(&warpCfg).Error; err == nil && warpCfg.IsActive {
+			var warpAccount models.WarpAccount
+			if err := db.DB.First(&warpAccount, warpCfg.ActiveAccountID).Error; err == nil {
+				logger.Info("WARP", "Auto-starting WARP+ engine", "mode", warpCfg.TransportMode)
+				if err := warp.GetEngine().StartEngine(&warpCfg, &warpAccount); err != nil {
+					logger.Error("WARP", "Failed to auto-start WARP+ engine", "error", err)
+				}
+			}
+		}
+	}
+
 	// (Combiner auto-start deferred to after handler creation below)
 
 	// Auto-start Telegram bot engine if configured and active
@@ -225,6 +240,7 @@ func main() {
 	combinerHandler := handlers.NewCombinerHandler(cfg)
 	cloudflareHandler := handlers.NewCloudflareHandler(cfg)
 	novaHandler := handlers.NewNovaForwarderHandler(cfg)
+	warpHandler := handlers.NewWarpHandler(cfg)
 
 	// Auto-start combiner if configured (after handler creation)
 	if cfg.AppMode == "server" {
@@ -367,6 +383,21 @@ func main() {
 			protected.GET("/v2ray/bonding/status", bondingHandler.GetStatus)
 			protected.GET("/v2ray/bonding/arteries", bondingHandler.ListArteries)
 			protected.Any("/v2ray/bonding/diagnose", bondingHandler.DiagnoseEngine)
+
+			// WARP+ Engine API (client mode)
+			protected.GET("/v2ray/warp/config", warpHandler.GetConfig)
+			protected.POST("/v2ray/warp/config", warpHandler.SaveConfig)
+			protected.GET("/v2ray/warp/accounts", warpHandler.ListAccounts)
+			protected.POST("/v2ray/warp/accounts", warpHandler.AddAccount)
+			protected.DELETE("/v2ray/warp/accounts/:id", warpHandler.DeleteAccount)
+				protected.POST("/v2ray/warp/accounts/:id/activate", warpHandler.SetActiveAccount)
+			protected.POST("/v2ray/warp/scan", warpHandler.StartScan)
+				protected.POST("/v2ray/warp/scan/stop", warpHandler.StopScan)
+				protected.GET("/v2ray/warp/scan/events", warpHandler.GetScanEvents)
+			protected.GET("/v2ray/warp/scan/results", warpHandler.GetScanResults)
+			protected.POST("/v2ray/warp/tunnel/start", warpHandler.StartTunnel)
+			protected.POST("/v2ray/warp/tunnel/stop", warpHandler.StopTunnel)
+			protected.GET("/v2ray/warp/status", warpHandler.GetStatus)
 
 			// System monitoring route
 			protected.GET("/system/stats", handlers.GetSystemStats)

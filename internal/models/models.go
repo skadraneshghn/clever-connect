@@ -750,5 +750,37 @@ type BondingArtery struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Cloudflare WARP+ Core Engine Models
+// ──────────────────────────────────────────────────────────────────────────────
 
+// WarpGlobalConfig stores the global WARP+ engine configuration.
+// This is a singleton row — only one config exists at a time.
+type WarpGlobalConfig struct {
+	gorm.Model
+	ActiveAccountID uint   `json:"active_account_id"`                                       // FK to the currently executing WarpAccount
+	TransportMode   string `json:"transport_mode" gorm:"size:50;default:'masque'"`           // masque, wireguard
+	TargetSNI       string `json:"target_sni" gorm:"size:255;default:'consumer-masque.cloudflareclient.com'"`
+	SocksPort       int    `json:"socks_port" gorm:"default:10880"`                          // Local SOCKS5 proxy port
+	HTTPPort        int    `json:"http_port" gorm:"default:10881"`                           // Local HTTP proxy port
+	IsActive        bool   `json:"is_active" gorm:"default:false"`                           // Whether the engine is running
+	LastTraceOK     bool   `json:"last_trace_ok" gorm:"default:false"`                       // Last captive portal trace status
+}
+
+// WarpAccount stores a Cloudflare WARP account profile in the fleet pool.
+// Multiple accounts can be registered; only one is active at a time
+// (referenced by WarpGlobalConfig.ActiveAccountID).
+type WarpAccount struct {
+	gorm.Model
+	LicenseKey  string `json:"license_key" gorm:"size:30"`                // 26-char WARP+ license token
+	DeviceID    string `json:"device_id" gorm:"size:191;uniqueIndex"`     // Unique device identity from CF registration
+	Token       string `json:"token" gorm:"type:text"`                    // JWT Bearer token from CF edge
+	PrivateKey  string `json:"private_key" gorm:"type:text"`              // Base64 Curve25519 private key
+	PublicKey   string `json:"public_key" gorm:"size:255"`                // Base64 Curve25519 public key
+	ClientID    string `json:"client_id" gorm:"size:10"`                  // Base64 3-byte billing prefix
+	AccountType string `json:"account_type" gorm:"size:20;default:'free'"` // free, premium, warp_plus
+	TotalQuota  int64  `json:"total_quota" gorm:"default:0"`              // Total data allocation in bytes
+	UsedQuota   int64  `json:"used_quota" gorm:"default:0"`               // Consumed data allocation in bytes
+	IsFunctional bool  `json:"is_functional" gorm:"default:true"`         // Invalidated on registration failure
+}
 

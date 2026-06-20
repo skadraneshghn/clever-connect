@@ -30,6 +30,7 @@ const IPDomainCheckerPage = lazy(() => import('./pages/ip-domain-checker/IPDomai
 const DNSTesterPage = lazy(() => import('./pages/dns-tester/DNSTesterPage').then(m => ({ default: m.DNSTesterPage })));
 const V2RayMultipathPage = lazy(() => import('./pages/V2RayMultipathPage').then(m => ({ default: m.V2RayMultipathPage })));
 const CloudflarePage = lazy(() => import('./pages/CloudflarePage').then(m => ({ default: m.CloudflarePage })));
+const WarpPage = lazy(() => import('./pages/WarpPage').then(m => ({ default: m.WarpPage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -76,6 +77,7 @@ const ProtectedLayout: React.FC = () => {
     'dns-tester': ['Network Tools', 'DNS Tester'],
     'v2ray-multipath': ['V2Ray', 'Multipath Engine'],
     cloudflare: ['Network Tools', 'Cloudflare'],
+    'v2ray-warp': ['V2Ray', 'WARP+ Engine'],
   };
 
   // Inject user local preferences (Font and Theme) on initial bootstrap
@@ -154,6 +156,7 @@ const router = createBrowserRouter([
       { path: 'dns-tester', element: <DNSTesterPage /> },
       { path: 'v2ray-multipath', element: <V2RayMultipathPage /> },
       { path: 'cloudflare', element: <CloudflarePage /> },
+      { path: 'v2ray-warp', element: <WarpPage /> },
     ],
   },
   { path: '*', element: <Navigate to="/dashboard" replace /> },
