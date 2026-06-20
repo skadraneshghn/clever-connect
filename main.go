@@ -389,11 +389,13 @@ func main() {
 			protected.POST("/v2ray/warp/config", warpHandler.SaveConfig)
 			protected.GET("/v2ray/warp/accounts", warpHandler.ListAccounts)
 			protected.POST("/v2ray/warp/accounts", warpHandler.AddAccount)
+			protected.POST("/v2ray/warp/accounts/verify", warpHandler.VerifyLicenseKey)         // 4-stage key diagnostic — BEFORE :id routes
 			protected.DELETE("/v2ray/warp/accounts/:id", warpHandler.DeleteAccount)
-				protected.POST("/v2ray/warp/accounts/:id/activate", warpHandler.SetActiveAccount)
+			protected.POST("/v2ray/warp/accounts/:id/activate", warpHandler.SetActiveAccount)
+			protected.POST("/v2ray/warp/accounts/:id/verify", warpHandler.VerifyAccount)        // live account health check
 			protected.POST("/v2ray/warp/scan", warpHandler.StartScan)
-				protected.POST("/v2ray/warp/scan/stop", warpHandler.StopScan)
-				protected.GET("/v2ray/warp/scan/events", warpHandler.GetScanEvents)
+			protected.POST("/v2ray/warp/scan/stop", warpHandler.StopScan)
+			protected.GET("/v2ray/warp/scan/events", warpHandler.GetScanEvents)
 			protected.GET("/v2ray/warp/scan/results", warpHandler.GetScanResults)
 			protected.POST("/v2ray/warp/tunnel/start", warpHandler.StartTunnel)
 			protected.POST("/v2ray/warp/tunnel/stop", warpHandler.StopTunnel)

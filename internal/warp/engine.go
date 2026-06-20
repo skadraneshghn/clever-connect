@@ -489,7 +489,7 @@ func (e *WarpEngine) dialViaMASQUE(ctx context.Context, targetAddr string) (net.
 	connectReq := fmt.Sprintf(
 		"CONNECT %s HTTP/1.1\r\n"+
 			"Host: %s\r\n"+
-			"Authorization: Bearer %s\r\n"+
+			"Proxy-Authorization: Bearer %s\r\n"+
 			"Capsule-Protocol: wg\r\n"+
 			"\r\n",
 		targetAddr,

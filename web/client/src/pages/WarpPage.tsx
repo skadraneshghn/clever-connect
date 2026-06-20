@@ -829,6 +829,124 @@ const MasterExecutionPanel: React.FC = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Molecule: Key Diagnostic Panel
+// ─────────────────────────────────────────────────────────────────────────────
+interface ValidationStage { passed: boolean; message: string; }
+interface ValidationResult {
+  success: boolean;
+  key_state: string;
+  cloudflare_error_code?: number;
+  error_message?: string;
+  account_metrics?: { account_type: string; total_bytes: number; used_bytes: number; remaining_bytes: number; };
+  stages: {
+    crypto_preflight: ValidationStage;
+    device_registration: ValidationStage;
+    license_upgrade: ValidationStage;
+    quota_scrape: ValidationStage;
+  };
+}
+
+const KEY_STATE_LABELS: Record<string, { label: string; color: string; bg: string }> = {
+  verified:          { label: '✓ Verified',         color: '#10b981', bg: 'rgba(16,185,129,0.1)' },
+  exhausted_devices: { label: '⚠ Max Devices',      color: '#f59e0b', bg: 'rgba(245,158,11,0.1)' },
+  invalid_token:     { label: '✗ Invalid / Expired', color: '#ef4444', bg: 'rgba(239,68,68,0.1)'  },
+  invalid_format:    { label: '✗ Bad Format',        color: '#ef4444', bg: 'rgba(239,68,68,0.1)'  },
+  depleted_quota:    { label: '⚠ Quota Exhausted',  color: '#f59e0b', bg: 'rgba(245,158,11,0.1)' },
+  failed:            { label: '✗ Network Error',     color: '#ef4444', bg: 'rgba(239,68,68,0.1)'  },
+};
+
+const STAGE_LABELS = ['crypto_preflight', 'device_registration', 'license_upgrade', 'quota_scrape'] as const;
+const STAGE_NAMES: Record<string, string> = {
+  crypto_preflight:    '1. Crypto Preflight',
+  device_registration: '2. Device Registration',
+  license_upgrade:     '3. License Upgrade',
+  quota_scrape:        '4. Quota Scrape',
+};
+
+const KeyDiagnosticPanel: React.FC<{ result: ValidationResult; onClose: () => void }> = ({ result, onClose }) => {
+  const stateInfo = KEY_STATE_LABELS[result.key_state] ?? { label: result.key_state, color: '#6366f1', bg: 'rgba(99,102,241,0.1)' };
+
+  return (
+    <div className="warp-slide-in" style={{
+      marginTop: 12, padding: 16, borderRadius: 12,
+      border: `1.5px solid ${stateInfo.color}44`,
+      background: 'var(--color-brand-bg)',
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--color-brand-heading)' }}>Diagnostic Result</span>
+          <span style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 10px', borderRadius: 10,
+            color: stateInfo.color, background: stateInfo.bg,
+          }}>{stateInfo.label}</span>
+          {result.cloudflare_error_code != null && result.cloudflare_error_code !== 0 && (
+            <span style={{ fontSize: 9, color: '#6366f1', fontFamily: 'monospace', background: 'rgba(99,102,241,0.08)', padding: '2px 7px', borderRadius: 6 }}>
+              CF-{result.cloudflare_error_code}
+            </span>
+          )}
+        </div>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand-muted)', fontSize: 16 }}>×</button>
+      </div>
+
+      {/* Pipeline stages */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+        {STAGE_LABELS.map((key) => {
+          const stage = result.stages[key];
+          if (!stage) return null;
+          return (
+            <div key={key} style={{
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+              padding: '8px 12px', borderRadius: 8,
+              background: stage.passed ? 'rgba(16,185,129,0.05)' : 'rgba(239,68,68,0.05)',
+              border: `1px solid ${stage.passed ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+            }}>
+              <span style={{ fontSize: 11, marginTop: 1 }}>{stage.passed ? '✓' : '✗'}</span>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: stage.passed ? '#10b981' : '#ef4444' }}>
+                  {STAGE_NAMES[key]}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', marginTop: 2 }}>{stage.message}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Quota bar */}
+      {result.account_metrics && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-brand-muted)', marginBottom: 4 }}>
+            <span>Data Quota</span>
+            <span>
+              {(result.account_metrics.used_bytes / 1e9).toFixed(2)} GB used /&nbsp;
+              {result.account_metrics.total_bytes > 0 ? `${(result.account_metrics.total_bytes / 1e9).toFixed(1)} GB` : '∞'}
+            </span>
+          </div>
+          {result.account_metrics.total_bytes > 0 && (
+            <div style={{ height: 5, borderRadius: 3, background: 'var(--color-brand-border)', overflow: 'hidden' }}>
+              <div style={{
+                height: '100%',
+                width: `${Math.min(100, (result.account_metrics.used_bytes / result.account_metrics.total_bytes) * 100)}%`,
+                background: result.account_metrics.remaining_bytes <= 0 ? '#ef4444' : 'linear-gradient(90deg,#10b981,#059669)',
+                transition: 'width 0.5s ease',
+              }} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Error message */}
+      {result.error_message && (
+        <div style={{ fontSize: 11, color: stateInfo.color, marginTop: 8, padding: '8px 10px', borderRadius: 7, background: stateInfo.bg }}>
+          {result.error_message}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Organism D: Fleet Pool Inventory
 // ─────────────────────────────────────────────────────────────────────────────
 const FleetPoolInventory: React.FC = () => {
@@ -836,6 +954,10 @@ const FleetPoolInventory: React.FC = () => {
   const [licenseKey, setLicenseKey] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<ValidationResult | null>(null);
+  const [healthCheckId, setHealthCheckId] = useState<number | null>(null);
+  const [healthResult, setHealthResult] = useState<Record<number, ValidationResult>>({});
 
   const handleRegister = async () => {
     try {
@@ -844,6 +966,43 @@ const FleetPoolInventory: React.FC = () => {
       setShowForm(false);
     } catch {
       // error shown from store
+    }
+  };
+
+  const handleVerifyKey = async () => {
+    if (!licenseKey) return;
+    setVerifying(true);
+    setVerifyResult(null);
+    try {
+      const token = localStorage.getItem('cc_client_token') || localStorage.getItem('cc_server_token') || '';
+      const res = await fetch('/api/v2ray/warp/accounts/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ license_key: licenseKey }),
+      });
+      const data = await res.json();
+      setVerifyResult(data);
+    } catch (e: unknown) {
+      setVerifyResult({ success: false, key_state: 'failed', error_message: String(e), stages: { crypto_preflight: { passed: false, message: '' }, device_registration: { passed: false, message: '' }, license_upgrade: { passed: false, message: '' }, quota_scrape: { passed: false, message: '' } } });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const handleHealthCheck = async (accountId: number) => {
+    setHealthCheckId(accountId);
+    try {
+      const token = localStorage.getItem('cc_client_token') || localStorage.getItem('cc_server_token') || '';
+      const res = await fetch(`/api/v2ray/warp/accounts/${accountId}/verify`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setHealthResult(prev => ({ ...prev, [accountId]: data }));
+    } catch (e: unknown) {
+      setHealthResult(prev => ({ ...prev, [accountId]: { success: false, key_state: 'failed', error_message: String(e), stages: { crypto_preflight: { passed: false, message: '' }, device_registration: { passed: false, message: '' }, license_upgrade: { passed: false, message: '' }, quota_scrape: { passed: false, message: '' } } } }));
+    } finally {
+      setHealthCheckId(null);
     }
   };
 
@@ -885,7 +1044,7 @@ const FleetPoolInventory: React.FC = () => {
                   ...inputStyle,
                   borderColor: licenseError ? '#ef4444' : 'var(--color-brand-border)',
                 }}
-                placeholder="xxxx-xxxx-xxxx-xxxx-xxxx (26 chars, or leave empty for free)"
+                placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX (or leave empty for free)"
                 value={licenseKey}
                 maxLength={26}
                 onChange={(e) => setLicenseKey(e.target.value)}
@@ -899,7 +1058,21 @@ const FleetPoolInventory: React.FC = () => {
                 Leave blank to register a free WARP account. The API call uses uTLS Chrome fingerprinting.
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8, paddingTop: 22 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 22 }}>
+              {/* Verify Key button */}
+              <button
+                onClick={handleVerifyKey}
+                disabled={verifying || !licenseKey || !/^[A-Za-z0-9]{8}-[A-Za-z0-9]{8}-[A-Za-z0-9]{8}$/.test(licenseKey)}
+                title="Run 4-stage diagnostic on this key before registering"
+                style={{
+                  padding: '9px 14px', borderRadius: 8, border: '1.5px solid #6366f1',
+                  background: 'rgba(99,102,241,0.08)', color: '#6366f1',
+                  fontSize: 11, fontWeight: 700, cursor: verifying ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap', opacity: verifying ? 0.6 : 1,
+                }}
+              >
+                {verifying ? 'Testing…' : '🔬 Verify Key'}
+              </button>
               <button
                 onClick={handleRegister}
                 disabled={globalLoading || (licenseKey.length > 0 && !/^[A-Za-z0-9]{8}-[A-Za-z0-9]{8}-[A-Za-z0-9]{8}$/.test(licenseKey))}
@@ -914,7 +1087,7 @@ const FleetPoolInventory: React.FC = () => {
                 {globalLoading ? 'Registering…' : 'Register'}
               </button>
               <button
-                onClick={() => { setShowForm(false); setLicenseKey(''); }}
+                onClick={() => { setShowForm(false); setLicenseKey(''); setVerifyResult(null); }}
                 style={{
                   padding: '9px 14px', borderRadius: 8, border: '1px solid var(--color-brand-border)',
                   background: 'transparent', color: 'var(--color-brand-text)', fontSize: 12, cursor: 'pointer',
@@ -924,6 +1097,10 @@ const FleetPoolInventory: React.FC = () => {
               </button>
             </div>
           </div>
+          {/* Inline diagnostic result */}
+          {verifyResult && (
+            <KeyDiagnosticPanel result={verifyResult} onClose={() => setVerifyResult(null)} />
+          )}
         </div>
       )}
 
@@ -941,17 +1118,19 @@ const FleetPoolInventory: React.FC = () => {
             const pct = formatQuotaPct(acc.used_quota, acc.total_quota);
 
             return (
-              <div key={acc.ID} className="warp-slide-in" style={{
-                padding: '14px 16px',
-                borderRadius: 10,
-                border: `1.5px solid ${isActive ? 'rgba(255,107,44,0.45)' : 'var(--color-brand-border)'}`,
-                background: isActive ? 'rgba(255,107,44,0.05)' : 'var(--color-brand-bg)',
-                display: 'grid',
-                gridTemplateColumns: 'auto 1fr auto auto auto auto',
-                alignItems: 'center',
-                gap: 14,
-                transition: 'border-color 0.25s ease, background 0.25s ease',
-              }}>
+              <div key={acc.ID} className="warp-slide-in" style={{ display: 'flex', flexDirection: 'column' }}>
+                <div style={{
+                  padding: '14px 16px',
+                  borderRadius: healthResult[acc.ID] ? '10px 10px 0 0' : 10,
+                  border: `1.5px solid ${isActive ? 'rgba(255,107,44,0.45)' : 'var(--color-brand-border)'}`,
+                  borderBottom: healthResult[acc.ID] ? 'none' : undefined,
+                  background: isActive ? 'rgba(255,107,44,0.05)' : 'var(--color-brand-bg)',
+                  display: 'grid',
+                  gridTemplateColumns: 'auto 1fr auto auto auto auto auto',
+                  alignItems: 'center',
+                  gap: 14,
+                  transition: 'border-color 0.25s ease, background 0.25s ease',
+                }}>
                 {/* Account type icon */}
                 <div style={{
                   width: 36, height: 36, borderRadius: 9,
@@ -1073,10 +1252,50 @@ const FleetPoolInventory: React.FC = () => {
                     <FiTrash2 size={13} />
                   </button>
                 )}
+
+                {/* Health Check button */}
+                <button
+                  id={`warp-health-${acc.ID}`}
+                  onClick={() => healthResult[acc.ID] ? setHealthResult(prev => { const n = { ...prev }; delete n[acc.ID]; return n; }) : handleHealthCheck(acc.ID)}
+                  disabled={healthCheckId === acc.ID}
+                  title="Run live account health check (quota scrape via Cloudflare API)"
+                  style={{
+                    padding: '7px 8px', borderRadius: 8,
+                    border: `1px solid ${healthResult[acc.ID] ? (healthResult[acc.ID].success ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)') : 'var(--color-brand-border)'}`,
+                    background: healthResult[acc.ID] ? (healthResult[acc.ID].success ? 'rgba(16,185,129,0.07)' : 'rgba(239,68,68,0.07)') : 'transparent',
+                    color: healthResult[acc.ID] ? (healthResult[acc.ID].success ? '#10b981' : '#ef4444') : 'var(--color-brand-text)',
+                    cursor: healthCheckId === acc.ID ? 'not-allowed' : 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.15s ease',
+                    opacity: healthCheckId === acc.ID ? 0.5 : 1,
+                  }}
+                >
+                  {healthCheckId === acc.ID ? '⏳' : '🔬'}
+                </button>
               </div>
-            );
-          })}
-        </div>
+
+              {healthResult[acc.ID] && (
+                <div style={{
+                  padding: '16px',
+                  border: `1.5px solid ${isActive ? 'rgba(255,107,44,0.45)' : 'var(--color-brand-border)'}`,
+                  borderTop: 'none',
+                  borderRadius: '0 0 10px 10px',
+                  background: isActive ? 'rgba(255,107,44,0.02)' : 'var(--color-brand-bg)',
+                }}>
+                  <KeyDiagnosticPanel
+                    result={healthResult[acc.ID]}
+                    onClose={() => setHealthResult(prev => {
+                      const n = { ...prev };
+                      delete n[acc.ID];
+                      return n;
+                    })}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
       )}
     </SectionCard>
   );

@@ -296,6 +296,108 @@ func (h *WarpHandler) DeleteAccount(c *gin.Context) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// POST /api/v2ray/warp/accounts/verify — 4-Stage Key Diagnostic Pipeline
+//
+// Tests a WARP+ license key through the complete validation lifecycle without
+// touching the active engine or account pool:
+//   Stage 1: Crypto preflight (key format + keypair generation)
+//   Stage 2: Device registration (uTLS → Cloudflare /reg)
+//   Stage 3: License upgrade   (PUT /reg/{id}/account)
+//   Stage 4: Quota scrape      (GET /reg/{id}/account)
+//
+// The temporary device registration is deleted from Cloudflare after the test.
+// ──────────────────────────────────────────────────────────────────────────────
+func (h *WarpHandler) VerifyLicenseKey(c *gin.Context) {
+	var input struct {
+		LicenseKey string `json:"license_key"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if input.LicenseKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "license_key is required"})
+		return
+	}
+
+	// Load SNI from global config
+	var cfg models.WarpGlobalConfig
+	sni := "consumer-masque.cloudflareclient.com"
+	if err := db.DB.First(&cfg).Error; err == nil && cfg.TargetSNI != "" {
+		sni = cfg.TargetSNI
+	}
+
+	// 15-second timeout — enough for all 4 stages including uTLS handshake
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	logger.Info("WARP", "Starting key validation pipeline", "key", input.LicenseKey[:4]+"****")
+
+	result := warp.ValidateLicenseKey(ctx, input.LicenseKey, sni)
+
+	// Choose HTTP status: 200 for all handled CF errors (1056 etc.), 503 for unexpected failures
+	status := http.StatusOK
+	if result.KeyState == warp.KeyStateFailed {
+		status = http.StatusServiceUnavailable
+	}
+	c.JSON(status, result)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// POST /api/v2ray/warp/accounts/:id/verify — Live Account Health Check
+//
+// Runs a quota scrape on an already-registered account in the DB to check
+// if its token is still accepted and how much quota remains.
+// ──────────────────────────────────────────────────────────────────────────────
+func (h *WarpHandler) VerifyAccount(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid account ID."})
+		return
+	}
+
+	var account models.WarpAccount
+	if err := db.DB.First(&account, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Account not found."})
+		return
+	}
+
+	var cfg models.WarpGlobalConfig
+	sni := "consumer-masque.cloudflareclient.com"
+	if err := db.DB.First(&cfg).Error; err == nil && cfg.TargetSNI != "" {
+		sni = cfg.TargetSNI
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+
+	logger.Info("WARP", "Running live account health check", "accountID", id, "deviceID", account.DeviceID)
+
+	result := warp.ValidateAccount(ctx, &account, sni)
+
+	// Update IsFunctional in DB based on result
+	if !result.Success && (result.KeyState == warp.KeyStateInvalidToken || result.KeyState == warp.KeyStateDepletedQuota) {
+		db.DB.Model(&account).Update("is_functional", false)
+		logger.Warn("WARP", "Account marked non-functional after health check",
+			"accountID", id,
+			"keyState", result.KeyState,
+		)
+	} else if result.Success {
+		// Update quota fields if we got fresh metrics
+		if result.AccountMetrics != nil {
+			db.DB.Model(&account).Updates(map[string]interface{}{
+				"total_quota":   result.AccountMetrics.TotalBytes,
+				"used_quota":    result.AccountMetrics.UsedBytes,
+				"is_functional": true,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+
+// ──────────────────────────────────────────────────────────────────────────────
 // POST /api/v2ray/warp/accounts/:id/activate — Set Account as Active
 // ──────────────────────────────────────────────────────────────────────────────
 
