@@ -4,7 +4,7 @@ import { create } from 'zustand';
 // Type Definitions
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type TransportMode = 'masque' | 'wireguard';
+export type TransportMode = 'masque' | 'masque_h2' | 'wireguard';
 
 export type TunnelStatus =
   | 'dormant'     // engine stopped

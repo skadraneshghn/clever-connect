@@ -70,11 +70,17 @@ type WarpEngine struct {
 	socksListener  net.Listener
 	httpListener   net.Listener
 
-	// MASQUE transport
+	// MASQUE/QUIC transport
 	quicConn *quic.Conn
 
-	// TCP/TLS fallback transport (used when QUIC/UDP is ISP-blocked)
-	tcpFallback bool // true when operating in TCP-only mode
+	// TCP mode flag
+	tcpFallback bool
+
+	// WireGuard userspace device cancel func
+	wgCancel func()
+
+	// MASQUE/H2 transport cancel func (tears down persistent H2 connection)
+	h2Cancel func()
 }
 
 var (
@@ -95,8 +101,12 @@ func (e *WarpEngine) StartEngine(cfg *models.WarpGlobalConfig, account *models.W
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if EngineState(e.state.Load()) == EngineStateRunning {
-		return fmt.Errorf("warp engine is already running")
+	currentState := EngineState(e.state.Load())
+	if currentState == EngineStateRunning || currentState == EngineStateStarting {
+		// Engine is already up (or stuck in Starting after a panic).
+		// Stop it first so the caller can restart cleanly.
+		logger.Warn("WARP", "Engine already active — performing stop before restart", "state", currentState)
+		e.stopLocked()
 	}
 
 	e.state.Store(int32(EngineStateStarting))
@@ -145,6 +155,13 @@ func (e *WarpEngine) StartEngine(cfg *models.WarpGlobalConfig, account *models.W
 			e.state.Store(int32(EngineStateStopped))
 			return fmt.Errorf("failed to start MASQUE transport: %w", err)
 		}
+	case "masque_h2":
+		// MASQUE over HTTP/2 TCP — for ISPs that block all UDP (Iran, etc.)
+		if err := e.startMASQUEH2Transport(); err != nil {
+			e.cancel()
+			e.state.Store(int32(EngineStateStopped))
+			return fmt.Errorf("failed to start MASQUE/H2 transport: %w", err)
+		}
 	case "wireguard":
 		if err := e.startWireGuardTransport(); err != nil {
 			e.cancel()
@@ -154,7 +171,7 @@ func (e *WarpEngine) StartEngine(cfg *models.WarpGlobalConfig, account *models.W
 	default:
 		e.cancel()
 		e.state.Store(int32(EngineStateStopped))
-		return fmt.Errorf("unsupported transport mode: %s", cfg.TransportMode)
+		return fmt.Errorf("unsupported transport mode: %s (valid: masque, masque_h2, wireguard)", cfg.TransportMode)
 	}
 
 	e.state.Store(int32(EngineStateRunning))
@@ -172,7 +189,12 @@ func (e *WarpEngine) StartEngine(cfg *models.WarpGlobalConfig, account *models.W
 func (e *WarpEngine) StopEngine() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.stopLocked()
+}
 
+// stopLocked performs the actual engine teardown.
+// MUST be called with e.mu held.
+func (e *WarpEngine) stopLocked() error {
 	if EngineState(e.state.Load()) == EngineStateStopped {
 		return nil
 	}
@@ -182,12 +204,27 @@ func (e *WarpEngine) StopEngine() error {
 	// Cancel context to signal all goroutines
 	if e.cancel != nil {
 		e.cancel()
+		e.cancel = nil
 	}
 
 	// Close QUIC connection
 	if e.quicConn != nil {
 		e.quicConn.CloseWithError(0, "engine shutdown")
 		e.quicConn = nil
+	}
+
+	// Close WireGuard userspace device
+	// NOTE: wgCancel calls wgDev.Close() which internally closes the TUN device.
+	// Do NOT call tunDev.Close() separately — it will panic ("close of closed channel").
+	if e.wgCancel != nil {
+		e.wgCancel()
+		e.wgCancel = nil
+	}
+
+	// Close MASQUE/H2 connection
+	if e.h2Cancel != nil {
+		e.h2Cancel()
+		e.h2Cancel = nil
 	}
 
 	// Close listeners
@@ -201,6 +238,7 @@ func (e *WarpEngine) StopEngine() error {
 	}
 
 	e.state.Store(int32(EngineStateStopped))
+	e.tcpFallback = false
 	e.activeEndpoint = nil
 	e.cfg = nil
 	e.account = nil
@@ -256,60 +294,116 @@ func (e *WarpEngine) GetStatus() EngineStatus {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Mode A2: MASQUE over HTTP/2 TCP Transport (UDP-blocked networks)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// startMASQUEH2Transport starts the HTTP/2 MASQUE tunnel for networks where
+// all UDP is blocked. Uses TCP port 443 with uTLS Chrome fingerprint + ALPN h2.
+func (e *WarpEngine) startMASQUEH2Transport() error {
+	// Fix #1: split host from any port suffix in the stored IP address
+	host := e.activeEndpoint.IPAddress
+	if h, _, err := net.SplitHostPort(e.activeEndpoint.IPAddress); err == nil {
+		host = h
+	}
+	// H2/MASQUE always uses TCP port 443
+	port := 443
+
+	logger.Info("WARP", "Starting MASQUE/H2 transport (TCP-only — UDP is blocked)",
+		"endpoint", fmt.Sprintf("%s:%d", host, port),
+		"sni", e.cfg.TargetSNI,
+	)
+
+	dialFn, cancel, err := StartMASQUEH2Transport(e.ctx, e.cfg, e.account, host, port)
+	if err != nil {
+		return fmt.Errorf("MASQUE/H2 init failed: %w", err)
+	}
+	e.h2Cancel = cancel
+
+	// ── SOCKS5 server ─────────────────────────────────────────────────────────
+	socksConf := &socks5.Config{Dial: dialFn}
+	socksServer, err := socks5.New(socksConf)
+	if err != nil {
+		cancel()
+		return fmt.Errorf("failed to create SOCKS5 server: %w", err)
+	}
+
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", e.cfg.SocksPort)
+	e.socksListener, err = net.Listen("tcp", socksAddr)
+	if err != nil {
+		cancel()
+		return fmt.Errorf("failed to bind SOCKS5 port %d: %w", e.cfg.SocksPort, err)
+	}
+
+	go func() {
+		logger.Info("WARP", "MASQUE/H2 SOCKS5 proxy listening", "addr", socksAddr)
+		if err := socksServer.Serve(e.socksListener); err != nil {
+			if e.ctx.Err() == nil {
+				logger.Error("WARP", "MASQUE/H2 SOCKS5 server error", "error", err)
+			}
+		}
+	}()
+
+	go e.startHTTPProxy()
+
+	return nil
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Mode A: MASQUE HTTP/3 Tunnel Transport (RFC 9298-inspired)
 // ──────────────────────────────────────────────────────────────────────────────
 
-// startMASQUETransport initializes the QUIC-based MASQUE tunnel, with automatic
-// fallback to TLS-over-TCP when the endpoint is marked as restricted
-// (i.e. the ISP blocks UDP/QUIC traffic).
+
+// startMASQUETransport initializes the QUIC/H3 MASQUE tunnel.
+// Fix #4: ALPN is explicitly ["h3","h3-29"] and SNI is set from TargetSNI config.
+// If QUIC is unavailable (ISP blocks UDP), returns an error directing the user
+// to switch to wireguard transport which supports UDP-free operation.
 func (e *WarpEngine) startMASQUETransport() error {
-	addr := fmt.Sprintf("%s:%d", e.activeEndpoint.IPAddress, e.activeEndpoint.Port)
+	// Fix #1: split IP and port explicitly to prevent duplication
+	host := e.activeEndpoint.IPAddress
+	if h, _, err := net.SplitHostPort(e.activeEndpoint.IPAddress); err == nil {
+		host = h
+	}
+	addr := fmt.Sprintf("%s:%d", host, e.activeEndpoint.Port)
 
-	// ── Choose transport based on whether QUIC is available ──────────────────
 	if e.activeEndpoint.IsRestricted {
-		// Endpoint is TCP-reachable but QUIC is blocked — use TLS/TCP fallback
-		logger.Warn("WARP", "Endpoint marked restricted (UDP blocked), using TCP/TLS fallback", "endpoint", addr)
-		e.tcpFallback = true
-	} else {
-		e.tcpFallback = false
-
-		// Establish QUIC session to the Cloudflare edge
-		tlsConf := &tls.Config{
-			NextProtos:         []string{"h3", "h3-29"},
-			ServerName:         e.cfg.TargetSNI,
-			InsecureSkipVerify: true,
-		}
-
-		quicConf := &quic.Config{
-			MaxIdleTimeout:  120 * time.Second,
-			KeepAlivePeriod: 30 * time.Second,
-		}
-
-		conn, err := quic.DialAddr(e.ctx, addr, tlsConf, quicConf)
-		if err != nil {
-			// QUIC dial failed even though endpoint was marked non-restricted.
-			// This can happen if the ISP just started blocking UDP. Fall back.
-			logger.Warn("WARP", "QUIC dial failed, switching to TCP/TLS fallback", "endpoint", addr, "error", err)
-			e.tcpFallback = true
-		} else {
-			e.quicConn = conn
-			logger.Info("WARP", "QUIC session established",
-				"endpoint", addr,
-				"protocol", conn.ConnectionState().TLS.NegotiatedProtocol,
-			)
-		}
+		return fmt.Errorf(
+			"endpoint %s is restricted (UDP/QUIC blocked by ISP) — switch transport to 'wireguard' mode which handles restricted networks",
+			addr,
+		)
 	}
 
-	// ── Dial function used by SOCKS5 server ──────────────────────────────────
-	var dialFn func(ctx context.Context, network, targetAddr string) (net.Conn, error)
-	if e.tcpFallback {
-		dialFn = func(ctx context.Context, network, targetAddr string) (net.Conn, error) {
-			return e.dialViaTCPTLS(ctx, addr, targetAddr)
-		}
-	} else {
-		dialFn = func(ctx context.Context, network, targetAddr string) (net.Conn, error) {
-			return e.dialViaMASQUE(ctx, targetAddr)
-		}
+	// Fix #4: explicit ALPN ["h3","h3-29"] + SNI from config (not InsecureSkipVerify)
+	tlsConf := &tls.Config{
+		NextProtos: []string{"h3", "h3-29"},
+		ServerName: e.cfg.TargetSNI,
+		// InsecureSkipVerify intentionally false — Cloudflare has valid certs
+		InsecureSkipVerify: false,
+	}
+
+	quicConf := &quic.Config{
+		MaxIdleTimeout:  120 * time.Second,
+		KeepAlivePeriod: 30 * time.Second,
+	}
+
+	conn, err := quic.DialAddr(e.ctx, addr, tlsConf, quicConf)
+	if err != nil {
+		return fmt.Errorf(
+			"QUIC dial to %s failed (UDP may be blocked): %w — try switching to 'wireguard' transport mode",
+			addr, err,
+		)
+	}
+
+	e.quicConn = conn
+	e.tcpFallback = false
+	logger.Info("WARP", "QUIC/H3 session established",
+		"endpoint", addr,
+		"protocol", conn.ConnectionState().TLS.NegotiatedProtocol,
+		"sni", e.cfg.TargetSNI,
+	)
+
+	// ── Dial function: each SOCKS5 connection opens a new QUIC stream ────────
+	dialFn := func(ctx context.Context, network, targetAddr string) (net.Conn, error) {
+		return e.dialViaMASQUE(ctx, targetAddr)
 	}
 
 	// ── Start local SOCKS5 proxy server ──────────────────────────────────────
@@ -326,7 +420,7 @@ func (e *WarpEngine) startMASQUETransport() error {
 	}
 
 	go func() {
-		logger.Info("WARP", "SOCKS5 proxy listening", "addr", socksAddr)
+		logger.Info("WARP", "MASQUE SOCKS5 proxy listening", "addr", socksAddr)
 		if err := socksServer.Serve(e.socksListener); err != nil {
 			if e.ctx.Err() == nil {
 				logger.Error("WARP", "SOCKS5 server error", "error", err)
@@ -335,62 +429,9 @@ func (e *WarpEngine) startMASQUETransport() error {
 	}()
 
 	go e.startHTTPProxy()
-	if !e.tcpFallback {
-		go e.monitorConnection()
-	}
+	go e.monitorConnection()
 
 	return nil
-}
-
-// dialViaTCPTLS connects to the Cloudflare edge over TCP+TLS and sends an
-// HTTP/1.1 CONNECT request to tunnel the target address.
-// This is the fallback for networks where QUIC/UDP is ISP-blocked.
-func (e *WarpEngine) dialViaTCPTLS(ctx context.Context, cfAddr, targetAddr string) (net.Conn, error) {
-	rawConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", cfAddr)
-	if err != nil {
-		return nil, fmt.Errorf("TCP connect to %s failed: %w", cfAddr, err)
-	}
-
-	tlsConn := tls.Client(rawConn, &tls.Config{
-		ServerName:         e.cfg.TargetSNI,
-		InsecureSkipVerify: true,
-		NextProtos:         []string{"http/1.1"},
-	})
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		rawConn.Close()
-		return nil, fmt.Errorf("TLS handshake to %s failed: %w", cfAddr, err)
-	}
-
-	// Send HTTP/1.1 CONNECT
-	connectReq := fmt.Sprintf(
-		"CONNECT %s HTTP/1.1\r\n"+
-			"Host: %s\r\n"+
-			"Authorization: Bearer %s\r\n"+
-			"Proxy-Connection: Keep-Alive\r\n"+
-			"\r\n",
-		targetAddr,
-		e.cfg.TargetSNI,
-		e.account.Token,
-	)
-	if _, err := tlsConn.Write([]byte(connectReq)); err != nil {
-		tlsConn.Close()
-		return nil, fmt.Errorf("failed to send CONNECT: %w", err)
-	}
-
-	// Read CONNECT response
-	buf := make([]byte, 4096)
-	n, err := tlsConn.Read(buf)
-	if err != nil && err != io.EOF {
-		tlsConn.Close()
-		return nil, fmt.Errorf("failed to read CONNECT response: %w", err)
-	}
-	resp := string(buf[:n])
-	if len(resp) < 12 || resp[9:12] != "200" {
-		tlsConn.Close()
-		return nil, fmt.Errorf("CONNECT rejected: %s", resp)
-	}
-
-	return tlsConn, nil
 }
 
 // dialViaMASQUE creates a new QUIC stream for a SOCKS5 connection request,
@@ -604,57 +645,47 @@ func (e *WarpEngine) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Mode B: WireGuard/gVisor Userspace Netstack Transport (Fallback)
+// Mode B: WireGuard/gVisor Userspace Netstack Transport
 // ──────────────────────────────────────────────────────────────────────────────
 
-// startWireGuardTransport initializes the WireGuard tunnel over gVisor netstack.
-// This is the fallback transport for environments where MASQUE is blocked.
+// startWireGuardTransport initializes a real userspace WireGuard tunnel using
+// wireguard-go + gVisor netstack. Traffic exits via Cloudflare WARP edge over UDP.
+// Works even when MASQUE/HTTP3 is blocked because WireGuard uses raw UDP on port 2408.
 func (e *WarpEngine) startWireGuardTransport() error {
-	logger.Info("WARP", "Initializing WireGuard/gVisor userspace netstack transport")
-
-	// Note: Full gVisor + wireguard-go integration requires importing:
-	//   gvisor.dev/gvisor/pkg/tcpip/stack
-	//   gvisor.dev/gvisor/pkg/tcpip/link/channel
-	//   github.com/sagernet/wireguard-go/device
-	//   github.com/sagernet/wireguard-go/tun/netstack
-	//
-	// Phase 1 implementation provides the MASQUE transport as the primary mode.
-	// Full WireGuard/gVisor integration is planned for Phase 2.
-	//
-	// The architecture is:
-	// 1. Create a gVisor network stack with virtual NIC
-	// 2. Assign virtual IPs (172.16.0.2/32, 2606:4700:110:8283::2/128)
-	// 3. Create a WireGuard device bound to the gVisor channel endpoint
-	// 4. Configure the WireGuard peer with account keys + endpoint from PebbleDB
-	// 5. Route all SOCKS5 traffic through the virtual stack
-
-	// For now, start a local SOCKS5 server that tunnels through WireGuard
-	// using a simplified direct UDP encapsulation approach
-	return e.startWireGuardSimple()
-}
-
-// startWireGuardSimple provides a simplified WireGuard transport using
-// direct configuration commands via the wireguard-go UAPI.
-func (e *WarpEngine) startWireGuardSimple() error {
-	// Start local SOCKS5 proxy
-	socksConf := &socks5.Config{
-		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			// In full implementation, this would route through gVisor netstack
-			// For now, provide a placeholder that connects directly
-			// (to be replaced with gVisor routing in Phase 2)
-			dialer := &net.Dialer{Timeout: 10 * time.Second}
-			return dialer.DialContext(ctx, network, addr)
-		},
+	// Fix #1: extract plain host to prevent port duplication
+	host := e.activeEndpoint.IPAddress
+	if h, _, err := net.SplitHostPort(e.activeEndpoint.IPAddress); err == nil {
+		host = h
+	}
+	port := e.activeEndpoint.Port
+	if port == 0 {
+		port = 2408 // Cloudflare WARP default WireGuard port
 	}
 
+	logger.Info("WARP", "Starting real userspace WireGuard tunnel",
+		"endpoint", fmt.Sprintf("%s:%d", host, port),
+		"mtu", 1280,
+	)
+
+	// StartWireGuardUserspace (wireguard.go) applies Fix #1, #2, #3
+	dialFn, cancel, err := StartWireGuardUserspace(e.ctx, e.account, host, port)
+	if err != nil {
+		return fmt.Errorf("WireGuard userspace init failed: %w", err)
+	}
+	e.wgCancel = cancel
+
+	// ── Start local SOCKS5 proxy ──────────────────────────────────────────────
+	socksConf := &socks5.Config{Dial: dialFn}
 	socksServer, err := socks5.New(socksConf)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to create SOCKS5 server: %w", err)
 	}
 
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", e.cfg.SocksPort)
 	e.socksListener, err = net.Listen("tcp", socksAddr)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to bind SOCKS5 port %d: %w", e.cfg.SocksPort, err)
 	}
 
@@ -667,10 +698,8 @@ func (e *WarpEngine) startWireGuardSimple() error {
 		}
 	}()
 
-	// Start HTTP CONNECT proxy
 	go e.startHTTPProxy()
 
-	logger.Warn("WARP", "WireGuard transport running in simplified mode (Phase 2 will add full gVisor netstack)")
 	return nil
 }
 

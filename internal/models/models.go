@@ -759,7 +759,7 @@ type BondingArtery struct {
 type WarpGlobalConfig struct {
 	gorm.Model
 	ActiveAccountID uint   `json:"active_account_id"`                                       // FK to the currently executing WarpAccount
-	TransportMode   string `json:"transport_mode" gorm:"size:50;default:'masque'"`           // masque, wireguard
+	TransportMode   string `json:"transport_mode" gorm:"size:50;default:'masque'"`           // masque, masque_h2, wireguard
 	TargetSNI       string `json:"target_sni" gorm:"size:255;default:'consumer-masque.cloudflareclient.com'"`
 	SocksPort       int    `json:"socks_port" gorm:"default:10880"`                          // Local SOCKS5 proxy port
 	HTTPPort        int    `json:"http_port" gorm:"default:10881"`                           // Local HTTP proxy port
@@ -772,15 +772,18 @@ type WarpGlobalConfig struct {
 // (referenced by WarpGlobalConfig.ActiveAccountID).
 type WarpAccount struct {
 	gorm.Model
-	LicenseKey  string `json:"license_key" gorm:"size:30"`                // 26-char WARP+ license token
-	DeviceID    string `json:"device_id" gorm:"size:191;uniqueIndex"`     // Unique device identity from CF registration
-	Token       string `json:"token" gorm:"type:text"`                    // JWT Bearer token from CF edge
-	PrivateKey  string `json:"private_key" gorm:"type:text"`              // Base64 Curve25519 private key
-	PublicKey   string `json:"public_key" gorm:"size:255"`                // Base64 Curve25519 public key
-	ClientID    string `json:"client_id" gorm:"size:10"`                  // Base64 3-byte billing prefix
-	AccountType string `json:"account_type" gorm:"size:20;default:'free'"` // free, premium, warp_plus
-	TotalQuota  int64  `json:"total_quota" gorm:"default:0"`              // Total data allocation in bytes
-	UsedQuota   int64  `json:"used_quota" gorm:"default:0"`               // Consumed data allocation in bytes
-	IsFunctional bool  `json:"is_functional" gorm:"default:true"`         // Invalidated on registration failure
+	LicenseKey    string `json:"license_key" gorm:"size:30"`                // 26-char WARP+ license token
+	DeviceID      string `json:"device_id" gorm:"size:191;uniqueIndex"`     // Unique device identity from CF registration
+	Token         string `json:"token" gorm:"type:text"`                    // JWT Bearer token from CF edge
+	PrivateKey    string `json:"private_key" gorm:"type:text"`              // Base64 Curve25519 private key (ours)
+	PublicKey     string `json:"public_key" gorm:"size:255"`                // Base64 Curve25519 public key (ours)
+	PeerPublicKey string `json:"peer_public_key" gorm:"size:255"`           // Cloudflare's WireGuard server public key
+	ClientID      string `json:"client_id" gorm:"size:30"`                  // Base64 3-byte billing prefix (reserved bytes)
+	AssignedIPv4  string `json:"assigned_ipv4" gorm:"size:20"`              // WARP virtual IPv4 (e.g. 172.16.0.2)
+	AssignedIPv6  string `json:"assigned_ipv6" gorm:"size:50"`              // WARP virtual IPv6
+	AccountType   string `json:"account_type" gorm:"size:20;default:'free'"` // free, premium, warp_plus
+	TotalQuota    int64  `json:"total_quota" gorm:"default:0"`              // Total data allocation in bytes
+	UsedQuota     int64  `json:"used_quota" gorm:"default:0"`               // Consumed data allocation in bytes
+	IsFunctional  bool   `json:"is_functional" gorm:"default:true"`         // Invalidated on registration failure
 }
 

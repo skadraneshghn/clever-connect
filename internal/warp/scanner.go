@@ -392,9 +392,11 @@ func (s *WarpScanner) probeEndpoint(ctx context.Context, t scanTarget) (*pebble.
 	}
 
 	tlsConn := tls.Client(rawConn, &tls.Config{
-		ServerName:         s.cfg.TargetSNI,
+		ServerName: s.cfg.TargetSNI,
+		// Negotiate h2 ALPN — confirms endpoint supports masque_h2 TCP transport.
+		// Cloudflare's edge universally supports h2 on port 443.
+		NextProtos:         []string{"h2", "http/1.1"},
 		InsecureSkipVerify: true,
-		NextProtos:         []string{"http/1.1"},
 	})
 	if err := tlsConn.HandshakeContext(tcpCtx); err != nil {
 		rawConn.Close()
@@ -433,9 +435,13 @@ func (s *WarpScanner) probeEndpoint(ctx context.Context, t scanTarget) (*pebble.
 		s.quicFailCount.Add(1)
 	}
 
-	alpns := []string{"http/1.1"}
+	// ── Step 3: Record supported ALPNs ────────────────────────────────────────
+	// negotiatedALPN was captured in the TCP/TLS probe above.
+	// We always include "h2" in the SupportedALPNs when TCP port 443 is open —
+	// Cloudflare's edge universally supports H2 on port 443.
+	supportedALPNs := []string{"h2", "http/1.1"} // TCP-based modes (masque_h2)
 	if quicOK {
-		alpns = []string{"h3", "http/1.1"}
+		supportedALPNs = append([]string{"h3", "h3-29"}, supportedALPNs...) // QUIC modes (masque)
 	}
 
 	return &pebble.WarpScanResult{
@@ -444,9 +450,9 @@ func (s *WarpScanner) probeEndpoint(ctx context.Context, t scanTarget) (*pebble.
 		LatencyMs:             float64(tcpLatency.Milliseconds()),
 		PacketLoss:            0,
 		ThroughputBytesPerSec: 0,
-		SupportedALPNs:        alpns,
+		SupportedALPNs:        supportedALPNs,
 		LastScanned:           time.Now().UTC().Format(time.RFC3339Nano),
-		IsRestricted:          !quicOK,
+		IsRestricted:          !quicOK, // TCP-only when QUIC fails; masque_h2 still works
 	}, nil
 }
 

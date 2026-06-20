@@ -103,8 +103,11 @@ func (h *WarpHandler) SaveConfig(c *gin.Context) {
 	}
 
 	// Validate transport mode
-	if input.TransportMode != "" && input.TransportMode != "masque" && input.TransportMode != "wireguard" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid transport mode. Must be 'masque' or 'wireguard'."})
+	if input.TransportMode != "" &&
+		input.TransportMode != "masque" &&
+		input.TransportMode != "masque_h2" &&
+		input.TransportMode != "wireguard" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid transport mode. Must be 'masque', 'masque_h2', or 'wireguard'."})
 		return
 	}
 

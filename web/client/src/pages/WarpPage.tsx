@@ -494,7 +494,7 @@ const InstrumentationCockpit: React.FC = () => {
 const CoreConfigGrid: React.FC = () => {
   const { config, commitEngineTuning, globalLoading } = useWarpStore();
 
-  const [transportMode, setTransportMode] = useState<'masque' | 'wireguard'>('masque');
+  const [transportMode, setTransportMode] = useState<'masque' | 'masque_h2' | 'wireguard'>('masque');
   const [targetSni, setTargetSni] = useState('consumer-masque.cloudflareclient.com');
   const [socksPort, setSocksPort] = useState(10880);
   const [httpPort, setHttpPort] = useState(10881);
@@ -502,7 +502,7 @@ const CoreConfigGrid: React.FC = () => {
 
   useEffect(() => {
     if (config) {
-      setTransportMode(config.transport_mode || 'masque');
+      setTransportMode((config.transport_mode as 'masque' | 'masque_h2' | 'wireguard') || 'masque');
       setTargetSni(config.target_sni || 'consumer-masque.cloudflareclient.com');
       setSocksPort(config.socks_port || 10880);
       setHttpPort(config.http_port || 10881);
@@ -541,47 +541,57 @@ const CoreConfigGrid: React.FC = () => {
         {/* Transport Mode Select */}
         <div>
           <label style={labelStyle}>Transport Mode</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {(['masque', 'wireguard'] as const).map((mode) => (
-              <label key={mode} style={{
-                display: 'flex', alignItems: 'center', gap: 10,
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            {([
+              { id: 'masque',    label: 'MASQUE',     sub: 'HTTP/3 over QUIC (UDP)', badge: null },
+              { id: 'masque_h2', label: 'MASQUE TCP',  sub: 'HTTP/2 over TLS (UDP blocked)', badge: '🔒 UDP Bypass' },
+              { id: 'wireguard', label: 'WireGuard',   sub: 'gVisor userspace netstack', badge: null },
+            ] as const).map(({ id, label, sub, badge }) => (
+              <label key={id} style={{
+                display: 'flex', alignItems: 'flex-start', gap: 10,
                 padding: '12px 14px', borderRadius: 10, cursor: 'pointer',
-                border: `1.5px solid ${transportMode === mode ? 'var(--color-brand)' : 'var(--color-brand-border)'}`,
-                background: transportMode === mode ? 'rgba(255,107,44,0.06)' : 'var(--color-brand-bg)',
+                border: `1.5px solid ${transportMode === id ? 'var(--color-brand)' : 'var(--color-brand-border)'}`,
+                background: transportMode === id ? 'rgba(255,107,44,0.06)' : 'var(--color-brand-bg)',
                 transition: 'all 0.2s ease',
               }}>
                 <input
                   type="radio"
                   name="transportMode"
-                  value={mode}
-                  checked={transportMode === mode}
-                  onChange={() => { setTransportMode(mode); markDirty(); }}
+                  value={id}
+                  checked={transportMode === id}
+                  onChange={() => { setTransportMode(id); markDirty(); }}
                   style={{ display: 'none' }}
                 />
                 <div style={{
-                  width: 16, height: 16, borderRadius: '50%',
-                  border: `2px solid ${transportMode === mode ? 'var(--color-brand)' : 'var(--color-brand-border)'}`,
-                  background: transportMode === mode ? 'var(--color-brand)' : 'transparent',
+                  width: 16, height: 16, borderRadius: '50%', flexShrink: 0, marginTop: 2,
+                  border: `2px solid ${transportMode === id ? 'var(--color-brand)' : 'var(--color-brand-border)'}`,
+                  background: transportMode === id ? 'var(--color-brand)' : 'transparent',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   transition: 'all 0.2s ease',
                 }}>
-                  {transportMode === mode && <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#fff' }} />}
+                  {transportMode === id && <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#fff' }} />}
                 </div>
                 <div>
                   <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand-heading)', textTransform: 'uppercase' }}>
-                    {mode === 'masque' ? 'Cloudflare MASQUE' : 'WireGuard'}
+                    {label}
                   </div>
-                  <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', marginTop: 1 }}>
-                    {mode === 'masque' ? 'HTTP/3 CONNECT over QUIC' : 'gVisor userspace netstack'}
-                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--color-brand-muted)', marginTop: 1 }}>{sub}</div>
+                  {badge && (
+                    <div style={{
+                      marginTop: 5, display: 'inline-block',
+                      fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 20,
+                      background: 'rgba(16,185,129,0.1)', color: '#10b981',
+                      border: '1px solid rgba(16,185,129,0.2)',
+                    }}>{badge}</div>
+                  )}
                 </div>
               </label>
             ))}
           </div>
         </div>
 
-        {/* SNI Input (MASQUE only) */}
-        {transportMode === 'masque' && (
+        {/* SNI Input (MASQUE/H2 modes only) */}
+        {(transportMode === 'masque' || transportMode === 'masque_h2') && (
           <div>
             <label style={labelStyle}>Target SNI Mask</label>
             <input
@@ -1073,7 +1083,7 @@ const ScanResultsTable: React.FC = () => {
     scanEvents, fetchScanEvents, initiateManualEdgeScan, stopEdgeScan, scanLoading,
   } = useWarpStore();
 
-  const [mode, setMode] = useState<'masque' | 'wireguard'>('masque');
+  const [mode, setMode] = useState<'masque' | 'masque_h2' | 'wireguard'>('masque');
   const [workers, setWorkers] = useState(0); // 0 = auto (CPU×4)
   const [timeoutMs, setTimeoutMs] = useState(2000);
   const eventLogRef = useRef<HTMLDivElement>(null);
@@ -1141,14 +1151,18 @@ const ScanResultsTable: React.FC = () => {
           <div style={{ flex: '0 0 auto' }}>
             <label style={labelStyle}>Mode</label>
             <div style={{ display: 'flex', gap: 6 }}>
-              {(['masque', 'wireguard'] as const).map((m) => (
-                <button key={m} onClick={() => setMode(m)} style={{
+              {([
+                { id: 'masque',    label: 'MASQUE' },
+                { id: 'masque_h2', label: 'MASQUE TCP' },
+                { id: 'wireguard', label: 'WireGuard' },
+              ] as const).map(({ id, label }) => (
+                <button key={id} onClick={() => setMode(id)} style={{
                   padding: '7px 12px', borderRadius: 7,
-                  border: `1px solid ${mode === m ? 'var(--color-brand)' : 'var(--color-brand-border)'}`,
-                  background: mode === m ? 'rgba(255,107,44,0.08)' : 'transparent',
-                  color: mode === m ? 'var(--color-brand)' : 'var(--color-brand-muted)',
+                  border: `1px solid ${mode === id ? 'var(--color-brand)' : 'var(--color-brand-border)'}`,
+                  background: mode === id ? 'rgba(255,107,44,0.08)' : 'transparent',
+                  color: mode === id ? 'var(--color-brand)' : 'var(--color-brand-muted)',
                   fontSize: 10, fontWeight: 700, textTransform: 'uppercase', cursor: 'pointer',
-                }}>{m}</button>
+                }}>{label}</button>
               ))}
             </div>
           </div>

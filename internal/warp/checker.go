@@ -42,6 +42,10 @@ type TraceResult struct {
 
 // TraceCheck performs a captive portal validation by routing traffic through
 // the local SOCKS5 proxy and checking the Cloudflare /cdn-cgi/trace response.
+//
+// Timeouts are generous (15/25s) to accommodate:
+//   - masque_h2: TCP connect + uTLS handshake + H2 setup + CONNECT round-trip
+//   - wireguard:  WireGuard handshake completion before first packet
 func TraceCheck(socksPort int) (*TraceResult, error) {
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", socksPort)
 
@@ -49,7 +53,7 @@ func TraceCheck(socksPort int) (*TraceResult, error) {
 
 	// Create SOCKS5 dialer targeting the local WARP proxy
 	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, &net.Dialer{
-		Timeout: 10 * time.Second,
+		Timeout: 15 * time.Second, // increased: H2 triple-handshake is slower
 	})
 	if err != nil {
 		return nil, fmt.Errorf("warp: failed to create SOCKS5 dialer: %w", err)
@@ -60,12 +64,12 @@ func TraceCheck(socksPort int) (*TraceResult, error) {
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
 		},
-		TLSHandshakeTimeout: 10 * time.Second,
+		TLSHandshakeTimeout: 15 * time.Second, // increased for H2 chains
 	}
 
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   15 * time.Second,
+		Timeout:   25 * time.Second, // increased: accounts for multi-stage negotiation
 	}
 
 	// Make the trace request

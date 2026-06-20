@@ -310,16 +310,25 @@ func (c *ObfuscatedClient) RegisterDevice(licenseKey string) (*models.WarpAccoun
 	)
 
 	// Build account model
+	// Extract Cloudflare's server peer public key
+	peerPubKey := ""
+	if len(regResp.Config.Peers) > 0 {
+		peerPubKey = regResp.Config.Peers[0].PublicKey
+	}
+
 	account := &models.WarpAccount{
-		DeviceID:     regResp.ID,
-		Token:        regResp.Token,
-		PrivateKey:   privateKey,
-		PublicKey:    publicKey,
-		ClientID:     regResp.Config.ClientID,
-		AccountType:  regResp.Account.AccountType,
-		TotalQuota:   regResp.Account.Quota,
-		UsedQuota:    regResp.Account.Usage,
-		IsFunctional: true,
+		DeviceID:      regResp.ID,
+		Token:         regResp.Token,
+		PrivateKey:    privateKey,
+		PublicKey:     publicKey,
+		PeerPublicKey: peerPubKey,
+		ClientID:      regResp.Config.ClientID,
+		AssignedIPv4:  regResp.Config.Interface.Addresses.V4,
+		AssignedIPv6:  regResp.Config.Interface.Addresses.V6,
+		AccountType:   regResp.Account.AccountType,
+		TotalQuota:    regResp.Account.Quota,
+		UsedQuota:     regResp.Account.Usage,
+		IsFunctional:  true,
 	}
 
 	// Step 3: Upgrade to WARP+ if license key provided.
