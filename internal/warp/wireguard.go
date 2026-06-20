@@ -201,7 +201,7 @@ func StartWireGuardUserspace(
 	port int,
 ) (dialFn func(ctx context.Context, network, addr string) (net.Conn, error), cancel func(), err error) {
 
-	// ── Determine virtual interface address ──────────────────────────────────
+	// ── Determine virtual interface addresses ──────────────────────────────
 	ipv4Str := account.AssignedIPv4
 	if ipv4Str == "" {
 		ipv4Str = "172.16.0.2"
@@ -221,13 +221,40 @@ func StartWireGuardUserspace(
 		return nil, nil, fmt.Errorf("cannot convert %q to netip.Addr", ipv4Str)
 	}
 
-	// Use Cloudflare's own DNS resolver inside the tunnel
-	dnsAddr := netip.MustParseAddr("1.1.1.1")
+	// Collect all addresses for the virtual interface — IPv4 is always present;
+	// add IPv6 if the account has one so apps targeting IPv6 hosts (Telegram,
+	// etc.) don't get "network is unreachable" errors.
+	tunAddrs := []netip.Addr{localAddr}
 
-	// ── Create gVisor netstack TUN (Fix #3: MTU=1280) ───────────────────────
+	ipv6Str := account.AssignedIPv6
+	if ipv6Str == "" {
+		logger.Warn("WARP", "AssignedIPv6 not stored; IPv6 destinations will fail (re-register account to fix)")
+	} else {
+		// Strip CIDR suffix (e.g. "fd01:5ca1:ab1e::1/128" → "fd01:5ca1:ab1e::1")
+		if idx := strings.IndexByte(ipv6Str, '/'); idx >= 0 {
+			ipv6Str = ipv6Str[:idx]
+		}
+		ipv6 := net.ParseIP(ipv6Str)
+		if ipv6 != nil {
+			if addr6, ok := netip.AddrFromSlice(ipv6.To16()); ok {
+				tunAddrs = append(tunAddrs, addr6)
+				logger.Info("WARP", "IPv6 assigned to gVisor netstack", "ipv6", ipv6Str)
+			} else {
+				logger.Warn("WARP", "Could not parse AssignedIPv6 as netip.Addr", "ipv6", ipv6Str)
+			}
+		}
+	}
+
+	// Use Cloudflare's own DNS resolvers inside the tunnel — both IPv4 and IPv6
+	dnsAddrs := []netip.Addr{
+		netip.MustParseAddr("1.1.1.1"),          // CF primary IPv4 DNS
+		netip.MustParseAddr("2606:4700:4700::1111"), // CF primary IPv6 DNS
+	}
+
+	// ── Create gVisor netstack TUN (MTU=1280) ────────────────────────────────
 	tunDev, tnet, err := netstack.CreateNetTUN(
-		[]netip.Addr{localAddr},
-		[]netip.Addr{dnsAddr},
+		tunAddrs,
+		dnsAddrs,
 		wgMTU,
 	)
 	if err != nil {
@@ -249,7 +276,7 @@ func StartWireGuardUserspace(
 	}
 
 	// ── Create WireGuard device ──────────────────────────────────────────────
-	wgLogger := device.NewLogger(device.LogLevelError, "[wg] ")
+	wgLogger := device.NewLogger(device.LogLevelVerbose, "[wg] ")
 	wgDev := device.NewDevice(tunDev, bind, wgLogger)
 
 	// ── Build and apply IPC config (Fix #1: no port dup, Fix #2: no reserved in UAPI) ─
@@ -276,8 +303,32 @@ func StartWireGuardUserspace(
 		"reserved", fmt.Sprintf("[%d,%d,%d]", rsv[0], rsv[1], rsv[2]),
 	)
 
-	// Brief pause for handshake initiation
-	time.Sleep(300 * time.Millisecond)
+	// ── Wait for WireGuard handshake to complete ──────────────────────────────
+	// The first outbound packet triggers a handshake with the CF edge. That
+	// handshake typically completes in 200ms–2s on a healthy link.
+	// We probe by opening a TCP connection to 1.1.1.1:443 (Cloudflare HTTPS)
+	// through the tunnel. The probe confirms:
+	//   1. The WireGuard handshake completed (otherwise no data flows)
+	//   2. The gVisor netstack can actually route packets
+	//   3. The tunnel endpoint is responding
+	// A 5-second deadline is generous enough for a cold handshake + round-trip.
+	logger.Info("WARP", "Probing tunnel connectivity (waiting for WireGuard handshake)...")
+	probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer probeCancel()
+	probeConn, probeErr := tnet.DialContext(probeCtx, "tcp", "1.1.1.1:443")
+	if probeErr != nil {
+		// Handshake failed or timed out — still proceed, but log the failure.
+		// Some restrictive networks block port 443 outright and the user
+		// should try a different scan result. We do NOT abort here so the
+		// SOCKS5 server starts and the user can see errors per-connection.
+		logger.Warn("WARP", "Tunnel probe failed (handshake may not have completed)",
+			"error", probeErr,
+			"hint", "try rescanning endpoints or check if UDP is blocked",
+		)
+	} else {
+		probeConn.Close()
+		logger.Info("WARP", "Tunnel probe succeeded — WireGuard handshake complete")
+	}
 
 	// ── Return dial function and cancel ─────────────────────────────────────
 	dialFn = func(dialCtx context.Context, network, addr string) (net.Conn, error) {

@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -373,7 +374,7 @@ func (e *WarpEngine) startMASQUEH2Transport() error {
 		}
 	}()
 
-	go e.startHTTPProxy()
+	go e.startHTTPProxy(dialFn)
 
 	return nil
 }
@@ -458,7 +459,7 @@ func (e *WarpEngine) startMASQUETransport() error {
 		}
 	}()
 
-	go e.startHTTPProxy()
+	go e.startHTTPProxy(dialFn)
 	go e.monitorConnection()
 
 	return nil
@@ -486,15 +487,18 @@ func (e *WarpEngine) dialViaMASQUE(ctx context.Context, targetAddr string) (net.
 	}
 
 	// Send HTTP CONNECT request through the stream
+	rawCredentials := fmt.Sprintf("%s:%s", e.account.DeviceID, e.account.Token)
+	encodedAuth := base64.StdEncoding.EncodeToString([]byte(rawCredentials))
+
 	connectReq := fmt.Sprintf(
 		"CONNECT %s HTTP/1.1\r\n"+
 			"Host: %s\r\n"+
-			"Proxy-Authorization: Bearer %s\r\n"+
+			"Proxy-Authorization: Basic %s\r\n"+
 			"Capsule-Protocol: wg\r\n"+
 			"\r\n",
 		targetAddr,
 		e.cfg.TargetSNI,
-		e.account.Token,
+		encodedAuth,
 	)
 
 	if _, err := stream.Write([]byte(connectReq)); err != nil {
@@ -615,8 +619,9 @@ func (e *WarpEngine) rotateEndpoint() {
 	}
 }
 
-// startHTTPProxy starts an HTTP CONNECT proxy that delegates to the SOCKS5 proxy.
-func (e *WarpEngine) startHTTPProxy() {
+// startHTTPProxy starts an HTTP CONNECT proxy.
+// dialFn is the transport-specific dial function (WireGuard or MASQUE).
+func (e *WarpEngine) startHTTPProxy(dialFn func(ctx context.Context, network, addr string) (net.Conn, error)) {
 	httpAddr := fmt.Sprintf("127.0.0.1:%d", e.cfg.HTTPPort)
 
 	var err error
@@ -631,7 +636,7 @@ func (e *WarpEngine) startHTTPProxy() {
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodConnect {
-				e.handleHTTPConnect(w, r)
+				e.handleHTTPConnect(w, r, dialFn)
 			} else {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			}
@@ -645,10 +650,9 @@ func (e *WarpEngine) startHTTPProxy() {
 	}
 }
 
-// handleHTTPConnect handles HTTP CONNECT proxy requests by proxying through
-// the MASQUE tunnel.
-func (e *WarpEngine) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
-	targetConn, err := e.dialViaMASQUE(r.Context(), r.Host)
+// handleHTTPConnect handles HTTP CONNECT proxy requests using the provided dialFn.
+func (e *WarpEngine) handleHTTPConnect(w http.ResponseWriter, r *http.Request, dialFn func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	targetConn, err := dialFn(r.Context(), "tcp", r.Host)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
@@ -687,10 +691,11 @@ func (e *WarpEngine) startWireGuardTransport() error {
 	if h, _, err := net.SplitHostPort(e.activeEndpoint.IPAddress); err == nil {
 		host = h
 	}
-	port := e.activeEndpoint.Port
-	if port == 0 {
-		port = 2408 // Cloudflare WARP default WireGuard port
-	}
+	// WireGuard ALWAYS runs on UDP port 2408 on Cloudflare's edge.
+	// The scanner probes TCP port 443 for MASQUE mode and stores those results
+	// in the wireguard namespace too, so we must ignore the scanned port and
+	// always use 2408 — the only port CF accepts WireGuard UDP handshakes on.
+	port := 2408
 
 	logger.Info("WARP", "Starting real userspace WireGuard tunnel",
 		"endpoint", fmt.Sprintf("%s:%d", host, port),
@@ -728,7 +733,7 @@ func (e *WarpEngine) startWireGuardTransport() error {
 		}
 	}()
 
-	go e.startHTTPProxy()
+	go e.startHTTPProxy(dialFn)
 
 	return nil
 }

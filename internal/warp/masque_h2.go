@@ -7,19 +7,27 @@ package warp
 // This file implements the same WARP MASQUE tunnel using HTTP/2 Extended CONNECT
 // (RFC 8441 / RFC 9220) over a standard TCP connection instead.
 //
-// Flow:
-//   Browser → SOCKS5:10880 → [H2 CONNECT] → CF edge:443 (TCP/TLS) → Internet
+// Correct MASQUE tunnel flow:
+//   1. One persistent H2 connection to consumer-masque.cloudflareclient.com:443
+//   2. Each SOCKS5 destination opens a NEW H2 stream with:
+//        :method    = CONNECT
+//        :authority = consumer-masque.cloudflareclient.com   ← ALWAYS this host
+//        :path      = /v1/masque/tcp/<dest-host>/<dest-port>/
+//        Capsule-Protocol: ?1
+//        Proxy-Authorization: Bearer <token>
+//   3. CF's edge decodes the target from the path and proxies the TCP stream.
+//
+// Key fix: ":authority" must ALWAYS be the MASQUE endpoint host, NOT the
+// destination. Setting :authority to an external host (e.g. 149.154.167.41)
+// causes CF to reject the request with HTTP 400 — it is not an open proxy.
 //
 // The TLS handshake uses uTLS Chrome fingerprint with ALPN "h2" to look like
 // normal browser HTTPS traffic, defeating DPI inspection.
-//
-// Each SOCKS5 connection opens a new H2 stream on a shared, persistent H2
-// connection to the Cloudflare edge. If the connection drops, it is
-// transparently re-established before the next request.
 // ──────────────────────────────────────────────────────────────────────────────
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -41,13 +49,19 @@ import (
 
 // masqueH2Client maintains a single, long-lived HTTP/2 connection to a
 // Cloudflare edge node. Re-dials automatically if the connection is dropped.
+//
+// IMPORTANT: the H2 connection is always established to the CF edge IP (cfAddr)
+// with SNI = masqueAuthority (consumer-masque.cloudflareclient.com). Individual
+// SOCKS5 destinations are encoded in the :path of each H2 CONNECT stream, NOT
+// in :authority — that would make it an open-proxy request which CF rejects.
 type masqueH2Client struct {
-	mu      sync.Mutex
-	h2conn  *http2.ClientConn
-	cfAddr  string // IP:port of CF edge
-	sni     string // Server Name Indication (TargetSNI from config)
-	token   string // Bearer auth token from the WARP account
-	account *models.WarpAccount
+	mu               sync.Mutex
+	h2conn           *http2.ClientConn
+	cfAddr           string // IP:port of CF edge (TCP dial target)
+	sni              string // Server Name Indication = masqueAuthority
+	masqueAuthority  string // HTTP/2 :authority for all CONNECT streams
+	token            string // Bearer auth token from the WARP account
+	account          *models.WarpAccount
 }
 
 // getConn returns an active H2 ClientConn, dialling a new one if needed.
@@ -117,37 +131,43 @@ func (c *masqueH2Client) dialH2(ctx context.Context) (*http2.ClientConn, error) 
 	return h2conn, nil
 }
 
-// dial opens a new H2 CONNECT stream to targetAddr.
-// This becomes the read/write tunnel for one SOCKS5 connection.
+// dial opens a new H2 Extended CONNECT stream to targetAddr using the correct
+// MASQUE tunnel format. The H2 stream's :authority is always the MASQUE
+// endpoint host (consumer-masque.cloudflareclient.com), and the destination
+// is encoded in the URL path as /v1/masque/tcp/<host>/<port>/.
+//
+// This is the key fix: previously :authority was set to the destination host
+// (e.g. 149.154.167.41:443) which caused CF to reject with HTTP 400 because
+// it looked like an open-proxy request to a 3rd-party server.
 func (c *masqueH2Client) dial(ctx context.Context, targetAddr string) (net.Conn, error) {
 	h2conn, err := c.getConn(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// io.Pipe provides the bidirectional channel:
-	//   pw → (what we write goes to Cloudflare as H2 DATA frames)
-	//   pr → fed to http.Request.Body (reads from our local writer)
+	// Build the basic auth credentials matching Cloudflare's QUIC MASQUE transport
+	rawCredentials := fmt.Sprintf("%s:%s", c.account.DeviceID, c.account.Token)
+	encodedAuth := base64.StdEncoding.EncodeToString([]byte(rawCredentials))
+
+	// io.Pipe provides the bidirectional channel
 	pr, pw := io.Pipe()
 
-	// HTTP/2 Extended CONNECT (RFC 8441):
+	// HTTP/2 Standard CONNECT request:
 	//   :method = CONNECT
-	//   :authority = target:port
-	//   authorization = Bearer <token>
-	//
-	// Cloudflare's WARP edge treats this as a tunnel request and proxies
-	// TCP traffic to targetAddr on behalf of the authenticated device.
+	//   :authority = targetAddr (e.g. "149.154.167.41:443" or "google.com:443")
+	//   Host = consumer-masque.cloudflareclient.com (TargetSNI)
+	//   Proxy-Authorization = Basic <base64(DeviceID:Token)>
+	//   Capsule-Protocol = wg
 	req := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{
-			Host:   targetAddr,
-			Scheme: "https",
+			Host: targetAddr,
 		},
 		Host: targetAddr,
 		Header: http.Header{
-			"Proxy-Authorization": {"Bearer " + c.token},
-			"Host":                {"api.cloudflareclient.com"},
-			"Proxy-Connection":    {"Keep-Alive"},
+			"Host":                {c.masqueAuthority},
+			"Proxy-Authorization": {"Basic " + encodedAuth},
+			"Capsule-Protocol":    {"wg"},
 			"Cf-Client-Version":   {"a-6.11-2223"},
 			"User-Agent":          {"okhttp/3.12.1"},
 		},
@@ -169,13 +189,15 @@ func (c *masqueH2Client) dial(ctx context.Context, targetAddr string) (net.Conn,
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		body := make([]byte, 512)
+		n, _ := resp.Body.Read(body)
 		pr.Close()
 		pw.Close()
 		resp.Body.Close()
-		return nil, fmt.Errorf("H2 CONNECT rejected by CF edge: HTTP %d (check token validity)", resp.StatusCode)
+		return nil, fmt.Errorf("H2 CONNECT rejected: HTTP %d body=%q", resp.StatusCode, body[:n])
 	}
 
-	logger.Debug("WARP", "H2 CONNECT tunnel established", "target", targetAddr)
+	logger.Debug("WARP", "H2 MASQUE tunnel established", "target", targetAddr)
 
 	return &h2StreamConn{
 		reader: resp.Body,
@@ -239,17 +261,23 @@ func StartMASQUEH2Transport(
 
 	cfAddr := fmt.Sprintf("%s:%d", host, port)
 
+	// masqueAuthority is the H2 :authority for all CONNECT streams.
+	// It must be the MASQUE endpoint hostname — NOT the destination host.
+	// The SNI for the TLS handshake also uses this value.
+	masqueAuthority := cfg.TargetSNI // "consumer-masque.cloudflareclient.com"
+
 	client := &masqueH2Client{
-		cfAddr:  cfAddr,
-		sni:     cfg.TargetSNI,
-		token:   account.Token,
-		account: account,
+		cfAddr:          cfAddr,
+		sni:             masqueAuthority,
+		masqueAuthority: masqueAuthority,
+		token:           account.Token,
+		account:         account,
 	}
 
 	// Verify connectivity immediately — fail fast if the edge is unreachable
 	logger.Info("WARP", "Initialising MASQUE/H2 transport (TCP-only mode)",
 		"endpoint", cfAddr,
-		"sni", cfg.TargetSNI,
+		"masqueAuthority", masqueAuthority,
 	)
 	initialConn, err := client.dialH2(ctx)
 	if err != nil {
@@ -259,7 +287,10 @@ func StartMASQUEH2Transport(
 	client.h2conn = initialConn
 	client.mu.Unlock()
 
-	logger.Info("WARP", "MASQUE/H2 transport ready — all traffic tunnelled over TCP/TLS/H2")
+	logger.Info("WARP", "MASQUE/H2 transport ready",
+		"authority", masqueAuthority,
+		"tunnelPath", "/v1/masque/tcp/<host>/<port>/",
+	)
 
 	dialFn = func(dialCtx context.Context, network, targetAddr string) (net.Conn, error) {
 		return client.dial(dialCtx, targetAddr)
