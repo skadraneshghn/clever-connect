@@ -1,256 +1,81 @@
 package warp
 
-// ──────────────────────────────────────────────────────────────────────────────
-// MASQUE over HTTP/2 TCP Transport
-//
-// When an ISP blocks all UDP (common in Iran), HTTP/3 (QUIC) is unavailable.
-// This file implements the same WARP MASQUE tunnel using HTTP/2 Extended CONNECT
-// (RFC 8441 / RFC 9220) over a standard TCP connection instead.
-//
-// Correct MASQUE tunnel flow:
-//   1. One persistent H2 connection to consumer-masque.cloudflareclient.com:443
-//   2. Each SOCKS5 destination opens a NEW H2 stream with:
-//        :method    = CONNECT
-//        :authority = consumer-masque.cloudflareclient.com   ← ALWAYS this host
-//        :path      = /v1/masque/tcp/<dest-host>/<dest-port>/
-//        Capsule-Protocol: ?1
-//        Proxy-Authorization: Bearer <token>
-//   3. CF's edge decodes the target from the path and proxies the TCP stream.
-//
-// Key fix: ":authority" must ALWAYS be the MASQUE endpoint host, NOT the
-// destination. Setting :authority to an external host (e.g. 149.154.167.41)
-// causes CF to reject the request with HTTP 400 — it is not an open proxy.
-//
-// The TLS handshake uses uTLS Chrome fingerprint with ALPN "h2" to look like
-// normal browser HTTPS traffic, defeating DPI inspection.
-// ──────────────────────────────────────────────────────────────────────────────
-
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
-	"io"
+	"math/big"
 	"net"
 	"net/http"
-	"net/url"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
+	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
-	utls "github.com/refraction-networking/utls"
+	connectip "github.com/Diniboy1123/connect-ip-go"
+	"github.com/yosida95/uritemplate/v3"
 	"golang.org/x/net/http2"
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
-// ──────────────────────────────────────────────────────────────────────────────
-// masqueH2Client — persistent H2 connection manager
-// ──────────────────────────────────────────────────────────────────────────────
+// LoadMasqueKeys retrieves or generates the P-256 ECDSA key pair for the WARP account.
+func LoadMasqueKeys(account *models.WarpAccount) (*ecdsa.PrivateKey, string, error) {
+	if account.MasquePrivateKey == "" || account.MasquePublicKey == "" {
+		logger.Info("WARP", "Generating new P-256 ECDSA key pair for MASQUE...")
+		privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to generate P-256 key: %w", err)
+		}
 
-// masqueH2Client maintains a single, long-lived HTTP/2 connection to a
-// Cloudflare edge node. Re-dials automatically if the connection is dropped.
-//
-// IMPORTANT: the H2 connection is always established to the CF edge IP (cfAddr)
-// with SNI = masqueAuthority (consumer-masque.cloudflareclient.com). Individual
-// SOCKS5 destinations are encoded in the :path of each H2 CONNECT stream, NOT
-// in :authority — that would make it an open-proxy request which CF rejects.
-type masqueH2Client struct {
-	mu               sync.Mutex
-	h2conn           *http2.ClientConn
-	cfAddr           string // IP:port of CF edge (TCP dial target)
-	sni              string // Server Name Indication = masqueAuthority
-	masqueAuthority  string // HTTP/2 :authority for all CONNECT streams
-	token            string // Bearer auth token from the WARP account
-	account          *models.WarpAccount
-}
+		privBytes, err := x509.MarshalECPrivateKey(privKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to marshal EC private key: %w", err)
+		}
+		privB64 := base64.StdEncoding.EncodeToString(privBytes)
 
-// getConn returns an active H2 ClientConn, dialling a new one if needed.
-func (c *masqueH2Client) getConn(ctx context.Context) (*http2.ClientConn, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+		pubBytes, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to marshal PKIX public key: %w", err)
+		}
+		pubB64 := base64.StdEncoding.EncodeToString(pubBytes)
 
-	if c.h2conn != nil && c.h2conn.CanTakeNewRequest() {
-		return c.h2conn, nil
+		account.MasquePrivateKey = privB64
+		account.MasquePublicKey = pubB64
+		account.MasqueActive = false
+
+		if db.DB != nil {
+			if err := db.DB.Model(account).Updates(map[string]interface{}{
+				"masque_private_key": privB64,
+				"masque_public_key":  pubB64,
+				"masque_active":      false,
+			}).Error; err != nil {
+				return nil, "", fmt.Errorf("failed to save MASQUE keys to DB: %w", err)
+			}
+		}
 	}
 
-	logger.Info("WARP", "Establishing new H2 connection to CF edge", "addr", c.cfAddr, "sni", c.sni)
-
-	conn, err := c.dialH2(ctx)
+	privKeyB64, err := base64.StdEncoding.DecodeString(account.MasquePrivateKey)
 	if err != nil {
-		return nil, err
+		return nil, "", fmt.Errorf("failed to decode private key base64: %w", err)
 	}
-	c.h2conn = conn
-	return conn, nil
-}
-
-// dialH2 creates a fresh uTLS → H2 connection to the Cloudflare edge.
-// Uses uTLS Chrome fingerprint to evade DPI that distinguishes Go's TLS stack.
-func (c *masqueH2Client) dialH2(ctx context.Context) (*http2.ClientConn, error) {
-	// Step 1: TCP connect
-	rawConn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", c.cfAddr)
+	privKey, err := x509.ParseECPrivateKey(privKeyB64)
 	if err != nil {
-		return nil, fmt.Errorf("TCP connect to %s failed: %w", c.cfAddr, err)
+		return nil, "", fmt.Errorf("failed to parse EC private key: %w", err)
 	}
 
-	// Step 2: uTLS Chrome handshake, ALPN = "h2" only.
-	// Requesting "h2" forces the server to negotiate HTTP/2. Dropping "h3"
-	// and "h3-29" prevents the edge from trying to upgrade to QUIC.
-	uConn := utls.UClient(rawConn, &utls.Config{
-		ServerName: c.sni,
-		NextProtos: []string{"h2"},
-	}, utls.HelloChrome_Auto)
-
-	if err := uConn.HandshakeContext(ctx); err != nil {
-		rawConn.Close()
-		return nil, fmt.Errorf("uTLS handshake failed: %w", err)
-	}
-
-	negotiated := uConn.ConnectionState().NegotiatedProtocol
-	if negotiated != "h2" {
-		uConn.Close()
-		return nil, fmt.Errorf("expected h2 ALPN, got %q — CF edge may not support H2 MASQUE on this endpoint", negotiated)
-	}
-
-	logger.Info("WARP", "H2 TLS handshake complete", "addr", c.cfAddr, "alpn", negotiated)
-
-	// Step 3: Wrap in http2.Transport and create ClientConn.
-	// AllowHTTP=false because we already have the TLS conn — http2.Transport
-	// just needs to drive the H2 framing layer.
-	h2tr := &http2.Transport{
-		// We pre-dial, so DialTLSContext is never called. This field just
-		// tells the transport the conn is already TLS-wrapped.
-		AllowHTTP: false,
-	}
-
-	h2conn, err := h2tr.NewClientConn(uConn)
-	if err != nil {
-		uConn.Close()
-		return nil, fmt.Errorf("H2 ClientConn setup failed: %w", err)
-	}
-
-	return h2conn, nil
+	return privKey, account.MasquePublicKey, nil
 }
 
-// dial opens a new H2 Extended CONNECT stream to targetAddr using the correct
-// MASQUE tunnel format. The H2 stream's :authority is always the MASQUE
-// endpoint host (consumer-masque.cloudflareclient.com), and the destination
-// is encoded in the URL path as /v1/masque/tcp/<host>/<port>/.
-//
-// This is the key fix: previously :authority was set to the destination host
-// (e.g. 149.154.167.41:443) which caused CF to reject with HTTP 400 because
-// it looked like an open-proxy request to a 3rd-party server.
-func (c *masqueH2Client) dial(ctx context.Context, targetAddr string) (net.Conn, error) {
-	h2conn, err := c.getConn(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Build the basic auth credentials matching Cloudflare's QUIC MASQUE transport
-	rawCredentials := fmt.Sprintf("%s:%s", c.account.DeviceID, c.account.Token)
-	encodedAuth := base64.StdEncoding.EncodeToString([]byte(rawCredentials))
-
-	// io.Pipe provides the bidirectional channel
-	pr, pw := io.Pipe()
-
-	// HTTP/2 Standard CONNECT request:
-	//   :method = CONNECT
-	//   :authority = targetAddr (e.g. "149.154.167.41:443" or "google.com:443")
-	//   Host = consumer-masque.cloudflareclient.com (TargetSNI)
-	//   Proxy-Authorization = Basic <base64(DeviceID:Token)>
-	//   Capsule-Protocol = wg
-	req := &http.Request{
-		Method: http.MethodConnect,
-		URL: &url.URL{
-			Host: targetAddr,
-		},
-		Host: targetAddr,
-		Header: http.Header{
-			"Host":                {c.masqueAuthority},
-			"Proxy-Authorization": {"Basic " + encodedAuth},
-			"Capsule-Protocol":    {"wg"},
-			"Cf-Client-Version":   {"a-6.11-2223"},
-			"User-Agent":          {"okhttp/3.12.1"},
-		},
-		Body:       pr,
-		Proto:      "HTTP/2.0",
-		ProtoMajor: 2,
-		ProtoMinor: 0,
-	}
-
-	resp, err := h2conn.RoundTrip(req)
-	if err != nil {
-		pr.Close()
-		pw.Close()
-		// Connection may be dead — force re-dial on next attempt
-		c.mu.Lock()
-		c.h2conn = nil
-		c.mu.Unlock()
-		return nil, fmt.Errorf("H2 CONNECT RoundTrip to %s failed: %w", targetAddr, err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body := make([]byte, 512)
-		n, _ := resp.Body.Read(body)
-		pr.Close()
-		pw.Close()
-		resp.Body.Close()
-		return nil, fmt.Errorf("H2 CONNECT rejected: HTTP %d body=%q", resp.StatusCode, body[:n])
-	}
-
-	logger.Debug("WARP", "H2 MASQUE tunnel established", "target", targetAddr)
-
-	return &h2StreamConn{
-		reader: resp.Body,
-		writer: pw,
-		closeOnce: sync.Once{},
-		closeFunc: func() {
-			pr.Close()
-			pw.Close()
-			resp.Body.Close()
-		},
-	}, nil
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// h2StreamConn — net.Conn adapter over an H2 CONNECT stream
-// ──────────────────────────────────────────────────────────────────────────────
-
-type h2StreamConn struct {
-	reader    io.ReadCloser  // H2 response body (server → client)
-	writer    *io.PipeWriter // Pipe writer (client → server via request body)
-	closeOnce sync.Once
-	closeFunc func()
-}
-
-func (c *h2StreamConn) Read(b []byte) (int, error)  { return c.reader.Read(b) }
-func (c *h2StreamConn) Write(b []byte) (int, error) { return c.writer.Write(b) }
-
-func (c *h2StreamConn) Close() error {
-	c.closeOnce.Do(c.closeFunc)
-	return nil
-}
-
-func (c *h2StreamConn) LocalAddr() net.Addr            { return &net.TCPAddr{} }
-func (c *h2StreamConn) RemoteAddr() net.Addr           { return &net.TCPAddr{} }
-func (c *h2StreamConn) SetDeadline(_ time.Time) error      { return nil }
-func (c *h2StreamConn) SetReadDeadline(_ time.Time) error  { return nil }
-func (c *h2StreamConn) SetWriteDeadline(_ time.Time) error { return nil }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// StartMASQUEH2Transport — public entry point called by engine.go
-// ──────────────────────────────────────────────────────────────────────────────
-
-// StartMASQUEH2Transport initialises the MASQUE-over-HTTP/2 transport for
-// networks where UDP is completely blocked (Iran, etc.).
-//
-// Parameters:
-//   - ctx     : parent context; cancel to tear down the transport
-//   - cfg     : global WARP config (SNI, ports)
-//   - account : active WARP account (token for auth)
-//   - host    : Cloudflare edge IP (no port)
-//   - port    : port to connect on (443 recommended for TCP/TLS)
-//
-// Returns a dialFn compatible with SOCKS5 server Dial config.
+// StartMASQUEH2Transport initializes the MASQUE-over-HTTP/2 CONNECT-IP transport.
 func StartMASQUEH2Transport(
 	ctx context.Context,
 	cfg *models.WarpGlobalConfig,
@@ -261,48 +86,264 @@ func StartMASQUEH2Transport(
 
 	cfAddr := fmt.Sprintf("%s:%d", host, port)
 
-	// masqueAuthority is the H2 :authority for all CONNECT streams.
-	// It must be the MASQUE endpoint hostname — NOT the destination host.
-	// The SNI for the TLS handshake also uses this value.
-	masqueAuthority := cfg.TargetSNI // "consumer-masque.cloudflareclient.com"
-
-	client := &masqueH2Client{
-		cfAddr:          cfAddr,
-		sni:             masqueAuthority,
-		masqueAuthority: masqueAuthority,
-		token:           account.Token,
-		account:         account,
-	}
-
-	// Verify connectivity immediately — fail fast if the edge is unreachable
-	logger.Info("WARP", "Initialising MASQUE/H2 transport (TCP-only mode)",
-		"endpoint", cfAddr,
-		"masqueAuthority", masqueAuthority,
-	)
-	initialConn, err := client.dialH2(ctx)
+	// 1. Generate/Load P-256 ECDSA key pair
+	privKey, pubKeyB64, err := LoadMasqueKeys(account)
 	if err != nil {
-		return nil, nil, fmt.Errorf("MASQUE/H2 initial connection failed: %w", err)
+		return nil, nil, fmt.Errorf("failed to load/generate MASQUE keys: %w", err)
 	}
-	client.mu.Lock()
-	client.h2conn = initialConn
-	client.mu.Unlock()
 
-	logger.Info("WARP", "MASQUE/H2 transport ready",
-		"authority", masqueAuthority,
-		"tunnelPath", "/v1/masque/tcp/<host>/<port>/",
+	// 2. Register/Enroll the key with Cloudflare if not active
+	if !account.MasqueActive {
+		logger.Info("WARP", "Enrolling MASQUE ECDSA key with Cloudflare API...", "deviceID", account.DeviceID)
+		apiClient := NewObfuscatedClient("api.cloudflareclient.com")
+		err = apiClient.updateRegistrationKey(account.DeviceID, account.Token, pubKeyB64, "secp256r1", "masque")
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to enroll MASQUE key: %w", err)
+		}
+
+		account.MasqueActive = true
+		if db.DB != nil {
+			if err := db.DB.Model(account).Updates(map[string]interface{}{
+				"masque_active": true,
+			}).Error; err != nil {
+				logger.Warn("WARP", "Failed to update masque_active in DB", "error", err)
+			}
+		}
+		logger.Info("WARP", "MASQUE ECDSA key enrolled successfully")
+	}
+
+	// 3. Generate self-signed certificate for TLS Client Cert Auth
+	logger.Info("WARP", "Generating self-signed client certificate...")
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(0),
+		NotBefore:    time.Now().Add(-24 * time.Hour),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+	}
+	certBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &privKey.PublicKey, privKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate self-signed cert: %w", err)
+	}
+
+	clientCert := tls.Certificate{
+		Certificate: [][]byte{certBytes},
+		PrivateKey:  privKey,
+	}
+
+	// 4. Configure TLS mTLS with client certificate
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{clientCert},
+		ServerName:         cfg.TargetSNI,
+		NextProtos:         []string{"h2"},
+		InsecureSkipVerify: true,
+	}
+
+	// 5. Build HTTP/2 mTLS client
+	h2Endpoint := &net.TCPAddr{
+		IP:   net.ParseIP(host),
+		Port: port,
+	}
+
+	transport := &http2.Transport{
+		DialTLSContext: func(ctx context.Context, network, _ string, _ *tls.Config) (net.Conn, error) {
+			dialer := &net.Dialer{}
+			conn, err := dialer.DialContext(ctx, network, h2Endpoint.String())
+			if err != nil {
+				return nil, err
+			}
+
+			tlsConn := tls.Client(conn, tlsConfig)
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				_ = conn.Close()
+				return nil, err
+			}
+			return tlsConn, nil
+		},
+	}
+
+	h2Client := &http.Client{Transport: transport}
+
+	// 6. Parse URI template
+	templateURI, err := uritemplate.New("https://cloudflareaccess.com/")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	h2Headers := http.Header{}
+	h2Headers.Set("cf-connect-proto", "cf-connect-ip")
+	h2Headers.Set("pq-enabled", "false")
+	h2Headers.Set("User-Agent", "okhttp/3.12.1")
+
+	logger.Info("WARP", "Establishing MASQUE CONNECT-IP tunnel...", "endpoint", cfAddr)
+	ipConn, _, err := connectip.DialH2(ctx, h2Client, templateURI, h2Headers)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to dial CONNECT-IP over HTTP/2: %w", err)
+	}
+
+	// 7. Setup virtual interfaces/routes for netstack
+	ipv4Str := account.AssignedIPv4
+	if ipv4Str == "" {
+		ipv4Str = "172.16.0.2"
+	}
+	if idx := strings.IndexByte(ipv4Str, '/'); idx >= 0 {
+		ipv4Str = ipv4Str[:idx]
+	}
+	ipNet := net.ParseIP(ipv4Str)
+	if ipNet == nil {
+		_ = ipConn.Close()
+		return nil, nil, fmt.Errorf("invalid assigned IPv4 %q", ipv4Str)
+	}
+	localAddr, ok := netip.AddrFromSlice(ipNet.To4())
+	if !ok {
+		_ = ipConn.Close()
+		return nil, nil, fmt.Errorf("cannot convert %q to netip.Addr", ipv4Str)
+	}
+	tunAddrs := []netip.Addr{localAddr}
+
+	ipv6Str := account.AssignedIPv6
+	if ipv6Str != "" {
+		if idx := strings.IndexByte(ipv6Str, '/'); idx >= 0 {
+			ipv6Str = ipv6Str[:idx]
+		}
+		ipv6 := net.ParseIP(ipv6Str)
+		if ipv6 != nil {
+			if addr6, ok := netip.AddrFromSlice(ipv6.To16()); ok {
+				tunAddrs = append(tunAddrs, addr6)
+			}
+		}
+	}
+
+	dnsAddrs := []netip.Addr{
+		netip.MustParseAddr("1.1.1.1"),
+		netip.MustParseAddr("2606:4700:4700::1111"),
+	}
+
+	// 8. Create gVisor netstack TUN
+	tunDev, tnet, err := netstack.CreateNetTUN(
+		tunAddrs,
+		dnsAddrs,
+		1280, // wgMTU = 1280
 	)
+	if err != nil {
+		_ = ipConn.Close()
+		return nil, nil, fmt.Errorf("netstack TUN creation failed: %w", err)
+	}
 
-	dialFn = func(dialCtx context.Context, network, targetAddr string) (net.Conn, error) {
-		return client.dial(dialCtx, targetAddr)
+	// 9. Start packet pumps
+	packetBufPool := sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, 1280+1) // MTU + 1 byte headroom
+			return &b
+		},
+	}
+
+	pumpCtx, cancelPumps := context.WithCancel(ctx)
+	errChan := make(chan error, 2)
+
+	// Pump 1: TUN -> CONNECT-IP
+	go func() {
+		bufs := make([][]byte, 1)
+		sizes := make([]int, 1)
+		for {
+			select {
+			case <-pumpCtx.Done():
+				return
+			default:
+			}
+
+			bufPtr := packetBufPool.Get().(*[]byte)
+			buf := *bufPtr
+
+			bufs[0] = buf[1:]
+			sizes[0] = 0
+
+			_, err := tunDev.Read(bufs, sizes, 0)
+			if err != nil {
+				packetBufPool.Put(bufPtr)
+				if pumpCtx.Err() == nil {
+					errChan <- fmt.Errorf("TUN read failed: %w", err)
+				}
+				return
+			}
+
+			packetLen := sizes[0]
+			if packetLen > 0 {
+				icmp, err := ipConn.WritePacketBuffer(buf, 1, packetLen)
+				if err != nil {
+					packetBufPool.Put(bufPtr)
+					if pumpCtx.Err() == nil {
+						errChan <- fmt.Errorf("CONNECT-IP write failed: %w", err)
+					}
+					return
+				}
+				if len(icmp) > 0 {
+					wBufs := [][]byte{icmp}
+					_, _ = tunDev.Write(wBufs, 0)
+				}
+			}
+			packetBufPool.Put(bufPtr)
+		}
+	}()
+
+	// Pump 2: CONNECT-IP -> TUN
+	go func() {
+		wBufs := make([][]byte, 1)
+		for {
+			select {
+			case <-pumpCtx.Done():
+				return
+			default:
+			}
+
+			packet, err := ipConn.ReadPacketZeroCopy(true)
+			if err != nil {
+				if pumpCtx.Err() == nil {
+					errChan <- fmt.Errorf("CONNECT-IP read failed: %w", err)
+				}
+				return
+			}
+
+			if len(packet) > 0 {
+				wBufs[0] = packet
+				_, err = tunDev.Write(wBufs, 0)
+				if err != nil {
+					if pumpCtx.Err() == nil {
+						errChan <- fmt.Errorf("TUN write failed: %w", err)
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	// Watch for errors and log them
+	go func() {
+		select {
+		case <-pumpCtx.Done():
+		case e := <-errChan:
+			logger.Error("WARP", "MASQUE H2 packet pump error", "error", e)
+		}
+	}()
+
+	// 10. Probe tunnel connectivity
+	logger.Info("WARP", "Probing MASQUE H2 tunnel connectivity...")
+	probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer probeCancel()
+	probeConn, probeErr := tnet.DialContext(probeCtx, "tcp", "1.1.1.1:443")
+	if probeErr != nil {
+		logger.Warn("WARP", "MASQUE H2 tunnel probe failed", "error", probeErr)
+	} else {
+		probeConn.Close()
+		logger.Info("WARP", "MASQUE H2 tunnel probe succeeded — connection is functional")
+	}
+
+	dialFn = func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+		return tnet.DialContext(dialCtx, network, addr)
 	}
 
 	cancel = func() {
-		client.mu.Lock()
-		if client.h2conn != nil {
-			client.h2conn.Close()
-			client.h2conn = nil
-		}
-		client.mu.Unlock()
+		cancelPumps()
+		_ = ipConn.Close()
+		_ = tunDev.Close()
 	}
 
 	return dialFn, cancel, nil

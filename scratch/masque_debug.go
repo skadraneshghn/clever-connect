@@ -168,7 +168,7 @@ func main() {
 			},
 		}
 
-		masqueHost := "162.159.192.1"
+		masqueHost := "162.159.198.2"
 		masquePort := 443
 		addr := fmt.Sprintf("%s:%d", masqueHost, masquePort)
 

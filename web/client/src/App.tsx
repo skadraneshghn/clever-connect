@@ -31,6 +31,7 @@ const DNSTesterPage = lazy(() => import('./pages/dns-tester/DNSTesterPage').then
 const V2RayMultipathPage = lazy(() => import('./pages/V2RayMultipathPage').then(m => ({ default: m.V2RayMultipathPage })));
 const CloudflarePage = lazy(() => import('./pages/CloudflarePage').then(m => ({ default: m.CloudflarePage })));
 const WarpPage = lazy(() => import('./pages/WarpPage').then(m => ({ default: m.WarpPage })));
+const TrustTunnelPage = lazy(() => import('./pages/TrustTunnelPage').then(m => ({ default: m.TrustTunnelPage })));
 
 // Loading spinner
 const PageLoader = () => (
@@ -67,6 +68,7 @@ const ProtectedLayout: React.FC = () => {
     scheduler: ['System', 'Job Scheduler'],
     'telegram-settings': ['Settings', 'Telegram Bot'],
     'soroush-tunnel': ['Protocol', 'Soroush WebRTC Tunnel'],
+    trusttunnel: ['Protocol', 'TrustTunnel Stealth'],
     'v2ray-dashboard': ['V2Ray', 'Realtime Dashboard'],
     'v2ray-nodes': ['V2Ray', 'Nodes Manager'],
     'v2ray-core': ['V2Ray', 'Core Configuration'],
@@ -146,6 +148,7 @@ const router = createBrowserRouter([
       { path: 'scheduler', element: <JobSchedulerPage /> },
       { path: 'telegram-settings', element: <TelegramSettingsPage /> },
       { path: 'soroush-tunnel', element: <SoroushPage /> },
+      { path: 'trusttunnel', element: <TrustTunnelPage /> },
       { path: 'v2ray-dashboard', element: <V2RayDashboardPage /> },
       { path: 'v2ray-nodes', element: <V2RayClientPage /> },
       { path: 'v2ray-core', element: <V2RayCorePage /> },

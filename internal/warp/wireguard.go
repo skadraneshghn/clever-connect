@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"clever-connect/internal/db"
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 
@@ -200,6 +201,26 @@ func StartWireGuardUserspace(
 	host string,
 	port int,
 ) (dialFn func(ctx context.Context, network, addr string) (net.Conn, error), cancel func(), err error) {
+
+	// ── Restore WireGuard key if MASQUE was active ───────────────────────────
+	if account.MasqueActive {
+		logger.Info("WARP", "Restoring WireGuard Curve25519 key on Cloudflare server...")
+		apiClient := NewObfuscatedClient("api.cloudflareclient.com")
+		err := apiClient.updateRegistrationKey(account.DeviceID, account.Token, account.PublicKey, "curve25519", "wireguard")
+		if err != nil {
+			logger.Warn("WARP", "Failed to restore WireGuard key on Cloudflare", "error", err)
+		} else {
+			account.MasqueActive = false
+			if db.DB != nil {
+				if err := db.DB.Model(account).Updates(map[string]interface{}{
+					"masque_active": false,
+				}).Error; err != nil {
+					logger.Warn("WARP", "Failed to update masque_active in DB", "error", err)
+				}
+			}
+			logger.Info("WARP", "WireGuard Curve25519 key restored successfully")
+		}
+	}
 
 	// ── Determine virtual interface addresses ──────────────────────────────
 	ipv4Str := account.AssignedIPv4

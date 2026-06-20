@@ -485,6 +485,50 @@ func (c *ObfuscatedClient) getAccountInfo(deviceID, token string) (*cfAccountInf
 	return &info, nil
 }
 
+type cfKeyUpdateRequest struct {
+	Key        string `json:"key"`
+	KeyType    string `json:"key_type"`
+	TunnelType string `json:"tunnel_type"`
+}
+
+// updateRegistrationKey updates the registered public key and tunnel type on Cloudflare's server.
+func (c *ObfuscatedClient) updateRegistrationKey(deviceID, token, pubKeyB64, keyType, tunnelType string) error {
+	url := fmt.Sprintf("%s/%s/reg/%s", cfAPIBase, cfAPIVersion, deviceID)
+
+	updateReq := cfKeyUpdateRequest{
+		Key:        pubKeyB64,
+		KeyType:    keyType,
+		TunnelType: tunnelType,
+	}
+	reqBody, err := json.Marshal(updateReq)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("PATCH", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "okhttp/3.12.1")
+	req.Header.Set("CF-Client-Version", "a-6.11-2223")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("registration update API call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("registration update failed (HTTP %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Cryptographic Key Generation
 // ──────────────────────────────────────────────────────────────────────────────

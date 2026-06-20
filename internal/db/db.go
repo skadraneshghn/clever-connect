@@ -159,6 +159,9 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&models.NovaForwarderConfig{},
 		&models.WarpGlobalConfig{},
 		&models.WarpAccount{},
+		&models.TrustTunnelConfig{},
+		&models.TrustTunnelUser{},
+		&models.TrustTunnelFirewallRule{},
 	); err != nil {
 		logger.Fatal("DB", "Auto migration failed", "error", err)
 	}
@@ -343,6 +346,26 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			EnableBridge: false,
 			BridgeURL:    "",
 			BridgeSNI:    "",
+		})
+	}
+
+	// Seed default TrustTunnelConfig
+	var ttCfg models.TrustTunnelConfig
+	if err := DB.First(&ttCfg).Error; err != nil {
+		logger.Info("DB", "Seeding default TrustTunnel stealth protocol configuration")
+		DB.Create(&models.TrustTunnelConfig{
+			IsActive:                  false,
+			ListenAddress:             "0.0.0.0:443",
+			Socks5Port:                1088,
+			HttpPort:                  1089,
+			ForcedTransport:           "http2",
+			AuthFailureStatusCode:     404,
+			ClientRandomPrefix:        "a0b0/f0f0",
+			H2InitialStreamWindowSize: 131072,
+			H2InitialConnWindowSize:   262144,
+			TlsHandshakeTimeoutSecs:   4,
+			KillSwitchEnabled:         false,
+			ActivePreset:              "iran-stealth",
 		})
 	}
 

@@ -22,6 +22,7 @@ import (
 	"clever-connect/internal/spotify"
 	"clever-connect/internal/telegram"
 	"clever-connect/internal/torrent"
+	"clever-connect/internal/trusttunnel"
 	"clever-connect/internal/v2ray/scanner"
 	"clever-connect/internal/v2ray/traffic"
 	"clever-connect/internal/warp"
@@ -196,6 +197,23 @@ func main() {
 		}
 	}
 
+	// Auto-start TrustTunnel if configured
+	{
+		var ttCfg models.TrustTunnelConfig
+		if err := db.DB.First(&ttCfg).Error; err == nil && ttCfg.IsActive {
+			logger.Info("TrustTunnel", "Auto-starting TrustTunnel engine")
+			if cfg.AppMode == "server" {
+				if err := trusttunnel.StartServerEngine(&ttCfg); err != nil {
+					logger.Error("TrustTunnel", "Failed to auto-start server engine", "error", err)
+				}
+			} else {
+				if err := trusttunnel.StartClientEngine(&ttCfg); err != nil {
+					logger.Error("TrustTunnel", "Failed to auto-start client engine", "error", err)
+				}
+			}
+		}
+	}
+
 	// Setup Gin Router in release mode
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = logger.GinWriter()
@@ -241,6 +259,7 @@ func main() {
 	cloudflareHandler := handlers.NewCloudflareHandler(cfg)
 	novaHandler := handlers.NewNovaForwarderHandler(cfg)
 	warpHandler := handlers.NewWarpHandler(cfg)
+	trusttunnelHandler := handlers.NewTrustTunnelHandler(cfg)
 
 	// Auto-start combiner if configured (after handler creation)
 	if cfg.AppMode == "server" {
@@ -534,6 +553,20 @@ func main() {
 			protected.POST("/soroush/test-token", soroushHandler.TestTokenFetch)
 			protected.GET("/soroush/sync", soroushHandler.SyncConfig)
 			protected.POST("/soroush/sync", soroushHandler.IngestSync)
+
+			// TrustTunnel Stealth Protocol API Endpoints
+			protected.GET("/trusttunnel/config", trusttunnelHandler.GetConfig)
+			protected.POST("/trusttunnel/config", trusttunnelHandler.SaveConfig)
+			protected.POST("/trusttunnel/start", trusttunnelHandler.StartEngine)
+			protected.POST("/trusttunnel/stop", trusttunnelHandler.StopEngine)
+			protected.GET("/trusttunnel/users", trusttunnelHandler.ListUsers)
+			protected.POST("/trusttunnel/users", trusttunnelHandler.CreateUser)
+			protected.DELETE("/trusttunnel/users/:id", trusttunnelHandler.DeleteUser)
+			protected.GET("/trusttunnel/rules", trusttunnelHandler.ListRules)
+			protected.POST("/trusttunnel/rules", trusttunnelHandler.CreateRule)
+			protected.DELETE("/trusttunnel/rules/:id", trusttunnelHandler.DeleteRule)
+			protected.GET("/trusttunnel/export", trusttunnelHandler.ExportToken)
+			protected.POST("/trusttunnel/import", trusttunnelHandler.ImportToken)
 
 			// DMB Combiner Server API (server mode only)
 			protected.GET("/bonding/combiner/config", combinerHandler.GetCombinerConfig)

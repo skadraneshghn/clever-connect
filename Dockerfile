@@ -72,6 +72,11 @@ RUN curl -L https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linu
 RUN curl -L https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_linux_amd64.tar.gz | tar -xz -C /usr/local/bin/ mediamtx && \
     chmod +x /usr/local/bin/mediamtx
 
+# Download and install TrustTunnel endpoint & client (stealth VPN protocol)
+RUN curl -fSL https://github.com/TrustTunnel/TrustTunnel/releases/latest/download/trusttunnel_endpoint-linux-amd64 -o ./bin/trusttunnel_endpoint && \
+    curl -fSL https://github.com/TrustTunnel/TrustTunnel/releases/latest/download/trusttunnel_client-linux-amd64 -o ./bin/trusttunnel_client && \
+    chmod +x ./bin/trusttunnel_endpoint ./bin/trusttunnel_client
+
 # Copy configuration files
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY mediamtx.yml /etc/mediamtx.yml

@@ -782,8 +782,11 @@ type WarpAccount struct {
 	AssignedIPv4  string `json:"assigned_ipv4" gorm:"size:20"`              // WARP virtual IPv4 (e.g. 172.16.0.2)
 	AssignedIPv6  string `json:"assigned_ipv6" gorm:"size:50"`              // WARP virtual IPv6
 	AccountType   string `json:"account_type" gorm:"size:20;default:'free'"` // free, premium, warp_plus
-	TotalQuota    int64  `json:"total_quota" gorm:"default:0"`              // Total data allocation in bytes
-	UsedQuota     int64  `json:"used_quota" gorm:"default:0"`               // Consumed data allocation in bytes
-	IsFunctional  bool   `json:"is_functional" gorm:"default:true"`         // Invalidated on registration failure
+	TotalQuota       int64  `json:"total_quota" gorm:"default:0"`              // Total data allocation in bytes
+	UsedQuota        int64  `json:"used_quota" gorm:"default:0"`               // Consumed data allocation in bytes
+	IsFunctional     bool   `json:"is_functional" gorm:"default:true"`         // Invalidated on registration failure
+	MasquePrivateKey string `json:"masque_private_key"`
+	MasquePublicKey  string `json:"masque_public_key"`
+	MasqueActive     bool   `json:"masque_active"`
 }
 

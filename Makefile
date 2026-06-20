@@ -66,3 +66,12 @@ setup-husky:
 	@echo "make lint && make test" >> .husky/pre-push
 	@chmod +x .husky/pre-push
 	@echo "Husky validation hooks established on pre-push event successfully."
+
+# Download TrustTunnel binaries for local development
+download-trusttunnel:
+	@echo "=== Downloading TrustTunnel stealth protocol binaries ==="
+	@mkdir -p bin
+	curl -fSL https://github.com/TrustTunnel/TrustTunnel/releases/latest/download/trusttunnel_endpoint-linux-amd64 -o bin/trusttunnel_endpoint
+	curl -fSL https://github.com/TrustTunnel/TrustTunnel/releases/latest/download/trusttunnel_client-linux-amd64 -o bin/trusttunnel_client
+	chmod +x bin/trusttunnel_endpoint bin/trusttunnel_client
+	@echo "TrustTunnel binaries downloaded to bin/"
