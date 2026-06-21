@@ -430,3 +430,86 @@ func (h *TrustTunnelHandler) ImportToken(c *gin.Context) {
 		"config":  ttCfg,
 	})
 }
+
+// GenerateCert handles POST /api/trusttunnel/generate-cert
+func (h *TrustTunnelHandler) GenerateCert(c *gin.Context) {
+	var input struct {
+		Hostname string `json:"hostname" binding:"required"`
+		Email    string `json:"email"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Hostname is required: " + err.Error()})
+		return
+	}
+
+	logger.Info("TrustTunnel", "Generating Let's Encrypt certificate", "hostname", input.Hostname)
+
+	// Call certmanager to generate the certificate
+	certPath, keyPath, err := trusttunnel.GenerateCertificate(c.Request.Context(), input.Hostname, input.Email, "data")
+	if err != nil {
+		logger.Error("TrustTunnel", "Certificate generation failed", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Certificate generation failed: %v", err)})
+		return
+	}
+
+	// Update DB config with new paths and hostname
+	var ttCfg models.TrustTunnelConfig
+	if err := db.DB.First(&ttCfg).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "TrustTunnel config not found"})
+		return
+	}
+
+	ttCfg.TlsCertPath = certPath
+	ttCfg.TlsKeyPath = keyPath
+	ttCfg.ServerHostname = input.Hostname
+
+	if err := db.DB.Save(&ttCfg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save configuration with new cert paths"})
+		return
+	}
+
+	logger.Info("TrustTunnel", "Certificate successfully generated and configuration updated",
+		"hostname", input.Hostname,
+		"cert_path", certPath,
+		"key_path", keyPath,
+	)
+
+	// Auto-restart if engine is running
+	if trusttunnel.IsRunning() {
+		trusttunnel.StopEngine()
+		if h.cfg.AppMode == "server" {
+			if err := trusttunnel.StartServerEngine(&ttCfg); err != nil {
+				logger.Error("TrustTunnel", "Failed to auto-restart server engine after cert generation", "error", err)
+			} else {
+				logger.Info("TrustTunnel", "Server engine auto-restarted after cert generation")
+			}
+		} else {
+			if err := trusttunnel.StartClientEngine(&ttCfg); err != nil {
+				logger.Error("TrustTunnel", "Failed to auto-restart client engine after cert generation", "error", err)
+			} else {
+				logger.Info("TrustTunnel", "Client engine auto-restarted after cert generation")
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":           "Certificate generated successfully",
+		"cert_chain_path":  certPath,
+		"private_key_path": keyPath,
+		"config":            ttCfg,
+		"is_running":        trusttunnel.IsRunning(),
+	})
+}
+
+// HandleACMEChallenge serves the HTTP-01 challenge response at /.well-known/acme-challenge/:token
+func HandleACMEChallenge(c *gin.Context) {
+	token := c.Param("token")
+	keyAuth, ok := trusttunnel.GetChallenge(token)
+	if !ok {
+		c.String(http.StatusNotFound, "Challenge token not found")
+		return
+	}
+	c.String(http.StatusOK, keyAuth)
+}
+

@@ -55,6 +55,7 @@ interface TrustTunnelStore {
   deleteRule: (id: number) => Promise<void>;
   exportConnectionToken: () => Promise<string>;
   importConnectionToken: (token: string) => Promise<void>;
+  generateCert: (hostname: string, email: string) => Promise<any>;
   clearMessages: () => void;
 }
 
@@ -301,6 +302,37 @@ export const useTrustTunnelStore = create<TrustTunnelStore>((set, get) => ({
       }
     } catch {
       set({ error: 'Network error while importing token' });
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  generateCert: async (hostname, email) => {
+    set({ isLoading: true, error: null, successMessage: null });
+    try {
+      const res = await fetch('/api/trusttunnel/generate-cert', {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: JSON.stringify({ hostname, email }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        set({
+          config: data.config,
+          isRunning: data.is_running,
+          successMessage: 'Let\'s Encrypt certificate generated and applied successfully',
+        });
+        return data;
+      } else {
+        const err = await res.json();
+        set({ error: err.error || 'Failed to generate certificate' });
+        throw new Error(err.error || 'Failed to generate certificate');
+      }
+    } catch (e: any) {
+      if (!get().error) {
+        set({ error: e.message || 'Network error while generating certificate' });
+      }
+      throw e;
     } finally {
       set({ isLoading: false });
     }

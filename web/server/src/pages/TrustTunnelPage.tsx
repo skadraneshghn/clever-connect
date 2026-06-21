@@ -36,10 +36,12 @@ export const TrustTunnelPage: React.FC = () => {
     addRule,
     deleteRule,
     exportConnectionToken,
+    generateCert,
     clearMessages
   } = useTrustTunnelStore();
 
   // Local Form state
+  const [acmeEmail, setAcmeEmail] = useState('');
   const [listenAddress, setListenAddress] = useState('0.0.0.0:443');
   const [forcedTransport, setForcedTransport] = useState<'http2' | 'http1' | 'quic'>('http2');
   const [authFailureStatusCode, setAuthFailureStatusCode] = useState(404);
@@ -152,6 +154,19 @@ export const TrustTunnelPage: React.FC = () => {
     await addRule(newCidr, newStrategy, newDesc);
     setNewCidr('');
     setNewDesc('');
+  };
+
+  const handleGenerateCert = async () => {
+    if (!serverHostname) return;
+    try {
+      const data = await generateCert(serverHostname, acmeEmail);
+      if (data) {
+        setTlsCertPath(data.cert_chain_path);
+        setTlsKeyPath(data.private_key_path);
+      }
+    } catch {
+      // error handled by store
+    }
   };
 
   const handleExportToken = async () => {
@@ -390,6 +405,72 @@ export const TrustTunnelPage: React.FC = () => {
                   }}
                   required
                 />
+              </div>
+            </div>
+
+            {/* Let's Encrypt Cert Generator */}
+            <div style={{
+              border: '1px dashed var(--color-brand)',
+              borderRadius: 10,
+              padding: 16,
+              background: 'rgba(var(--color-brand-rgb), 0.02)',
+              marginTop: 4,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-brand-heading)' }}>🛡️ Let's Encrypt Self-Hosted Cert Generator</span>
+              </div>
+              <p style={{ fontSize: 11, color: 'var(--color-brand-muted)', margin: 0, lineHeight: '1.4' }}>
+                Ensure your <b>Public Hostname</b> resolves to this server's public IP. The generator handles validation via port 80 dynamically.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 12, alignItems: 'end' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 4, textTransform: 'uppercase' }}>Admin Email (optional)</label>
+                  <input
+                    type="email"
+                    value={acmeEmail}
+                    onChange={(e) => setAcmeEmail(e.target.value)}
+                    placeholder="e.g. admin@yourdomain.com"
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: 6,
+                      border: '1px solid var(--color-brand-border)',
+                      background: 'var(--color-brand-card)',
+                      color: 'var(--color-brand-heading)',
+                      fontSize: 12
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 4, textTransform: 'uppercase' }}>Target Hostname</label>
+                  <input
+                    type="text"
+                    value={serverHostname}
+                    onChange={(e) => setServerHostname(e.target.value)}
+                    placeholder="e.g. secure.yourdomain.com"
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: 6,
+                      border: '1px solid var(--color-brand-border)',
+                      background: 'var(--color-brand-card)',
+                      color: 'var(--color-brand-heading)',
+                      fontSize: 12
+                    }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleGenerateCert}
+                  className="btn btn--sm btn--primary"
+                  disabled={isLoading || !serverHostname}
+                  style={{ height: 32 }}
+                >
+                  Generate Cert
+                </button>
               </div>
             </div>
 

@@ -237,6 +237,7 @@ func main() {
 	router.HEAD("/generate_204", func(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 	})
+	router.GET("/.well-known/acme-challenge/:token", handlers.HandleACMEChallenge)
 
 	// Setup API Route Handlers
 	authHandler := handlers.NewAuthHandler(cfg)
@@ -567,6 +568,7 @@ func main() {
 			protected.DELETE("/trusttunnel/rules/:id", trusttunnelHandler.DeleteRule)
 			protected.GET("/trusttunnel/export", trusttunnelHandler.ExportToken)
 			protected.POST("/trusttunnel/import", trusttunnelHandler.ImportToken)
+			protected.POST("/trusttunnel/generate-cert", trusttunnelHandler.GenerateCert)
 
 			// DMB Combiner Server API (server mode only)
 			protected.GET("/bonding/combiner/config", combinerHandler.GetCombinerConfig)
@@ -642,7 +644,7 @@ func serveEmbeddedSPA(embedFS fs.FS) gin.HandlerFunc {
 		path := c.Request.URL.Path
 
 		// If route matches API endpoints, continue to other middleware/handlers
-		if strings.HasPrefix(path, "/api") || strings.HasPrefix(path, "/ws") || strings.HasPrefix(path, "/swagger") || path == "/favicon.ico" || path == "/favicon.png" {
+		if strings.HasPrefix(path, "/api") || strings.HasPrefix(path, "/ws") || strings.HasPrefix(path, "/swagger") || strings.HasPrefix(path, "/.well-known") || path == "/favicon.ico" || path == "/favicon.png" {
 			c.Next()
 			return
 		}
