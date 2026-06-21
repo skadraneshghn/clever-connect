@@ -110,24 +110,30 @@ allow_private_network_connections = false
 	}
 
 	// hosts.toml — TLS certificate configuration (uses main_hosts array).
-	// The Rust daemon requires at least one [[main_hosts]] entry; writing an
-	// empty file causes an immediate panic with "missing field `main_hosts`".
-	// Fall back to "localhost" when no hostname has been configured yet so the
-	// process can start cleanly on a fresh Clever Cloud deploy.
-	hostname := cfg.ServerHostname
-	if hostname == "" {
-		hostname = "localhost" // safe fallback — update via UI to use a real TLS cert
-		logger.Warn("TrustTunnel", "ServerHostname is empty — using 'localhost' fallback in hosts.toml. Set a real hostname in the UI for valid TLS.")
+	// The Rust daemon requires BOTH hostname AND cert_chain_path/private_key_path
+	// as mandatory fields inside each [[main_hosts]] block. Writing a block that
+	// omits either field causes an immediate panic in the Rust TOML parser.
+	// We therefore validate upfront and return a clear error rather than writing
+	// an invalid file.
+	if cfg.ServerHostname == "" {
+		return fmt.Errorf(
+			"TrustTunnel server cannot start: ServerHostname is not configured. " +
+				"Set the public hostname (e.g. vpn.example.com) in the TrustTunnel settings and try again.",
+		)
 	}
-	hostsTOML := fmt.Sprintf("[[main_hosts]]\nhostname = \"%s\"\n", hostname)
-	if cfg.TlsCertPath != "" && cfg.TlsKeyPath != "" {
-		hostsTOML += fmt.Sprintf("cert_chain_path = \"%s\"\nprivate_key_path = \"%s\"\n", cfg.TlsCertPath, cfg.TlsKeyPath)
+	if cfg.TlsCertPath == "" || cfg.TlsKeyPath == "" {
+		return fmt.Errorf(
+			"TrustTunnel server cannot start: TLS certificate paths are not configured. " +
+				"Set the TLS Certificate Path and TLS Private Key Path in the TrustTunnel settings and try again.",
+		)
 	}
 
-	// Pre-flight guard: never write a suspiciously small hosts.toml.
-	if len(hostsTOML) < 10 {
-		return fmt.Errorf("aborting server start: hosts.toml serialization is empty/malformed (len=%d) — this would cause a Rust panic", len(hostsTOML))
-	}
+	hostsTOML := fmt.Sprintf(
+		"[[main_hosts]]\nhostname = \"%s\"\ncert_chain_path = \"%s\"\nprivate_key_path = \"%s\"\n",
+		cfg.ServerHostname,
+		cfg.TlsCertPath,
+		cfg.TlsKeyPath,
+	)
 
 	if err := os.WriteFile(filepath.Join(dir, "hosts.toml"), []byte(hostsTOML), 0644); err != nil {
 		return fmt.Errorf("failed to write hosts.toml: %w", err)
