@@ -1,0 +1,4 @@
+[[main_hosts]]
+hostname = "vpn.example.com"
+cert_chain_path = "/home/salman/Projects/golang/clever-connect/scratch/cert.pem"
+private_key_path = "/home/salman/Projects/golang/clever-connect/scratch/key.pem"

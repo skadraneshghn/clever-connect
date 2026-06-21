@@ -186,6 +186,55 @@ action = "%s"
 	return nil
 }
 
+// Default dummy self-signed certificate to satisfy client configuration parser when no cert is provided.
+const defaultDummyCert = `-----BEGIN CERTIFICATE-----
+MIIDFTCCAf2gAwIBAgIUTfhfRC7UppRit2j2n5hMfLwHhxowDQYJKoZIhvcNAQEL
+BQAwGjEYMBYGA1UEAwwPdnBuLmV4YW1wbGUuY29tMB4XDTI2MDYyMTEzMTA0OFoX
+DTI3MDYyMTEzMTA0OFowGjEYMBYGA1UEAwwPdnBuLmV4YW1wbGUuY29tMIIBIjAN
+BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA25zl0YjvRjBogEx8a2Pi59fcAscM
+fNy0R+a9JkuU4I4VOayJij4lg9FbgewdGAkf/SYfvyebtnIxwbPYu6nBexyiR4aQ
+GUtOc5WBUeM2lk2UvP/bjWPRSyVy9GUoB6Jx1I+rHS7CFYhIYqQ9lnGZDADfwjls
+hYwXTB45B0vz+FtrUa7okaJ+FZI45jl1I/pc77ZwZExOg1KVSmBIdvnXpEIXwLgF
+U+jzt//Kz7t/B4/buUTArOrEVsi/m/qSHRvvIdk5guERQ8Cvm4lMIu4fZ55h8UPg
+1j53psZUrscELCY8Sx+ffuuzAXYxyicL4rnpXkWBP+II4LwgzUHl7QtQfwIDAQAB
+o1MwUTAdBgNVHQ4EFgQUnjeZyKA14G/MPjrim7nvYGMs4uwwHwYDVR0jBBgwFoAU
+njeZyKA14G/MPjrim7nvYGMs4uwwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B
+AQsFAAOCAQEAj6mslRal+6xuFKSFlIuqdBGZOoExY5HtpYzOnK/8Pf+NPxhHEG1b
+RQxcZ6L8e7TcPLElddJ/zH8liFpqRvwvxOJ3NtavhWyshPTRAIj5lDg42q1fSF2y
+FQrRiLXovf2mtw+erxYAqGkVkV7pxWYP7XV2zciID33GKEYpGGy4JD7ugMpQvqPh
+Fv+Mb+lXLPoYVRpXg1IFZIuCpgiU4Be8zh5H92xet1W4EHPF4w4771AhQjA8T/Cm
+P+dJieDW44yHDkvJhp/JD85uJRT9oub12NgyGwxHiztXgHtiRg8FP7294+Mz5ZDr
+9BWz6ZYwlYwjw8g5zUZeUkf6jqCYSahGDg==
+-----END CERTIFICATE-----`
+
+// ResolveConnectAddress resolves a client connection address from a raw address and server hostname.
+// If the raw address has a wildcard or loopback host, it substitutes the public server hostname.
+func ResolveConnectAddress(connectAddress, serverHostname string) string {
+	connectAddr := connectAddress
+	if connectAddr == "" {
+		if serverHostname != "" {
+			return serverHostname + ":443"
+		}
+		return "127.0.0.1:443"
+	}
+
+	// Split host and port
+	host := connectAddr
+	port := "443"
+	if idx := strings.LastIndex(connectAddr, ":"); idx != -1 {
+		host = connectAddr[:idx]
+		port = connectAddr[idx+1:]
+	}
+
+	host = strings.Trim(host, "[]")
+	if host == "0.0.0.0" || host == "::" || host == "127.0.0.1" || host == "localhost" || host == "" {
+		if serverHostname != "" {
+			return serverHostname + ":" + port
+		}
+	}
+	return connectAddr
+}
+
 // generateClientTOML writes the TOML configuration files for the TrustTunnel client.
 func generateClientTOML(cfg *models.TrustTunnelConfig) error {
 	dir := getConfigDir()
@@ -193,48 +242,107 @@ func generateClientTOML(cfg *models.TrustTunnelConfig) error {
 		return fmt.Errorf("failed to create trusttunnel config dir: %w", err)
 	}
 
-	clientTOML := fmt.Sprintf(`[client]
-connect = "%s"
-socks5_port = %d
-http_port = %d
-forced_transport = "%s"
-kill_switch = %t
+	// Resolve endpoint hostname
+	hostname := cfg.ServerHostname
+	if hostname == "" {
+		if idx := strings.LastIndex(cfg.ConnectAddress, ":"); idx != -1 {
+			hostname = cfg.ConnectAddress[:idx]
+			hostname = strings.Trim(hostname, "[]")
+		} else {
+			hostname = cfg.ConnectAddress
+		}
+	}
+	if hostname == "" {
+		hostname = "localhost"
+	}
 
-[obfuscation]
-client_random_prefix = "%s"
+	// Determine skip_verification and certificate content
+	skipVerification := false
+	certContent := cfg.TlsServerCert
+	if certContent == "" {
+		certContent = defaultDummyCert
+		skipVerification = true
+	}
 
-[http2]
-h2_initial_stream_window_size = %d
-h2_initial_connection_window_size = %d
+	// Format certificate to ensure it is trimmed and correct
+	certContent = strings.TrimSpace(certContent)
+
+	// Determine upstream protocol (http2 or http3)
+	upstreamProtocol := cfg.ForcedTransport
+	if upstreamProtocol != "http2" && upstreamProtocol != "http3" {
+		upstreamProtocol = "http2"
+	}
+
+	// Resolve split-tunneling routes from database
+	var rules []models.TrustTunnelFirewallRule
+	db.DB.Find(&rules)
+
+	var included []string
+	var excluded []string
+	for _, r := range rules {
+		if r.BypassStrategy == "direct-route" {
+			excluded = append(excluded, r.TargetCIDR)
+		} else {
+			included = append(included, r.TargetCIDR)
+		}
+	}
+
+	var includedStr string
+	if len(included) > 0 {
+		var quoted []string
+		for _, ip := range included {
+			quoted = append(quoted, fmt.Sprintf(`"%s"`, ip))
+		}
+		includedStr = fmt.Sprintf("included_routes = [%s]\n", strings.Join(quoted, ", "))
+	}
+
+	var excludedStr string
+	if len(excluded) > 0 {
+		var quoted []string
+		for _, ip := range excluded {
+			quoted = append(quoted, fmt.Sprintf(`"%s"`, ip))
+		}
+		excludedStr = fmt.Sprintf("excluded_routes = [%s]\n", strings.Join(quoted, ", "))
+	}
+
+	resolvedConnectAddr := ResolveConnectAddress(cfg.ConnectAddress, cfg.ServerHostname)
+
+	clientTOML := fmt.Sprintf(`vpn_mode = "general"
+killswitch_enabled = %t
+
+[endpoint]
+hostname = "%s"
+addresses = ["%s"]
+username = "%s"
+password = "%s"
+upstream_protocol = "%s"
+client_random = "%s"
+skip_verification = %t
+load_certificate = """
+%s
+"""
+
+[listener]
+%s%s
+[listener.socks]
+address = "127.0.0.1:%d"
 `,
-		cfg.ConnectAddress,
-		cfg.Socks5Port,
-		cfg.HttpPort,
-		cfg.ForcedTransport,
 		cfg.KillSwitchEnabled,
+		hostname,
+		resolvedConnectAddr,
+		cfg.ClientUsername,
+		cfg.ClientPassword,
+		upstreamProtocol,
 		cfg.ClientRandomPrefix,
-		cfg.H2InitialStreamWindowSize,
-		cfg.H2InitialConnWindowSize,
+		skipVerification,
+		certContent,
+		includedStr,
+		excludedStr,
+		cfg.Socks5Port,
 	)
 
 	if err := os.WriteFile(filepath.Join(dir, "client.toml"), []byte(clientTOML), 0644); err != nil {
 		return fmt.Errorf("failed to write client.toml: %w", err)
-	}
-
-	// rules.toml — Split-tunneling rules
-	var rules []models.TrustTunnelFirewallRule
-	db.DB.Find(&rules)
-
-	rulesToml := ""
-	for _, r := range rules {
-		rulesToml += fmt.Sprintf(`[[rules]]
-target_cidr = "%s"
-bypass_strategy = "%s"
-
-`, r.TargetCIDR, r.BypassStrategy)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "rules.toml"), []byte(rulesToml), 0644); err != nil {
-		return fmt.Errorf("failed to write rules.toml: %w", err)
 	}
 
 	return nil
@@ -561,6 +669,15 @@ func GenerateExportToken(cfg *models.TrustTunnelConfig) string {
 	if len(users) > 0 {
 		params.Set("user", users[0].Username)
 		params.Set("pass", users[0].Password)
+	}
+
+	// Read and encode public TLS certificate if configured
+	if cfg.TlsCertPath != "" {
+		if certBytes, err := os.ReadFile(cfg.TlsCertPath); err == nil {
+			params.Set("cert", string(certBytes))
+		}
+	} else if cfg.TlsServerCert != "" {
+		params.Set("cert", cfg.TlsServerCert)
 	}
 
 	raw := "tt://?" + params.Encode()

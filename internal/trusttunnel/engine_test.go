@@ -3,6 +3,7 @@ package trusttunnel
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"clever-connect/internal/db"
@@ -40,6 +41,7 @@ func TestTokenExportImport(t *testing.T) {
 		ClientRandomPrefix:        "a0b0/f0f0",
 		H2InitialStreamWindowSize: 131072,
 		TlsHandshakeTimeoutSecs:   4,
+		TlsServerCert:             "-----BEGIN CERTIFICATE-----\nmy-test-cert-pem\n-----END CERTIFICATE-----",
 	}
 
 	// Create a dummy user
@@ -80,6 +82,9 @@ func TestTokenExportImport(t *testing.T) {
 	if params["pass"] != "test-password" {
 		t.Errorf("Expected pass test-password, got %s", params["pass"])
 	}
+	if params["cert"] != cfg.TlsServerCert {
+		t.Errorf("Expected cert %s, got %s", cfg.TlsServerCert, params["cert"])
+	}
 }
 
 func TestGenerateTOMLConfigs(t *testing.T) {
@@ -100,6 +105,9 @@ func TestGenerateTOMLConfigs(t *testing.T) {
 		ServerHostname:            "server.sni.com",
 		TlsCertPath:               "/path/to/cert.pem",
 		TlsKeyPath:                "/path/to/key.pem",
+		ClientUsername:            "my-client-user",
+		ClientPassword:            "my-client-pass",
+		TlsServerCert:             "-----BEGIN CERTIFICATE-----\ncustom-cert\n-----END CERTIFICATE-----",
 	}
 
 	// Add a dummy user and firewall rule
@@ -135,11 +143,100 @@ func TestGenerateTOMLConfigs(t *testing.T) {
 		t.Fatalf("generateClientTOML failed: %v", err)
 	}
 
-	clientFiles := []string{"client.toml", "rules.toml"}
+	clientFiles := []string{"client.toml"}
 	for _, f := range clientFiles {
 		path := filepath.Join(dir, f)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			t.Errorf("Expected client file %s to be created", f)
 		}
+	}
+
+	// Verify client.toml contains the fields we set
+	data, err := os.ReadFile(filepath.Join(dir, "client.toml"))
+	if err != nil {
+		t.Fatalf("failed to read generated client.toml: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `username = "my-client-user"`) {
+		t.Errorf("Expected client.toml to contain username setting, got:\n%s", content)
+	}
+	if !strings.Contains(content, `password = "my-client-pass"`) {
+		t.Errorf("Expected client.toml to contain password setting, got:\n%s", content)
+	}
+	if !strings.Contains(content, `custom-cert`) {
+		t.Errorf("Expected client.toml to contain custom-cert setting, got:\n%s", content)
+	}
+	if !strings.Contains(content, `vpn_mode = "general"`) {
+		t.Errorf("Expected client.toml to contain vpn_mode at root, got:\n%s", content)
+	}
+	if !strings.Contains(content, `client_random = "a0b0/f0f0"`) {
+		t.Errorf("Expected client.toml to contain client_random, got:\n%s", content)
+	}
+	if !strings.Contains(content, `load_certificate = """`) {
+		t.Errorf("Expected client.toml to contain load_certificate key, got:\n%s", content)
+	}
+	if !strings.Contains(content, `excluded_routes = ["10.0.0.0/8"]`) {
+		t.Errorf("Expected client.toml to contain excluded_routes, got:\n%s", content)
+	}
+}
+
+func TestResolveConnectAddress(t *testing.T) {
+	tests := []struct {
+		name       string
+		addr       string
+		hostname   string
+		expected   string
+	}{
+		{
+			name:     "Wildcard IPv4",
+			addr:     "0.0.0.0:443",
+			hostname: "vpn.example.com",
+			expected: "vpn.example.com:443",
+		},
+		{
+			name:     "Wildcard IPv6",
+			addr:     "[::]:8080",
+			hostname: "vpn.example.com",
+			expected: "vpn.example.com:8080",
+		},
+		{
+			name:     "Loopback IPv4",
+			addr:     "127.0.0.1:3000",
+			hostname: "vpn.example.com",
+			expected: "vpn.example.com:3000",
+		},
+		{
+			name:     "Localhost",
+			addr:     "localhost:443",
+			hostname: "vpn.example.com",
+			expected: "vpn.example.com:443",
+		},
+		{
+			name:     "Valid public address unchanged",
+			addr:     "1.2.3.4:443",
+			hostname: "vpn.example.com",
+			expected: "1.2.3.4:443",
+		},
+		{
+			name:     "Empty address with hostname",
+			addr:     "",
+			hostname: "vpn.example.com",
+			expected: "vpn.example.com:443",
+		},
+		{
+			name:     "Empty address and no hostname",
+			addr:     "",
+			hostname: "",
+			expected: "127.0.0.1:443",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ResolveConnectAddress(tt.addr, tt.hostname)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
 	}
 }

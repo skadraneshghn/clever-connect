@@ -66,6 +66,9 @@ func (h *TrustTunnelHandler) SaveConfig(c *gin.Context) {
 		TlsCertPath             string `json:"tls_cert_path"`
 		TlsKeyPath              string `json:"tls_key_path"`
 		ServerHostname          string `json:"server_hostname"`
+		ClientUsername          string `json:"client_username"`
+		ClientPassword          string `json:"client_password"`
+		TlsServerCert           string `json:"tls_server_cert"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -128,6 +131,9 @@ func (h *TrustTunnelHandler) SaveConfig(c *gin.Context) {
 	ttCfg.TlsCertPath = input.TlsCertPath
 	ttCfg.TlsKeyPath = input.TlsKeyPath
 	ttCfg.ServerHostname = input.ServerHostname
+	ttCfg.ClientUsername = input.ClientUsername
+	ttCfg.ClientPassword = input.ClientPassword
+	ttCfg.TlsServerCert = input.TlsServerCert
 
 	if err := db.DB.Save(&ttCfg).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save configuration"})
@@ -387,11 +393,11 @@ func (h *TrustTunnelHandler) ImportToken(c *gin.Context) {
 	}
 
 	// Apply parsed parameters
-	if addr, ok := params["addr"]; ok {
-		ttCfg.ConnectAddress = addr
-	}
 	if hostname, ok := params["hostname"]; ok {
 		ttCfg.ServerHostname = hostname
+	}
+	if addr, ok := params["addr"]; ok {
+		ttCfg.ConnectAddress = trusttunnel.ResolveConnectAddress(addr, ttCfg.ServerHostname)
 	}
 	if transport, ok := params["transport"]; ok {
 		ttCfg.ForcedTransport = transport
@@ -413,6 +419,15 @@ func (h *TrustTunnelHandler) ImportToken(c *gin.Context) {
 		if v, err := strconv.Atoi(timeout); err == nil {
 			ttCfg.TlsHandshakeTimeoutSecs = v
 		}
+	}
+	if user, ok := params["user"]; ok {
+		ttCfg.ClientUsername = user
+	}
+	if pass, ok := params["pass"]; ok {
+		ttCfg.ClientPassword = pass
+	}
+	if cert, ok := params["cert"]; ok {
+		ttCfg.TlsServerCert = cert
 	}
 
 	if err := db.DB.Save(&ttCfg).Error; err != nil {

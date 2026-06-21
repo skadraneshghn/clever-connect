@@ -18,6 +18,9 @@ export interface TrustTunnelConfig {
   tls_cert_path: string;
   tls_key_path: string;
   server_hostname: string;
+  client_username?: string;
+  client_password?: string;
+  tls_server_cert?: string;
   UpdatedAt?: string;
 }
 

@@ -1,0 +1,21 @@
+vpn_mode = "general"
+
+[endpoint]
+hostname = "vpn.example.com"
+addresses = ["127.0.0.1:443"]
+username = "test-user"
+password = "test-password"
+upstream_protocol = "http2"
+
+[client]
+socks5_port = 1088
+http_port = 1089
+forced_transport = "http2"
+kill_switch = false
+
+[obfuscation]
+client_random_prefix = "a0b0/f0f0"
+
+[http2]
+h2_initial_stream_window_size = 131072
+h2_initial_connection_window_size = 262144

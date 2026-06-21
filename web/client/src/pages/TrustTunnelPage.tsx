@@ -48,6 +48,9 @@ export const TrustTunnelPage: React.FC = () => {
   const [killSwitchEnabled, setKillSwitchEnabled] = useState(false);
   const [activePreset, setActivePreset] = useState('iran-stealth');
   const [serverHostname, setServerHostname] = useState('');
+  const [clientUsername, setClientUsername] = useState('');
+  const [clientPassword, setClientPassword] = useState('');
+  const [tlsServerCert, setTlsServerCert] = useState('');
 
   // Token Import
   const [importTokenStr, setImportTokenStr] = useState('');
@@ -79,6 +82,9 @@ export const TrustTunnelPage: React.FC = () => {
       setKillSwitchEnabled(config.kill_switch_enabled || false);
       setActivePreset(config.active_preset || 'iran-stealth');
       setServerHostname(config.server_hostname || '');
+      setClientUsername(config.client_username || '');
+      setClientPassword(config.client_password || '');
+      setTlsServerCert(config.tls_server_cert || '');
     }
   }, [config]);
 
@@ -127,6 +133,9 @@ export const TrustTunnelPage: React.FC = () => {
       kill_switch_enabled: killSwitchEnabled,
       active_preset: activePreset,
       server_hostname: serverHostname,
+      client_username: clientUsername,
+      client_password: clientPassword,
+      tls_server_cert: tlsServerCert,
       is_active: config?.is_active || false
     });
   };
@@ -372,6 +381,67 @@ export const TrustTunnelPage: React.FC = () => {
                   }}
                 />
               </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Client Mode Username</label>
+                <input
+                  type="text"
+                  value={clientUsername}
+                  onChange={(e) => setClientUsername(e.target.value)}
+                  placeholder="e.g. proxy-user"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: 8,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-card)',
+                    color: 'var(--color-brand-heading)',
+                    fontSize: 13
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Client Mode Password</label>
+                <input
+                  type="password"
+                  value={clientPassword}
+                  onChange={(e) => setClientPassword(e.target.value)}
+                  placeholder="e.g. proxy-pass"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: 8,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-card)',
+                    color: 'var(--color-brand-heading)',
+                    fontSize: 13
+                  }}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Server TLS Certificate (PEM Override)</label>
+              <textarea
+                value={tlsServerCert}
+                onChange={(e) => setTlsServerCert(e.target.value)}
+                placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                style={{
+                  width: '100%',
+                  height: 100,
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: '1px solid var(--color-brand-border)',
+                  background: 'var(--color-brand-card)',
+                  color: 'var(--color-brand-heading)',
+                  fontSize: 12,
+                  fontFamily: 'Fira Code',
+                  resize: 'vertical'
+                }}
+              />
             </div>
 
             {/* Collapsible Advanced Settings */}

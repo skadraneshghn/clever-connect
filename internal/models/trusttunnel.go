@@ -43,6 +43,11 @@ type TrustTunnelConfig struct {
 	TlsCertPath    string `json:"tls_cert_path"`    // Path to TLS certificate
 	TlsKeyPath     string `json:"tls_key_path"`     // Path to TLS private key
 	ServerHostname string `json:"server_hostname"`  // Public SNI hostname
+
+	// Client Mode Credentials and Certificate
+	ClientUsername string `json:"client_username"`
+	ClientPassword string `json:"client_password"`
+	TlsServerCert  string `json:"tls_server_cert"`
 }
 
 // TrustTunnelUser stores client authentication credentials for the
