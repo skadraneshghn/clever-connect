@@ -43,6 +43,7 @@ type TrustTunnelConfig struct {
 	TlsCertPath    string `json:"tls_cert_path"`    // Path to TLS certificate
 	TlsKeyPath     string `json:"tls_key_path"`     // Path to TLS private key
 	ServerHostname string `json:"server_hostname"`  // Public SNI hostname
+	PublicTlsPort  int    `json:"public_tls_port" gorm:"default:0"` // Public port override (e.g., Clever Cloud redirection port)
 
 	// Client Mode Credentials and Certificate
 	ClientUsername string `json:"client_username"`

@@ -53,6 +53,7 @@ export const TrustTunnelPage: React.FC = () => {
   const [tlsCertPath, setTlsCertPath] = useState('');
   const [tlsKeyPath, setTlsKeyPath] = useState('');
   const [serverHostname, setServerHostname] = useState('');
+  const [publicTlsPort, setPublicTlsPort] = useState(0);
 
   // User management state
   const [usernameInput, setUsernameInput] = useState('');
@@ -88,6 +89,7 @@ export const TrustTunnelPage: React.FC = () => {
       setTlsKeyPath(config.tls_key_path || '');
       setServerHostname(config.server_hostname || '');
       setTlsServerCert(config.tls_server_cert || '');
+      setPublicTlsPort(config.public_tls_port || 0);
     }
   }, [config]);
 
@@ -132,6 +134,7 @@ export const TrustTunnelPage: React.FC = () => {
       tls_cert_path: tlsCertPath,
       tls_key_path: tlsKeyPath,
       server_hostname: serverHostname,
+      public_tls_port: Number(publicTlsPort),
       is_active: config?.is_active || false
     });
   };
@@ -331,7 +334,7 @@ export const TrustTunnelPage: React.FC = () => {
               <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Server Bind Settings</span>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr 1fr', gap: 16 }}>
               <div>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Listen Address</label>
                 <input
@@ -354,7 +357,7 @@ export const TrustTunnelPage: React.FC = () => {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Public Hostname / SNI Domain Match</label>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Public Hostname / SNI Match</label>
                 <input
                   type="text"
                   value={serverHostname}
@@ -370,6 +373,26 @@ export const TrustTunnelPage: React.FC = () => {
                     fontSize: 13
                   }}
                   required
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>Public TCP Port (Optional)</label>
+                <input
+                  type="number"
+                  value={publicTlsPort || ''}
+                  onChange={(e) => setPublicTlsPort(Number(e.target.value))}
+                  placeholder="e.g. 5262"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: 8,
+                    border: '1px solid var(--color-brand-border)',
+                    background: 'var(--color-brand-card)',
+                    color: 'var(--color-brand-heading)',
+                    fontSize: 13,
+                    fontFamily: 'Fira Code'
+                  }}
                 />
               </div>
             </div>

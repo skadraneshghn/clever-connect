@@ -664,7 +664,17 @@ func restartEngineFromDB() error {
 // containing the server endpoint address and obfuscation parameters.
 func GenerateExportToken(cfg *models.TrustTunnelConfig) string {
 	params := url.Values{}
-	params.Set("addr", cfg.ListenAddress)
+	
+	addr := cfg.ListenAddress
+	if cfg.PublicTlsPort > 0 {
+		host := "0.0.0.0"
+		if idx := strings.LastIndex(cfg.ListenAddress, ":"); idx != -1 {
+			host = cfg.ListenAddress[:idx]
+		}
+		addr = fmt.Sprintf("%s:%d", host, cfg.PublicTlsPort)
+	}
+	
+	params.Set("addr", addr)
 	params.Set("hostname", cfg.ServerHostname)
 	params.Set("transport", cfg.ForcedTransport)
 	params.Set("probe", fmt.Sprintf("%d", cfg.AuthFailureStatusCode))

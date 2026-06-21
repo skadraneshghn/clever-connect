@@ -77,6 +77,7 @@ func (h *TrustTunnelHandler) SaveConfig(c *gin.Context) {
 		TlsCertPath             string `json:"tls_cert_path"`
 		TlsKeyPath              string `json:"tls_key_path"`
 		ServerHostname          string `json:"server_hostname"`
+		PublicTlsPort           int    `json:"public_tls_port"`
 		ClientUsername          string `json:"client_username"`
 		ClientPassword          string `json:"client_password"`
 		TlsServerCert           string `json:"tls_server_cert"`
@@ -142,6 +143,7 @@ func (h *TrustTunnelHandler) SaveConfig(c *gin.Context) {
 	ttCfg.TlsCertPath = input.TlsCertPath
 	ttCfg.TlsKeyPath = input.TlsKeyPath
 	ttCfg.ServerHostname = input.ServerHostname
+	ttCfg.PublicTlsPort = input.PublicTlsPort
 	ttCfg.ClientUsername = input.ClientUsername
 	ttCfg.ClientPassword = input.ClientPassword
 	ttCfg.TlsServerCert = input.TlsServerCert
