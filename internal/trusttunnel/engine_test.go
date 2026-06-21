@@ -1,6 +1,7 @@
 package trusttunnel
 
 import (
+	"encoding/pem"
 	"os"
 	"path/filepath"
 	"strings"
@@ -175,6 +176,9 @@ func TestGenerateTOMLConfigs(t *testing.T) {
 	if !strings.Contains(content, `load_certificate = """`) {
 		t.Errorf("Expected client.toml to contain load_certificate key, got:\n%s", content)
 	}
+	if !strings.Contains(content, `change_system_dns = false`) {
+		t.Errorf("Expected client.toml to contain change_system_dns, got:\n%s", content)
+	}
 	if !strings.Contains(content, `excluded_routes = ["10.0.0.0/8"]`) {
 		t.Errorf("Expected client.toml to contain excluded_routes, got:\n%s", content)
 	}
@@ -238,5 +242,35 @@ func TestResolveConnectAddress(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestGenerateSelfSignedCert(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "tt-test-certs")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	certPath, keyPath, err := GenerateSelfSignedCert("selfsigned.example.com", tempDir)
+	if err != nil {
+		t.Fatalf("GenerateSelfSignedCert failed: %v", err)
+	}
+
+	if _, err := os.Stat(certPath); os.IsNotExist(err) {
+		t.Errorf("Expected cert file to be created at %s", certPath)
+	}
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		t.Errorf("Expected key file to be created at %s", keyPath)
+	}
+
+	// Verify they are valid PEM files
+	certData, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("failed to read cert file: %v", err)
+	}
+	block, _ := pem.Decode(certData)
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Errorf("Invalid certificate PEM structure: %v", block)
 	}
 }

@@ -66,6 +66,8 @@ export const TrustTunnelPage: React.FC = () => {
   // UI state
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [exportedToken, setExportedToken] = useState('');
+  const [tlsServerCert, setTlsServerCert] = useState('');
+  const [certCopied, setCertCopied] = useState(false);
 
   // Sync store configs with local state
   useEffect(() => {
@@ -85,6 +87,7 @@ export const TrustTunnelPage: React.FC = () => {
       setTlsCertPath(config.tls_cert_path || '');
       setTlsKeyPath(config.tls_key_path || '');
       setServerHostname(config.server_hostname || '');
+      setTlsServerCert(config.tls_server_cert || '');
     }
   }, [config]);
 
@@ -182,6 +185,13 @@ export const TrustTunnelPage: React.FC = () => {
     if (!exportedToken) return;
     navigator.clipboard.writeText(exportedToken);
     alert('Token copied to clipboard!');
+  };
+
+  const copyCertToClipboard = () => {
+    if (!tlsServerCert) return;
+    navigator.clipboard.writeText(tlsServerCert);
+    setCertCopied(true);
+    setTimeout(() => setCertCopied(false), 2000);
   };
 
   return (
@@ -958,6 +968,57 @@ export const TrustTunnelPage: React.FC = () => {
                   <button onClick={copyToClipboard} className="btn btn--sm btn--outline" style={{ width: '100%' }}>
                     Copy to Clipboard
                   </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Server TLS Certificate PEM Override Card */}
+          <div className="g-card" style={{ padding: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <FiKey style={{ color: 'var(--color-brand)', fontSize: 16 }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)' }}>Server TLS Certificate (PEM)</span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <p style={{ fontSize: 11, color: 'var(--color-brand-muted)', margin: 0, lineHeight: '1.4' }}>
+                This is the public TLS certificate of this server. Clients can use this PEM block to configure their client-side overrides when verification checks are skipped.
+              </p>
+
+              {tlsServerCert ? (
+                <div>
+                  <textarea
+                    readOnly
+                    value={tlsServerCert}
+                    style={{
+                      width: '100%',
+                      height: 120,
+                      padding: '8px 10px',
+                      borderRadius: 6,
+                      border: '1px solid var(--color-brand-border)',
+                      background: 'var(--color-brand-card)',
+                      color: 'var(--color-brand-heading)',
+                      fontSize: 10,
+                      resize: 'none',
+                      fontFamily: 'Fira Code',
+                      marginBottom: 8
+                    }}
+                  />
+                  <button onClick={copyCertToClipboard} className="btn btn--sm btn--outline" style={{ width: '100%' }}>
+                    {certCopied ? 'Copied!' : 'Copy Certificate to Clipboard'}
+                  </button>
+                </div>
+              ) : (
+                <div style={{
+                  padding: '12px 14px',
+                  borderRadius: 8,
+                  background: 'rgba(var(--color-brand-rgb), 0.02)',
+                  border: '1px dashed var(--color-brand-border)',
+                  fontSize: 11,
+                  color: 'var(--color-brand-muted)',
+                  textAlign: 'center'
+                }}>
+                  No certificate loaded. Generate a Let's Encrypt certificate or start the engine to populate the certificate.
                 </div>
               )}
             </div>

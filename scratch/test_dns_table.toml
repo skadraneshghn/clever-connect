@@ -1,0 +1,18 @@
+vpn_mode = "general"
+
+[endpoint]
+hostname = "app-a8fead43-36bd-4876-b9cb-103c74487ea5.cleverapps.io"
+addresses = ["app-a8fead43-36bd-4876-b9cb-103c74487ea5.cleverapps.io:28926"]
+username = "salman"
+password = "..."
+upstream_protocol = "http2"
+client_random = "a0b0/f0f0"
+skip_verification = true
+load_certificate = ""
+
+[dns]
+dns_upstreams = ["8.8.8.8:53", "1.1.1.1:53"]
+
+[listener]
+[listener.socks]
+address = "127.0.0.1:1088"

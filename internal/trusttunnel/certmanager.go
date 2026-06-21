@@ -9,10 +9,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/acme"
 )
@@ -241,3 +243,70 @@ func GenerateCertificate(ctx context.Context, hostname, email, dataDir string) (
 
 	return absCertPath, absKeyPath, nil
 }
+
+// GenerateSelfSignedCert creates a self-signed TLS certificate and private key.
+func GenerateSelfSignedCert(hostname, dataDir string) (string, string, error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+
+	notBefore := time.Now()
+	notAfter := notBefore.Add(365 * 24 * time.Hour) // 1 year validity
+
+	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	if err != nil {
+		return "", "", err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"CleverConnect VPN"},
+			CommonName:   hostname,
+		},
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{hostname},
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return "", "", err
+	}
+
+	certDir := filepath.Join(dataDir, "certs", hostname)
+	if err := os.MkdirAll(certDir, 0755); err != nil {
+		return "", "", err
+	}
+
+	certPath := filepath.Join(certDir, "self_signed_cert.pem")
+	keyPath := filepath.Join(certDir, "self_signed_key.pem")
+
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		return "", "", err
+	}
+	defer certOut.Close()
+	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+
+	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", "", err
+	}
+	defer keyOut.Close()
+	privBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return "", "", err
+	}
+	pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes})
+
+	absCert, _ := filepath.Abs(certPath)
+	absKey, _ := filepath.Abs(keyPath)
+	return absCert, absKey, nil
+}
+

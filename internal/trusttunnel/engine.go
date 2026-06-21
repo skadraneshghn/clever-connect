@@ -122,10 +122,18 @@ allow_private_network_connections = false
 		)
 	}
 	if cfg.TlsCertPath == "" || cfg.TlsKeyPath == "" {
-		return fmt.Errorf(
-			"TrustTunnel server cannot start: TLS certificate paths are not configured. " +
-				"Set the TLS Certificate Path and TLS Private Key Path in the TrustTunnel settings and try again.",
-		)
+		logger.Warn("TrustTunnel", "TLS certificate paths not configured; generating fallback self-signed certificate", "hostname", cfg.ServerHostname)
+		certPath, keyPath, err := GenerateSelfSignedCert(cfg.ServerHostname, "data")
+		if err != nil {
+			return fmt.Errorf("failed to generate fallback self-signed certificate: %w", err)
+		}
+		cfg.TlsCertPath = certPath
+		cfg.TlsKeyPath = keyPath
+		// Update DB config in place
+		_ = db.DB.Model(cfg).Updates(map[string]interface{}{
+			"tls_cert_path": certPath,
+			"tls_key_path":  keyPath,
+		})
 	}
 
 	hostsTOML := fmt.Sprintf(
@@ -323,6 +331,7 @@ load_certificate = """
 """
 
 [listener]
+change_system_dns = false
 %s%s
 [listener.socks]
 address = "127.0.0.1:%d"

@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 
 	"clever-connect/internal/config"
@@ -24,6 +25,14 @@ func NewTrustTunnelHandler(cfg *config.Config) *TrustTunnelHandler {
 	return &TrustTunnelHandler{cfg: cfg}
 }
 
+func (h *TrustTunnelHandler) populateServerCertPEM(ttCfg *models.TrustTunnelConfig) {
+	if h.cfg.AppMode == "server" && ttCfg.TlsCertPath != "" {
+		if certBytes, err := os.ReadFile(ttCfg.TlsCertPath); err == nil {
+			ttCfg.TlsServerCert = string(certBytes)
+		}
+	}
+}
+
 // GetConfig handles GET /api/trusttunnel/config
 func (h *TrustTunnelHandler) GetConfig(c *gin.Context) {
 	var ttCfg models.TrustTunnelConfig
@@ -31,6 +40,8 @@ func (h *TrustTunnelHandler) GetConfig(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "TrustTunnel config not found"})
 		return
 	}
+
+	h.populateServerCertPEM(&ttCfg)
 
 	var users []models.TrustTunnelUser
 	db.DB.Find(&users)
@@ -139,6 +150,8 @@ func (h *TrustTunnelHandler) SaveConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save configuration"})
 		return
 	}
+
+	h.populateServerCertPEM(&ttCfg)
 
 	logger.Info("TrustTunnel", "Configuration updated",
 		"transport", ttCfg.ForcedTransport,
@@ -435,6 +448,8 @@ func (h *TrustTunnelHandler) ImportToken(c *gin.Context) {
 		return
 	}
 
+	h.populateServerCertPEM(&ttCfg)
+
 	logger.Info("TrustTunnel", "Configuration imported from token",
 		"connect", ttCfg.ConnectAddress,
 		"transport", ttCfg.ForcedTransport,
@@ -483,6 +498,8 @@ func (h *TrustTunnelHandler) GenerateCert(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save configuration with new cert paths"})
 		return
 	}
+
+	h.populateServerCertPEM(&ttCfg)
 
 	logger.Info("TrustTunnel", "Certificate successfully generated and configuration updated",
 		"hostname", input.Hostname,
