@@ -300,6 +300,13 @@ func startServerEngineLocked(cfg *models.TrustTunnelConfig) error {
 
 	cmdInstance = exec.Command(binPath, vpnPath, hostsPath)
 	cmdInstance.Dir = dir
+	// Assign the child to its own process group so that a kill targeting the
+	// group (negative PID) also terminates any sub-processes it may spawn.
+	// Pdeathsig ensures the child is killed if the parent Go process dies.
+	cmdInstance.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:   true,
+		Pdeathsig: syscall.SIGKILL,
+	}
 
 	return startAndPipeProcess("TrustTunnelEndpoint")
 }
@@ -327,6 +334,11 @@ func startClientEngineLocked(cfg *models.TrustTunnelConfig) error {
 
 	cmdInstance = exec.Command(binPath, "--config", clientPath)
 	cmdInstance.Dir = dir
+	// Same process-group isolation as the server engine.
+	cmdInstance.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:   true,
+		Pdeathsig: syscall.SIGKILL,
+	}
 
 	return startAndPipeProcess("TrustTunnelClient")
 }
@@ -395,11 +407,14 @@ func stopEngineLockedOnly() error {
 	if cmdInstance != nil {
 		logger.Info("TrustTunnel", "Terminating active TrustTunnel process")
 		if cmdInstance.Process != nil {
-			// Try graceful SIGTERM first
-			if err := cmdInstance.Process.Signal(syscall.SIGTERM); err != nil {
-				// Fallback to SIGKILL
-				if err := cmdInstance.Process.Kill(); err != nil {
-					logger.Error("TrustTunnel", "Failed to kill process", "error", err)
+			// Kill the entire process group (negative PID) so any child processes
+			// spawned by the Rust binary are also terminated. This prevents orphaned
+			// processes from holding onto ports across restarts on Clever Cloud.
+			pid := cmdInstance.Process.Pid
+			if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+				// Group kill failed (e.g. process already gone); fall back to direct kill
+				if err := cmdInstance.Process.Signal(syscall.SIGTERM); err != nil {
+					_ = cmdInstance.Process.Kill()
 				}
 			}
 		}
