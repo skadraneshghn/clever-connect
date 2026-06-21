@@ -87,7 +87,7 @@ export const TrustTunnelPage: React.FC = () => {
     setActivePreset(presetName);
     if (presetName === 'iran-stealth') {
       setForcedTransport('http2');
-      setAuthFailureStatusCode(404);
+      setAuthFailureStatusCode(407);
       setClientRandomPrefix('a0b0/f0f0');
       setH2InitialStreamWindowSize(131072);
       setH2InitialConnWindowSize(262144);
@@ -95,7 +95,7 @@ export const TrustTunnelPage: React.FC = () => {
       setKillSwitchEnabled(true);
     } else if (presetName === 'standard-web') {
       setForcedTransport('http2');
-      setAuthFailureStatusCode(401);
+      setAuthFailureStatusCode(405);
       setClientRandomPrefix('');
       setH2InitialStreamWindowSize(65535);
       setH2InitialConnWindowSize(131072);
@@ -433,10 +433,8 @@ export const TrustTunnelPage: React.FC = () => {
                         fontSize: 13
                       }}
                     >
-                      <option value={404}>404 Not Found (Stealth)</option>
-                      <option value={401}>401 Unauthorized</option>
-                      <option value={403}>403 Forbidden</option>
-                      <option value={407}>407 Proxy Auth Required</option>
+                      <option value={407}>407 Proxy Authentication Required</option>
+                      <option value={405}>405 Method Not Allowed</option>
                     </select>
                   </div>
 

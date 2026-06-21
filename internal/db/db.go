@@ -359,7 +359,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			Socks5Port:                1088,
 			HttpPort:                  1089,
 			ForcedTransport:           "http2",
-			AuthFailureStatusCode:     404,
+			AuthFailureStatusCode:     407,
 			ClientRandomPrefix:        "a0b0/f0f0",
 			H2InitialStreamWindowSize: 131072,
 			H2InitialConnWindowSize:   262144,

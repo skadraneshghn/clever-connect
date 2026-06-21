@@ -27,7 +27,7 @@ type TrustTunnelConfig struct {
 
 	// Transport & Obfuscation
 	ForcedTransport        string `json:"forced_transport" gorm:"default:'http2'"`       // http2, http1, quic (quic blocked in Iran)
-	AuthFailureStatusCode  int    `json:"auth_failure_status_code" gorm:"default:404"`   // Active probe camouflage: 404, 403, 401, 407
+	AuthFailureStatusCode  int    `json:"auth_failure_status_code" gorm:"default:407"`   // Active probe camouflage: 407, 405
 	ClientRandomPrefix    string `json:"client_random_prefix" gorm:"default:'a0b0/f0f0'"` // TLS handshake entropy mask (hex)
 	H2InitialStreamWindowSize   int `json:"h2_initial_stream_window_size" gorm:"default:131072"`  // Chrome fingerprint: 131072 bytes
 	H2InitialConnWindowSize     int `json:"h2_initial_conn_window_size" gorm:"default:262144"`    // Connection flow control window

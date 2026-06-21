@@ -81,9 +81,9 @@ func (h *TrustTunnelHandler) SaveConfig(c *gin.Context) {
 	}
 
 	// Validate auth_failure_status_code
-	validCodes := map[int]bool{401: true, 403: true, 404: true, 407: true}
+	validCodes := map[int]bool{407: true, 405: true}
 	if input.AuthFailureStatusCode != 0 && !validCodes[input.AuthFailureStatusCode] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid auth_failure_status_code. Must be 401, 403, 404, or 407"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid auth_failure_status_code. Must be 407 or 405"})
 		return
 	}
 
