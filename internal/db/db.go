@@ -367,6 +367,13 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			KillSwitchEnabled:         false,
 			ActivePreset:              "iran-stealth",
 		})
+	} else {
+		// Database already seeded — ensure legacy configurations are valid
+		if ttCfg.AuthFailureStatusCode != 407 && ttCfg.AuthFailureStatusCode != 405 {
+			logger.Info("DB", "Migrating invalid auth_failure_status_code in existing TrustTunnelConfig to 407", "old", ttCfg.AuthFailureStatusCode)
+			ttCfg.AuthFailureStatusCode = 407
+			DB.Save(&ttCfg)
+		}
 	}
 
 	// Seed default ScannerSource
