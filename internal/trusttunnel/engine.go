@@ -109,18 +109,26 @@ allow_private_network_connections = false
 		return fmt.Errorf("failed to write vpn.toml: %w", err)
 	}
 
-	// hosts.toml — TLS certificate configuration (uses main_hosts array)
-	hostsTOML := ""
-	if cfg.ServerHostname != "" {
-		hostsTOML = fmt.Sprintf(`[[main_hosts]]
-hostname = "%s"
-`, cfg.ServerHostname)
-		if cfg.TlsCertPath != "" && cfg.TlsKeyPath != "" {
-			hostsTOML += fmt.Sprintf(`cert_chain_path = "%s"
-private_key_path = "%s"
-`, cfg.TlsCertPath, cfg.TlsKeyPath)
-		}
+	// hosts.toml — TLS certificate configuration (uses main_hosts array).
+	// The Rust daemon requires at least one [[main_hosts]] entry; writing an
+	// empty file causes an immediate panic with "missing field `main_hosts`".
+	// Fall back to "localhost" when no hostname has been configured yet so the
+	// process can start cleanly on a fresh Clever Cloud deploy.
+	hostname := cfg.ServerHostname
+	if hostname == "" {
+		hostname = "localhost" // safe fallback — update via UI to use a real TLS cert
+		logger.Warn("TrustTunnel", "ServerHostname is empty — using 'localhost' fallback in hosts.toml. Set a real hostname in the UI for valid TLS.")
 	}
+	hostsTOML := fmt.Sprintf("[[main_hosts]]\nhostname = \"%s\"\n", hostname)
+	if cfg.TlsCertPath != "" && cfg.TlsKeyPath != "" {
+		hostsTOML += fmt.Sprintf("cert_chain_path = \"%s\"\nprivate_key_path = \"%s\"\n", cfg.TlsCertPath, cfg.TlsKeyPath)
+	}
+
+	// Pre-flight guard: never write a suspiciously small hosts.toml.
+	if len(hostsTOML) < 10 {
+		return fmt.Errorf("aborting server start: hosts.toml serialization is empty/malformed (len=%d) — this would cause a Rust panic", len(hostsTOML))
+	}
+
 	if err := os.WriteFile(filepath.Join(dir, "hosts.toml"), []byte(hostsTOML), 0644); err != nil {
 		return fmt.Errorf("failed to write hosts.toml: %w", err)
 	}
@@ -499,9 +507,12 @@ func restartEngineFromDB() error {
 	if err := db.DB.First(&cfg).Error; err != nil {
 		return fmt.Errorf("failed to load TrustTunnel config from DB: %w", err)
 	}
-	if !cfg.IsActive {
-		return fmt.Errorf("TrustTunnel config is no longer active in DB")
-	}
+	// NOTE: We intentionally do NOT gate on cfg.IsActive here.
+	// IsActive is only written by the UI toggle; it is not updated by the crash
+	// supervisor. The in-memory expectedRun flag (checked above) is the correct
+	// authority for whether the engine should keep running. Checking IsActive
+	// caused every auto-restart to fail with "TrustTunnel config is no longer
+	// active in DB" after an unexpected process crash on a fresh Clever Cloud deploy.
 
 	_ = stopEngineLockedOnly()
 
