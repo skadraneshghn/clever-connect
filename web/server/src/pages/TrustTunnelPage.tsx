@@ -376,7 +376,7 @@ export const TrustTunnelPage: React.FC = () => {
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>TLS Certificate Absolute Path</label>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>TLS Certificate Absolute Path (Optional)</label>
                 <input
                   type="text"
                   value={tlsCertPath}
@@ -392,12 +392,11 @@ export const TrustTunnelPage: React.FC = () => {
                     fontSize: 13,
                     fontFamily: 'Fira Code'
                   }}
-                  required
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>TLS Private Key Absolute Path</label>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--color-brand-muted)', marginBottom: 6, textTransform: 'uppercase' }}>TLS Private Key Absolute Path (Optional)</label>
                 <input
                   type="text"
                   value={tlsKeyPath}
@@ -413,10 +412,13 @@ export const TrustTunnelPage: React.FC = () => {
                     fontSize: 13,
                     fontFamily: 'Fira Code'
                   }}
-                  required
                 />
               </div>
             </div>
+
+            <p style={{ fontSize: 11, color: 'var(--color-brand-muted)', margin: '0 0 4px', lineHeight: '1.4' }}>
+              💡 <b>Tip:</b> If certificate paths are left blank, the VPN engine will automatically generate a fallback self-signed TLS certificate for your public hostname.
+            </p>
 
             {/* Let's Encrypt Cert Generator */}
             <div style={{
