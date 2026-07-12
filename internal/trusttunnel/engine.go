@@ -315,6 +315,18 @@ func generateClientTOML(cfg *models.TrustTunnelConfig) error {
 
 	resolvedConnectAddr := ResolveConnectAddress(cfg.ConnectAddress, cfg.ServerHostname)
 
+	// SOCKS5 listener credentials: required by the Rust client when binding to
+	// a non-loopback address (0.0.0.0). Fall back to the endpoint credentials,
+	// or a static default if those are empty.
+	socksUser := cfg.ClientUsername
+	if socksUser == "" {
+		socksUser = "clever"
+	}
+	socksPass := cfg.ClientPassword
+	if socksPass == "" {
+		socksPass = "connect"
+	}
+
 	dnsUpstreamsStr := ""
 	if cfg.DnsUpstreams != "" {
 		var servers []string
@@ -352,7 +364,9 @@ load_certificate = """
 change_system_dns = false
 %s%s
 [listener.socks]
-address = "127.0.0.1:%d"
+address = "0.0.0.0:%d"
+username = "%s"
+password = "%s"
 `,
 		cfg.KillSwitchEnabled,
 		hostname,
@@ -367,6 +381,8 @@ address = "127.0.0.1:%d"
 		includedStr,
 		excludedStr,
 		cfg.Socks5Port,
+		socksUser,
+		socksPass,
 	)
 
 	if err := os.WriteFile(filepath.Join(dir, "client.toml"), []byte(clientTOML), 0644); err != nil {
