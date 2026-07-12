@@ -325,7 +325,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			TargetMode: "direct",
 			TargetHost: "127.0.0.1:80",
 			EnableMux:  true,
-			KeepAlive:  15,
+			KeepAlive:  60,
 			IsActive:   false,
 		})
 	}
@@ -340,7 +340,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 			AuthToken:    "",
 			SNI:          "",
 			EnableMux:    true,
-			KeepAlive:    15,
+			KeepAlive:    60,
 			BypassIR:     true,
 			IsActive:     false,
 			EnableBridge: false,

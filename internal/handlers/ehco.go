@@ -44,7 +44,7 @@ func (h *EhcoHandler) GetConfig(c *gin.Context) {
 				TargetMode: "direct",
 				TargetHost: "127.0.0.1:80",
 				EnableMux:  true,
-				KeepAlive:  15,
+				KeepAlive:  60,
 				IsActive:   false,
 			}
 			db.DB.Create(&serverCfg)
@@ -66,7 +66,7 @@ func (h *EhcoHandler) GetConfig(c *gin.Context) {
 				AuthToken:    "",
 				SNI:          "",
 				EnableMux:    true,
-				KeepAlive:    15,
+				KeepAlive:    60,
 				BypassIR:     true,
 				IsActive:     false,
 				EnableBridge: false,

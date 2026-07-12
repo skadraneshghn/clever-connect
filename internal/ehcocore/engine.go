@@ -35,6 +35,7 @@ type RelayOptions struct {
 	WSConfig           *WSConfig `json:"ws_config,omitempty"`
 	IdleTimeoutSec     int       `json:"idle_timeout_sec,omitempty"`
 	DialTimeoutSec     int       `json:"dial_timeout_sec,omitempty"`
+	ReadTimeoutSec     int       `json:"read_timeout_sec,omitempty"`
 }
 
 type RelayConfig struct {
@@ -174,10 +175,12 @@ func startServerEngineLocked(dbCfg *models.EhcoServerConfig) error {
 		authPath += "?mux=false"
 	}
 
-	// Default keep-alive interval
+	// Default keep-alive interval — enforce a minimum of 60s so bursty
+	// streaming traffic (YouTube/Instagram) doesn't get killed during
+	// natural gaps between buffer fills.
 	idleTimeout := dbCfg.KeepAlive
-	if idleTimeout <= 0 {
-		idleTimeout = 15
+	if idleTimeout < 60 {
+		idleTimeout = 60
 	}
 
 	// Build JSON config
@@ -196,7 +199,8 @@ func startServerEngineLocked(dbCfg *models.EhcoServerConfig) error {
 					EnableUDP:          true,
 					EnableMultipathTCP: true,
 					IdleTimeoutSec:     idleTimeout,
-					DialTimeoutSec:     10, // Optimized: fast dial timeout to detect disconnects quickly
+					DialTimeoutSec:     10,
+					ReadTimeoutSec:     0, // Disabled: don't kill slow CDN responses (YouTube/Instagram)
 					WSConfig: &WSConfig{
 						Path: authPath,
 					},
@@ -228,9 +232,9 @@ func startServerEngineLocked(dbCfg *models.EhcoServerConfig) error {
 		"keep_alive", idleTimeout,
 	)
 
-	// Launch process with high performance buffer size: 262144 (256KB)
+	// Launch process with high performance buffer size: 1048576 (1MB) for streaming
 	binPath := getEhcoBinPath()
-	cmdInstance = exec.Command(binPath, "-c", configPath, "--buffer_size", "262144")
+	cmdInstance = exec.Command(binPath, "-c", configPath, "--buffer_size", "1048576")
 
 	stdoutPipe, err := cmdInstance.StdoutPipe()
 	if err != nil {
@@ -350,10 +354,12 @@ func startClientEngineLocked(dbCfg *models.EhcoClientConfig) error {
 		authPath += "?" + params.Encode()
 	}
 
-	// Default keep-alive interval
+	// Default keep-alive interval — enforce a minimum of 60s so bursty
+	// streaming traffic (YouTube/Instagram) doesn't get killed during
+	// natural gaps between buffer fills.
 	idleTimeout := dbCfg.KeepAlive
-	if idleTimeout <= 0 {
-		idleTimeout = 15
+	if idleTimeout < 60 {
+		idleTimeout = 60
 	}
 
 	// Build JSON config
@@ -372,7 +378,8 @@ func startClientEngineLocked(dbCfg *models.EhcoClientConfig) error {
 					EnableUDP:          true,
 					EnableMultipathTCP: true,
 					IdleTimeoutSec:     idleTimeout,
-					DialTimeoutSec:     10, // Optimized: fast dial timeout to detect disconnects quickly
+					DialTimeoutSec:     10,
+					ReadTimeoutSec:     0, // Disabled: don't kill slow CDN responses (YouTube/Instagram)
 					WSConfig: &WSConfig{
 						Path: authPath,
 					},
@@ -407,9 +414,9 @@ func startClientEngineLocked(dbCfg *models.EhcoClientConfig) error {
 		"bypass_ir", dbCfg.BypassIR,
 	)
 
-	// Launch process with high performance buffer size: 262144 (256KB)
+	// Launch process with high performance buffer size: 1048576 (1MB) for streaming
 	binPath := getEhcoBinPath()
-	cmdInstance = exec.Command(binPath, "-c", configPath, "--buffer_size", "262144")
+	cmdInstance = exec.Command(binPath, "-c", configPath, "--buffer_size", "1048576")
 
 	stdoutPipe, err := cmdInstance.StdoutPipe()
 	if err != nil {
