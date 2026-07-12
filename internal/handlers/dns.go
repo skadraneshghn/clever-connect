@@ -941,6 +941,11 @@ func (h *DNSHandler) ApplyActiveResolver(c *gin.Context) {
 				evasion = evasionSetting.Value == "true"
 			}
 
+			// Stop the running core BEFORE searching for available ports so the
+			// configured SOCKS/HTTP ports are free and the reloaded core binds
+			// to the same ports the frontend expects.
+			_ = core.StopClientCore()
+
 			socksPortPublic := core.FindAvailablePort(socksPort)
 			httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic)
 
@@ -953,7 +958,6 @@ func (h *DNSHandler) ApplyActiveResolver(c *gin.Context) {
 			tempPath := filepath.Join(os.TempDir(), "xray_client.json")
 			_ = os.WriteFile(tempPath, configBytes, 0644)
 
-			_ = core.StopClientCore()
 			if err := core.StartClientCore(tempPath); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start client core daemon: " + err.Error()})
 				return

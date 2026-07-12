@@ -1558,6 +1558,12 @@ func reloadClientCore() error {
 		}
 	}
 
+	// Stop the running core BEFORE searching for available ports. Otherwise
+	// FindAvailablePort sees the current SOCKS/HTTP ports as occupied and
+	// returns different ports, causing the reloaded core to listen on ports
+	// the frontend and system proxy don't know about (silent disconnect).
+	_ = core.StopClientCore()
+
 	socksPortPublic := core.FindAvailablePort(socksPort)
 	httpPortPublic := core.FindAvailablePort(httpPort, socksPortPublic)
 
@@ -1569,7 +1575,6 @@ func reloadClientCore() error {
 	tempPath := filepath.Join(os.TempDir(), "xray_client.json")
 	_ = os.WriteFile(tempPath, configBytes, 0644)
 
-	_ = core.StopClientCore()
 	if err := core.StartClientCore(tempPath); err != nil {
 		return fmt.Errorf("failed to start client core: %w", err)
 	}

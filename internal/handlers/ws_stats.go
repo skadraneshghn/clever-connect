@@ -116,6 +116,7 @@ func HandleStatsStream(c *gin.Context) {
 			}
 
 			// 5. Stream to React
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteJSON(stats); err != nil {
 				return // Client disconnected
 			}

@@ -534,6 +534,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 		case <-doneChan:
 			return
 		case msg := <-telemetryChan:
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteJSON(msg); err != nil {
 				return
 			}
@@ -624,6 +625,7 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 				}
 			}
 
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteJSON(msg); err != nil {
 				return
 			}

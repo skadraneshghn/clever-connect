@@ -322,7 +322,8 @@ func (h *V2RayHandler) DeleteRoutingRule(c *gin.Context) {
 // GetClientStatus handles GET /api/v2ray/client/status
 func (h *V2RayHandler) GetClientStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"is_running": core.IsClientRunning(),
+		"is_running":      core.IsClientRunning(),
+		"process_alive":   core.IsClientProcessAlive(),
 	})
 }
 

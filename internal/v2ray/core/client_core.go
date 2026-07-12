@@ -43,6 +43,11 @@ var (
 	// exits (or fails to start). It lets the readiness probe distinguish a
 	// genuine boot failure from a core that is still initializing.
 	clientFirstExit int32
+	// clientProcessAlive is 1 while the supervised core process is running and
+	// 0 while it is stopped or in a crash-restart backoff. IsClientRunning
+	// consults this so the UI reflects the actual process state instead of
+	// reporting "running" during a dead backoff window.
+	clientProcessAlive int32
 
 	// Restart tracking
 	clientCrashes   int
@@ -122,11 +127,22 @@ func FindAvailablePort(startPort int, excludePorts ...int) int {
 	return startPort
 }
 
-// IsClientRunning returns whether the client engine is active
+// IsClientRunning returns whether the client engine is active.
+//
+// It reports the *intent* to run (clientRunning) AND actual process health
+// (clientProcessAlive). This prevents the UI from showing "running" while the
+// core is actually in a crash-restart backoff, which was causing users to see
+// "connected" even though no SOCKS listener was open.
 func IsClientRunning() bool {
 	clientMu.Lock()
 	defer clientMu.Unlock()
-	return clientRunning
+	return clientRunning && atomic.LoadInt32(&clientProcessAlive) == 1
+}
+
+// IsClientProcessAlive returns whether the supervised core process is currently
+// running (not in a backoff gap). Useful for diagnostics.
+func IsClientProcessAlive() bool {
+	return atomic.LoadInt32(&clientProcessAlive) == 1
 }
 
 // StartClientCore starts the client proxy engine with supervisor
@@ -134,8 +150,16 @@ func StartClientCore(configPath string) error {
 	clientMu.Lock()
 
 	if clientRunning {
+		// If the process is still alive, reject the duplicate start. If the
+		// process has died (crash-restart backoff), allow a clean restart by
+		// tearing down the stale supervisor state first.
+		if atomic.LoadInt32(&clientProcessAlive) == 1 {
+			clientMu.Unlock()
+			return fmt.Errorf("client proxy engine is already running")
+		}
 		clientMu.Unlock()
-		return fmt.Errorf("client proxy engine is already running")
+		_ = StopClientCore()
+		clientMu.Lock()
 	}
 
 	clientConfigPath = configPath
@@ -143,6 +167,7 @@ func StartClientCore(configPath string) error {
 	clientRunning = true
 	clientCrashes = 0
 	atomic.StoreInt32(&clientFirstExit, 0)
+	atomic.StoreInt32(&clientProcessAlive, 0)
 	proxyStopChan = make(chan struct{})
 
 	// Reset counters
@@ -223,18 +248,26 @@ func StartClientCore(configPath string) error {
 
 	go clientSupervisor(ctx)
 
-	// Readiness probe: block until the core actually opens its SOCKS listener
-	// or fails to boot. This guarantees that a successful StartClientCore means
-	// the SOCKS port is truly reachable instead of the core having crashed
-	// silently during initialization (missing assets, bad config, etc.).
+	// Readiness probe: wait for the core to open its SOCKS listener so that a
+	// successful StartClientCore means the port is truly reachable. Crucially,
+	// a *timeout* is NOT fatal — the core may simply be slow to initialize
+	// (loading geosite.dat, observatory, Reality TLS). We only treat it as a
+	// hard failure when the process actually exits (genuine boot crash), which
+	// lets us surface the real error immediately instead of silently looping.
 	if readyPort > 0 {
-		if err := waitClientReady(readyPort, 5*time.Second); err != nil {
-			tail := recentClientLogTail(10)
-			_ = StopClientCore()
-			if tail != "" {
-				return fmt.Errorf("core failed to start: %w\n--- recent core logs ---\n%s", err, tail)
+		if err := waitClientReady(readyPort, 15*time.Second); err != nil {
+			if atomic.LoadInt32(&clientFirstExit) == 1 {
+				// Process exited before binding — genuine boot failure.
+				tail := recentClientLogTail(15)
+				_ = StopClientCore()
+				if tail != "" {
+					return fmt.Errorf("core failed to start: %w\n--- recent core logs ---\n%s", err, tail)
+				}
+				return fmt.Errorf("core failed to start: %w", err)
 			}
-			return fmt.Errorf("core failed to start: %w", err)
+			// Timeout but process still alive — core is still initializing.
+			// Do NOT kill it; let the supervisor manage it.
+			logger.Warn("ClientV2Ray", "Core still initializing after readiness window, continuing in background", "port", readyPort)
 		}
 	} else {
 		logger.Warn("ClientV2Ray", "Could not determine SOCKS port from config, skipping readiness probe")
@@ -334,6 +367,7 @@ func StopClientCore() error {
 	}
 
 	clientRunning = false
+	atomic.StoreInt32(&clientProcessAlive, 0)
 	logger.Info("ClientV2Ray", "Client proxy engine stopped successfully")
 	return nil
 }
@@ -416,8 +450,12 @@ func clientSupervisor(ctx context.Context) {
 		if err := cmd.Start(); err != nil {
 			runCancel()
 			atomic.StoreInt32(&clientFirstExit, 1)
+			atomic.StoreInt32(&clientProcessAlive, 0)
 			logger.Error("ClientV2Ray", "Failed to start supervisor client process", "error", err)
+			// Close the wait channel so StopClientCore doesn't block on it.
+			close(wChan)
 		} else {
+			atomic.StoreInt32(&clientProcessAlive, 1)
 			// Scan stdout and stderr asynchronously
 			var pipeWG sync.WaitGroup
 			if errStdout == nil {
@@ -442,6 +480,7 @@ func clientSupervisor(ctx context.Context) {
 			}
 
 			_ = cmd.Wait()
+			atomic.StoreInt32(&clientProcessAlive, 0)
 			atomic.StoreInt32(&clientFirstExit, 1)
 			close(wChan)
 			pipeWG.Wait()
