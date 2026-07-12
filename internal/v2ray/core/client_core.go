@@ -2,6 +2,11 @@ package core
 
 import (
 	"bufio"
+	"clever-connect/internal/db"
+	"clever-connect/internal/logger"
+	"clever-connect/internal/models"
+	"clever-connect/internal/v2ray/sysproxy"
+	"clever-connect/internal/v2ray/traffic/desync"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,11 +20,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"clever-connect/internal/db"
-	"clever-connect/internal/logger"
-	"clever-connect/internal/models"
-	"clever-connect/internal/v2ray/sysproxy"
-	"clever-connect/internal/v2ray/traffic/desync"
 )
 
 // ClientProxyMetrics reports real-time metrics to the UI layer
@@ -39,21 +39,25 @@ var (
 	clientCancel     context.CancelFunc
 	clientErr        error
 	clientWaitChan   chan struct{}
+	// clientFirstExit is set to 1 the first time the supervised core process
+	// exits (or fails to start). It lets the readiness probe distinguish a
+	// genuine boot failure from a core that is still initializing.
+	clientFirstExit int32
 
 	// Restart tracking
-	clientCrashes int
+	clientCrashes   int
 	clientLastStart time.Time
 
 	// Local Proxy Engine state
-	socksListener  net.Listener
-	httpListener   net.Listener
-	activeConns    int32
-	totalBytesTx   int64 // upload
-	totalBytesRx   int64 // download
-	proxyWG        sync.WaitGroup
-	proxyStopChan  chan struct{}
-	proxyMu        sync.Mutex
-	proxyRunning   bool
+	socksListener net.Listener
+	httpListener  net.Listener
+	activeConns   int32
+	totalBytesTx  int64 // upload
+	totalBytesRx  int64 // download
+	proxyWG       sync.WaitGroup
+	proxyStopChan chan struct{}
+	proxyMu       sync.Mutex
+	proxyRunning  bool
 
 	// Metrics channel
 	MetricsChan = make(chan ClientProxyMetrics, 100)
@@ -66,7 +70,7 @@ var (
 // ExtractCoreBinary extracts the embedded Xray binary to a temporary folder
 func ExtractCoreBinary() (string, error) {
 	tempPath := filepath.Join(os.TempDir(), "xray_client_core")
-	
+
 	// Check if already extracted
 	if info, err := os.Stat(tempPath); err == nil {
 		if info.Mode()&0111 != 0 {
@@ -128,9 +132,9 @@ func IsClientRunning() bool {
 // StartClientCore starts the client proxy engine with supervisor
 func StartClientCore(configPath string) error {
 	clientMu.Lock()
-	defer clientMu.Unlock()
 
 	if clientRunning {
+		clientMu.Unlock()
 		return fmt.Errorf("client proxy engine is already running")
 	}
 
@@ -138,6 +142,7 @@ func StartClientCore(configPath string) error {
 	clientShouldRun = true
 	clientRunning = true
 	clientCrashes = 0
+	atomic.StoreInt32(&clientFirstExit, 0)
 	proxyStopChan = make(chan struct{})
 
 	// Reset counters
@@ -211,9 +216,67 @@ func StartClientCore(configPath string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	clientCancel = cancel
 
+	// Snapshot the SOCKS port for the readiness probe, then release the lock so
+	// the supervisor goroutine can run concurrently.
+	readyPort := socksPort
+	clientMu.Unlock()
+
 	go clientSupervisor(ctx)
 
+	// Readiness probe: block until the core actually opens its SOCKS listener
+	// or fails to boot. This guarantees that a successful StartClientCore means
+	// the SOCKS port is truly reachable instead of the core having crashed
+	// silently during initialization (missing assets, bad config, etc.).
+	if readyPort > 0 {
+		if err := waitClientReady(readyPort, 5*time.Second); err != nil {
+			tail := recentClientLogTail(10)
+			_ = StopClientCore()
+			if tail != "" {
+				return fmt.Errorf("core failed to start: %w\n--- recent core logs ---\n%s", err, tail)
+			}
+			return fmt.Errorf("core failed to start: %w", err)
+		}
+	} else {
+		logger.Warn("ClientV2Ray", "Could not determine SOCKS port from config, skipping readiness probe")
+	}
+
 	return nil
+}
+
+// waitClientReady polls the local SOCKS listener until the core accepts
+// connections, the first process attempt exits (boot failure), or the timeout
+// elapses. It ensures "started" means the SOCKS port is actually open instead
+// of the core having terminated during initialization.
+func waitClientReady(socksPort int, timeout time.Duration) error {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort))
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond); err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		if atomic.LoadInt32(&clientFirstExit) == 1 {
+			return fmt.Errorf("proxy core process exited before opening SOCKS listener (boot failure)")
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&clientFirstExit) == 1 {
+		return fmt.Errorf("proxy core process exited before opening SOCKS listener (boot failure)")
+	}
+	return fmt.Errorf("timed out waiting for SOCKS listener on port %d", socksPort)
+}
+
+// recentClientLogTail returns up to n of the most recent buffered core log lines
+// joined with newlines, for surfacing boot-failure context to the caller.
+func recentClientLogTail(n int) string {
+	logs := GetClientLogs("")
+	if len(logs) == 0 {
+		return ""
+	}
+	if n > len(logs) {
+		n = len(logs)
+	}
+	return strings.Join(logs[len(logs)-n:], "\n")
 }
 
 // StopClientCore stops the client proxy engine and terminates Xray gracefully
@@ -321,16 +384,23 @@ func clientSupervisor(ctx context.Context) {
 		} else {
 			cmd = exec.CommandContext(runCtx, binPath, "run", "-c", clientConfigPath)
 		}
+		// Resolve the binary directory so the core finds geosite.dat / geoip.dat
+		// locally, and expose it via the asset location env vars so Xray/V2Ray
+		// resolve routing databases regardless of the process working directory.
+		absBinDir, errDir := filepath.Abs(filepath.Dir(binPath))
+		if errDir == nil {
+			cmd.Dir = absBinDir
+		} else {
+			absBinDir = filepath.Dir(binPath)
+		}
 		cmd.Env = append(os.Environ(),
 			"ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true",
 			"ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER=true",
 			"ENABLE_DEPRECATED_SPECIAL_OUTBOUNDS=true",
+			"XRAY_LOCATION_ASSET="+absBinDir,
+			"V2RAY_LOCATION_ASSET="+absBinDir,
 		)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		absBinDir, err := filepath.Abs(filepath.Dir(binPath))
-		if err == nil {
-			cmd.Dir = absBinDir
-		}
 
 		// Pipe stdout & stderr to read logs in real time
 		stdout, errStdout := cmd.StdoutPipe()
@@ -345,6 +415,7 @@ func clientSupervisor(ctx context.Context) {
 		logger.Info("ClientV2Ray", "Supervisor starting client core process", "bin", binPath)
 		if err := cmd.Start(); err != nil {
 			runCancel()
+			atomic.StoreInt32(&clientFirstExit, 1)
 			logger.Error("ClientV2Ray", "Failed to start supervisor client process", "error", err)
 		} else {
 			// Scan stdout and stderr asynchronously
@@ -371,6 +442,7 @@ func clientSupervisor(ctx context.Context) {
 			}
 
 			_ = cmd.Wait()
+			atomic.StoreInt32(&clientFirstExit, 1)
 			close(wChan)
 			pipeWG.Wait()
 		}
@@ -639,7 +711,7 @@ var (
 func AddClientLog(line string) {
 	clientLogsMu.Lock()
 	defer clientLogsMu.Unlock()
-	
+
 	// Add timestamp to log
 	timestamped := fmt.Sprintf("[%s] %s", time.Now().Format("2006-01-02 15:04:05"), line)
 

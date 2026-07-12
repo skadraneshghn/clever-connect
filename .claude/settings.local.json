@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /Users/dev/workspace-f290a80f && ls -la && echo \"---\" && find . -maxdepth 2 -not -path '*/node_modules/*' -not -path '*/.git/*' | head -100)",
+      "Read(//Users/dev/**)",
+      "Bash(pwd; echo *)",
+      "Read(//home/salman/**)",
+      "Bash(xargs basename -a)",
+      "Bash(xargs cat)"
+    ]
+  }
+}

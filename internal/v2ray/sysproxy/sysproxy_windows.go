@@ -5,7 +5,6 @@ package sysproxy
 import (
 	"fmt"
 	"os/exec"
-	"strconv"
 )
 
 func setWindowsProxy(socksPort, httpPort int) error {

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"clever-connect/internal/db"
+	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/v2ray/core"
 )
@@ -294,7 +295,7 @@ func compileServerConfigXray(
 			Tag:      "api",
 			Services: []string{"StatsService"},
 		},
-		Stats:  &StatsConfig{},
+		Stats: &StatsConfig{},
 		Policy: &PolicyConfig{
 			Levels: map[string]PolicyLevelConfig{
 				"0": {
@@ -534,7 +535,6 @@ func CompileClientConfigForCore(
 
 	return configBytes, nil
 }
-
 
 // compileClientConfigXray compiles the client-side local Xray config JSON
 func compileClientConfigXray(
@@ -1083,13 +1083,27 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 		maxClient := ""
 
 		if rMap, ok := dbTlsSettings["realitySettings"].(map[string]interface{}); ok {
-			if pk, ok := rMap["publicKey"].(string); ok && pk != "" { pubKey = pk }
-			if sid, ok := rMap["shortId"].(string); ok && sid != "" { shortId = sid }
-			if sn, ok := rMap["serverName"].(string); ok && sn != "" { sni = sn }
-			if d, ok := rMap["dest"].(string); ok { dest = d }
-			if sp, ok := rMap["spiderX"].(string); ok { spiderX = sp }
-			if minC, ok := rMap["minClient"].(string); ok { minClient = minC }
-			if maxC, ok := rMap["maxClient"].(string); ok { maxClient = maxC }
+			if pk, ok := rMap["publicKey"].(string); ok && pk != "" {
+				pubKey = pk
+			}
+			if sid, ok := rMap["shortId"].(string); ok && sid != "" {
+				shortId = sid
+			}
+			if sn, ok := rMap["serverName"].(string); ok && sn != "" {
+				sni = sn
+			}
+			if d, ok := rMap["dest"].(string); ok {
+				dest = d
+			}
+			if sp, ok := rMap["spiderX"].(string); ok {
+				spiderX = sp
+			}
+			if minC, ok := rMap["minClient"].(string); ok {
+				minClient = minC
+			}
+			if maxC, ok := rMap["maxClient"].(string); ok {
+				maxClient = maxC
+			}
 		}
 
 		shortIds := []string{}
@@ -1110,15 +1124,15 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 		}
 
 		clientRealitySettings = &RealitySettings{
-			Show:        false,
-			PublicKey:   pubKey,
-			ShortIds:    shortIds,
-			ServerName:  sni,
-			Dest:        dest,
-			MinClient:   minClient,
-			MaxClient:   maxClient,
-			SpiderX:     spiderX,
-			Padding:     paddingSettings,
+			Show:       false,
+			PublicKey:  pubKey,
+			ShortIds:   shortIds,
+			ServerName: sni,
+			Dest:       dest,
+			MinClient:  minClient,
+			MaxClient:  maxClient,
+			SpiderX:    spiderX,
+			Padding:    paddingSettings,
 		}
 
 		if evasionEnabled || evasionMixedCase || evasionPadding || nodeFingerprint != "" {
@@ -1238,18 +1252,21 @@ func CompileOutbound(activeConfig models.V2RayClientConfig, evasionEnabled bool,
 
 			switch fragMode {
 			case "domain":
-				// Targets the domain/SNI by splitting very early (e.g. 1-5 bytes) to desync the SNI record header
+				// Split the TLS ClientHello/SNI region to desync DPI. Use stable,
+				// admin-configurable chunk sizes (default 100-200 bytes) instead of
+				// micro-chunks (1-5 bytes) which trigger TCP reassembly resets and
+				// upstream connection drops.
 				clientStreamSettings.Fragment = &FragmentConfig{
 					Packets:  fragPackets,
-					Length:   "1-5",
-					Interval: "5-15",
+					Length:   fragLength,
+					Interval: fragInterval,
 				}
 			case "random":
-				// Aggressive micro-chunks at random intervals
+				// Randomize which initial packets are split, using stable ranges.
 				clientStreamSettings.Fragment = &FragmentConfig{
-					Packets:  fragPackets,
-					Length:   "1-3",
-					Interval: "1-5",
+					Packets:  "1-3",
+					Length:   fragLength,
+					Interval: fragInterval,
 				}
 			default: // "default" or custom
 				clientStreamSettings.Fragment = &FragmentConfig{
@@ -1427,6 +1444,16 @@ func CleanXrayConfigForV2Ray(configJSON []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// Surface the silent feature stripping that the legacy V2Ray core forces.
+	// REALITY/fragment/ECH are Xray-only; if they are present and the admin
+	// selected the V2Ray core, the connection will be downgraded or dropped, so
+	// warn loudly and recommend switching to xray or sing-box for stable,
+	// high-speed connections.
+	raw := string(configJSON)
+	if strings.Contains(raw, "reality") || strings.Contains(raw, "fragment") || strings.Contains(raw, "\"ech\"") {
+		logger.Warn("Compiler", "Legacy V2Ray core selected: REALITY/fragment/ECH are not supported and are being stripped from the config. For stable, high-speed connections set the core to 'xray' or 'sing-box'.")
+	}
+
 	cleanMapForV2Ray(m)
 
 	return json.MarshalIndent(m, "", "  ")
@@ -1501,4 +1528,3 @@ func RandomizeCase(domain string) string {
 	}
 	return result.String()
 }
-

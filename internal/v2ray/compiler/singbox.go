@@ -12,15 +12,15 @@ import (
 
 // SingBoxInbound represents a Sing-Box inbound configuration
 type SingBoxInbound struct {
-	Type       string                 `json:"type"`
-	Tag        string                 `json:"tag"`
-	Listen     string                 `json:"listen,omitempty"`
-	ListenPort int                    `json:"listen_port"`
-	Users      []SingBoxUser          `json:"users,omitempty"`
-	TLS        *SingBoxInboundTLS     `json:"tls,omitempty"`
-	Transport  *SingBoxTransport      `json:"transport,omitempty"`
-	Method     string                 `json:"method,omitempty"`
-	Password   string                 `json:"password,omitempty"`
+	Type       string             `json:"type"`
+	Tag        string             `json:"tag"`
+	Listen     string             `json:"listen,omitempty"`
+	ListenPort int                `json:"listen_port"`
+	Users      []SingBoxUser      `json:"users,omitempty"`
+	TLS        *SingBoxInboundTLS `json:"tls,omitempty"`
+	Transport  *SingBoxTransport  `json:"transport,omitempty"`
+	Method     string             `json:"method,omitempty"`
+	Password   string             `json:"password,omitempty"`
 }
 
 type SingBoxUser struct {
@@ -30,8 +30,8 @@ type SingBoxUser struct {
 }
 
 type SingBoxInboundTLS struct {
-	Enabled    bool                  `json:"enabled"`
-	ServerName string                `json:"server_name,omitempty"`
+	Enabled    bool                   `json:"enabled"`
+	ServerName string                 `json:"server_name,omitempty"`
 	Reality    *SingBoxInboundReality `json:"reality,omitempty"`
 }
 
@@ -54,21 +54,21 @@ type SingBoxTransport struct {
 }
 
 type SingBoxOutbound struct {
-	Type       string             `json:"type"`
-	Tag        string             `json:"tag"`
-	Server     string             `json:"server,omitempty"`
-	ServerPort int                `json:"server_port,omitempty"`
-	UUID       string             `json:"uuid,omitempty"`
-	Password   string             `json:"password,omitempty"`
-	Security   string             `json:"security,omitempty"`
-	Flow       string             `json:"flow,omitempty"`
+	Type       string              `json:"type"`
+	Tag        string              `json:"tag"`
+	Server     string              `json:"server,omitempty"`
+	ServerPort int                 `json:"server_port,omitempty"`
+	UUID       string              `json:"uuid,omitempty"`
+	Password   string              `json:"password,omitempty"`
+	Security   string              `json:"security,omitempty"`
+	Flow       string              `json:"flow,omitempty"`
 	TLS        *SingBoxOutboundTLS `json:"tls,omitempty"`
-	Transport  *SingBoxTransport  `json:"transport,omitempty"`
-	Multiplex  *SingBoxMultiplex  `json:"multiplex,omitempty"`
-	Method     string             `json:"method,omitempty"`
-	Outbounds  []string           `json:"outbounds,omitempty"` // For urltest / load balancer
-	URL        string             `json:"url,omitempty"`       // For urltest
-	Interval   string             `json:"interval,omitempty"`  // For urltest
+	Transport  *SingBoxTransport   `json:"transport,omitempty"`
+	Multiplex  *SingBoxMultiplex   `json:"multiplex,omitempty"`
+	Method     string              `json:"method,omitempty"`
+	Outbounds  []string            `json:"outbounds,omitempty"` // For urltest / load balancer
+	URL        string              `json:"url,omitempty"`       // For urltest
+	Interval   string              `json:"interval,omitempty"`  // For urltest
 }
 
 type SingBoxPadding struct {
@@ -78,13 +78,13 @@ type SingBoxPadding struct {
 }
 
 type SingBoxOutboundTLS struct {
-	Enabled    bool                `json:"enabled"`
-	ServerName string              `json:"server_name,omitempty"`
-	Insecure   bool                `json:"insecure,omitempty"`
-	Utls       *SingBoxUtls        `json:"utls,omitempty"`
-	Reality    *SingBoxOutReality  `json:"reality,omitempty"`
-	Fragment   *SingBoxFragment    `json:"fragment,omitempty"`
-	Padding    *SingBoxPadding     `json:"padding,omitempty"`
+	Enabled    bool               `json:"enabled"`
+	ServerName string             `json:"server_name,omitempty"`
+	Insecure   bool               `json:"insecure,omitempty"`
+	Utls       *SingBoxUtls       `json:"utls,omitempty"`
+	Reality    *SingBoxOutReality `json:"reality,omitempty"`
+	Fragment   *SingBoxFragment   `json:"fragment,omitempty"`
+	Padding    *SingBoxPadding    `json:"padding,omitempty"`
 }
 
 type SingBoxFragment struct {
@@ -124,9 +124,9 @@ type SingBoxRoute struct {
 }
 
 type SingBoxDNSServer struct {
-	Tag     string   `json:"tag"`
-	Address string   `json:"address"`
-	Detour  string   `json:"detour,omitempty"`
+	Tag     string `json:"tag"`
+	Address string `json:"address"`
+	Detour  string `json:"detour,omitempty"`
 }
 
 type SingBoxDNSRule struct {
@@ -685,18 +685,14 @@ func CompileSingBoxOutbound(activeConfig models.V2RayClientConfig, evasionEnable
 					}
 				}
 
-				var sizeVal, sleepVal string
-				switch fragMode {
-				case "domain":
-					sizeVal = "1-5"
-					sleepVal = "5-15"
-				case "random":
-					sizeVal = "1-3"
-					sleepVal = "1-5"
-				default:
-					sizeVal = fragLength
-					sleepVal = fragInterval
-				}
+				// Stable, admin-configurable ranges for every fragment mode.
+				// Micro-chunk sizes (e.g. 1-5 bytes) trigger TCP reassembly resets
+				// and upstream connection drops, so all modes now honor
+				// fragment_length / fragment_interval (defaults "100-200" / "10-20").
+				// fragMode is retained for future per-mode tuning.
+				_ = fragMode
+				sizeVal := fragLength
+				sleepVal := fragInterval
 
 				tlsConfig.Fragment = &SingBoxFragment{
 					Enabled: true,
