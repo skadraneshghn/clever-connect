@@ -94,17 +94,27 @@ func PresignDownloadRedirect(ctx context.Context, key, filename string, lifetime
 // MaterializeForUpload guarantees a local-readable copy of a file for upload
 // pipelines (e.g. the Telegram MTProto uploader) that can only read from disk.
 //
-// Lookup strategy (first match wins):
+// Lookup strategy (strictly ordered, no fall-through between mismatched branches):
+//
 //  1. File still exists on local disk → returned as-is with a no-op cleanup.
-//  2. Registry record found by exact file_path → stream from S3 into a temp file.
-//  3. Basename of path matches a known S3 key or checksum in the registry
-//     (happens when the stateless leecher queued the Telegram job with the
-//     BLAKE3 checksum as the filename after removing the real local copy).
-//  4. Basename looks like a hex string → try fetching it directly from S3 as a
-//     key (last-resort for paths whose filename IS the S3 object key).
+//
+//  2a. Registry record found by exact file_path AND s3_key is set
+//      → stream from S3 into a temp file.
+//
+//  2b. Registry record found by exact file_path BUT s3_key is EMPTY
+//      → S3 upload for this file has not yet completed (or previously failed).
+//      The file is also not on disk.  Return an actionable error immediately;
+//      do NOT fall through to basename guessing (which would 404 on S3).
+//
+//  3.  No registry record found by file_path at all.
+//      Try the path basename as an alternative S3 key / checksum lookup —
+//      handles the stateless-leecher flow where the Telegram job was queued
+//      with a hash-derived filename after the real local copy was removed.
+//
+//  4.  Last resort: basename looks like a hex-encoded key → fetch directly
+//      from S3 without a registry record (orphaned reference).
 //
 // The caller MUST invoke cleanup() to remove any materialised temp file once done.
-// Returns an error when the file is neither on disk nor reachable via S3.
 func MaterializeForUpload(absPath string) (localPath string, cleanup func(), err error) {
 	if absPath == "" {
 		return "", nil, fmt.Errorf("empty path")
@@ -120,41 +130,44 @@ func MaterializeForUpload(absPath string) (localPath string, cleanup func(), err
 
 	// 2. Look up the registry by exact file_path.
 	reg, ok := LookupRegistryByPath(absPath)
+	if ok {
+		// 2a. S3 key is set — stream from object storage.
+		if IsS3Stored(reg) {
+			return materializeFromS3(reg.S3Key, absPath)
+		}
+		// 2b. Record found but no S3 key.  The file is NOT on disk either.
+		//     The S3 upload is either still in progress or previously failed.
+		//     Return immediately with a clear, retryable error — do NOT fall
+		//     through to the basename-as-key stages below, which would make a
+		//     spurious S3 request that always returns 404.
+		return "", nil, fmt.Errorf(
+			"file registered but S3 upload not yet complete for %s — retry later", absPath)
+	}
 
-	// 3. If not found by path, try the basename as an S3 key or checksum.
-	//    This handles the stateless-leecher flow where the Telegram job was
-	//    queued with a path like /downloads/<checksum> after the real file
-	//    was removed.
-	if !ok || !IsS3Stored(reg) {
-		basename := filepath.Base(absPath)
-		if basename != "" && basename != "." {
-			// Try s3_key column first (exact match).
-			var candidate models.FileRegistry
-			if e := db.DB.Where("s3_key = ?", basename).First(&candidate).Error; e == nil && candidate.S3Key != "" {
-				reg = &candidate
-				ok = true
-			} else if e := db.DB.Where("checksum = ?", basename).First(&candidate).Error; e == nil && candidate.S3Key != "" {
-				// Try checksum column (BLAKE3 hex).
-				reg = &candidate
-				ok = true
-			}
+	// 3. No record found by file_path. Try the basename as an S3 key or
+	//    BLAKE3 checksum (handles the case where the Telegram job was queued
+	//    with a hash-derived filename like /downloads/<checksum>).
+	basename := filepath.Base(absPath)
+	if basename != "" && basename != "." {
+		var candidate models.FileRegistry
+		if e := db.DB.Where("s3_key = ?", basename).First(&candidate).Error; e == nil && candidate.S3Key != "" {
+			logger.Info("FileCore", "Materialized via s3_key basename match",
+				"basename", basename, "s3_key", candidate.S3Key)
+			return materializeFromS3(candidate.S3Key, absPath)
+		}
+		if e := db.DB.Where("checksum = ?", basename).First(&candidate).Error; e == nil && candidate.S3Key != "" {
+			logger.Info("FileCore", "Materialized via checksum basename match",
+				"basename", basename, "s3_key", candidate.S3Key)
+			return materializeFromS3(candidate.S3Key, absPath)
 		}
 	}
 
-	// 4. If we now have an S3-backed record, stream it into a temp file.
-	if ok && IsS3Stored(reg) {
-		return materializeFromS3(reg.S3Key, absPath)
-	}
-
-	// 5. Last resort: if the basename looks like a hex key, fetch it from S3
-	//    directly without a registry record (e.g. orphaned reference).
-	if IsS3Enabled() {
-		basename := filepath.Base(absPath)
-		if isHexKey(basename) {
-			logger.Warn("FileCore", "Materializing from S3 by raw key (no registry record)",
-				"key", basename, "path", absPath)
-			return materializeFromS3(basename, absPath)
-		}
+	// 4. Last resort: basename looks like a hex-encoded S3 key — fetch
+	//    directly from object storage (orphaned reference with no DB record).
+	if IsS3Enabled() && isHexKey(basename) {
+		logger.Warn("FileCore", "Materializing from S3 by raw key (no registry record)",
+			"key", basename, "path", absPath)
+		return materializeFromS3(basename, absPath)
 	}
 
 	return "", nil, fmt.Errorf("file not found locally and not archived in S3: %s", absPath)
@@ -200,7 +213,7 @@ func materializeFromS3(s3Key, refPath string) (string, func(), error) {
 
 // isHexKey reports whether s looks like a lowercase hex-encoded hash that
 // could be a valid S3 object key (BLAKE3 checksum: exactly 64 chars, or any
-// multiple-of-2 run of [0-9a-f]).
+// even-length run of [0-9a-f] ≥ 16 chars).
 func isHexKey(s string) bool {
 	if len(s) < 16 || len(s)%2 != 0 {
 		return false
@@ -212,3 +225,4 @@ func isHexKey(s string) bool {
 	}
 	return true
 }
+
