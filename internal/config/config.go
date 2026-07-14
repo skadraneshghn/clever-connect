@@ -45,6 +45,16 @@ type Config struct {
 	CloudflareClientSecret string
 	CloudflareRedirectURL  string
 	CloudflareScopes       []string
+
+	// S3-Compatible Object Storage (Clever Cloud Cellar)
+	// When all three connection values are present, S3 storage is enabled and
+	// fetched files are uploaded to / streamed from the object store.
+	S3Enabled   bool
+	S3Host      string // e.g. cellar-fr-north-hds-c1.services.clever-cloud.com
+	S3KeyID     string
+	S3KeySecret string
+	S3Bucket    string // bucket name (auto-created on boot if missing)
+	S3Region    string // SigV4 signing region (default "us-east-1")
 }
 
 func LoadConfig() *Config {
@@ -116,7 +126,17 @@ func LoadConfig() *Config {
 		CloudflareClientSecret: getEnv("CLOUDFLARE_CLIENT_SECRET", ""),
 		CloudflareRedirectURL:  getEnv("CLOUDFLARE_REDIRECT_URL", ""),
 		CloudflareScopes:       parseScopes(getEnv("CLOUDFLARE_SCOPES", "account.read,zone.read,zone.write,workers.read,workers.write")),
+
+		// S3-Compatible Object Storage (Clever Cloud Cellar)
+		S3Host:      strings.TrimSpace(os.Getenv("CELLAR_ADDON_HOST")),
+		S3KeyID:     strings.TrimSpace(os.Getenv("CELLAR_ADDON_KEY_ID")),
+		S3KeySecret: os.Getenv("CELLAR_ADDON_KEY_SECRET"),
+		S3Bucket:    getEnv("CELLAR_ADDON_BUCKET", "clever-connect"),
+		S3Region:    getEnv("CELLAR_ADDON_REGION", "us-east-1"),
 	}
+
+	// S3 is considered enabled only when the full credential triple is present
+	cfg.S3Enabled = cfg.S3Host != "" && cfg.S3KeyID != "" && cfg.S3KeySecret != ""
 
 	// Automatic parsing of database URIs (e.g. from Clever Cloud MySQL addon)
 	mysqlURI := os.Getenv("MYSQL_ADDON_URI")

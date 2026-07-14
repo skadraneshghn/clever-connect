@@ -432,7 +432,22 @@ func (h *FileHandler) StreamOrDownload(c *gin.Context) {
 		}
 	}
 
-	// 2. Fall back to standard disk file streaming (either non-torrent file, or fully completed torrent file)
+	// 2. If the file is mirrored in S3 object storage, stream it straight from
+	// there with HTTP Range passthrough (sub-second seeking, zero disk I/O).
+	// This is the fast path on Clever Cloud where local disk is ephemeral.
+	if reg, ok := filecore.LookupRegistryByPath(safePath); ok && filecore.IsS3Stored(reg) {
+		disposition := ""
+		if c.Query("download") == "true" {
+			disposition = `attachment; filename="` + filepath.Base(safePath) + `"`
+		}
+		if filecore.StreamS3Object(c.Request.Context(), c.Writer, reg.S3Key,
+			c.GetHeader("Range"), reg.MimeType, disposition) {
+			return
+		}
+		// S3 fetch failed — fall through to local disk below.
+	}
+
+	// 3. Fall back to standard disk file streaming (either non-torrent file, or fully completed torrent file)
 	file, err := os.Open(safePath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
@@ -457,6 +472,8 @@ func (h *FileHandler) StreamOrDownload(c *gin.Context) {
 
 // RawDownload handles GET /api/files/download
 // It serves the file aggressively from disk directly without any stream mechanisms (no HTTP Range support, no torrent reader readahead, etc.)
+// When the file is mirrored to S3, it 302-redirects to a short-lived presigned
+// URL so the client downloads directly from Cellar, fully offloading the server.
 func (h *FileHandler) RawDownload(c *gin.Context) {
 	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
 		return
@@ -466,6 +483,16 @@ func (h *FileHandler) RawDownload(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
+	}
+
+	// Fast path: redirect straight to a presigned S3 URL when available.
+	if reg, ok := filecore.LookupRegistryByPath(safePath); ok && filecore.IsS3Stored(reg) {
+		baseName := filepath.Base(safePath)
+		if url := filecore.PresignDownloadRedirect(c.Request.Context(), reg.S3Key, baseName, time.Hour); url != "" {
+			c.Redirect(http.StatusFound, url)
+			return
+		}
+		// Presign failed — fall through to local disk below.
 	}
 
 	file, err := os.Open(safePath)

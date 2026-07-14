@@ -18,6 +18,49 @@ import (
 	"lukechampine.com/blake3"
 )
 
+// s3UploadSem bounds the number of concurrent parallel S3 multipart uploads to
+// avoid flooding the Cellar endpoint when a large multi-file torrent completes.
+// The semaphore is generous (32) so throughput stays high while protecting the
+// remote store and the container's memory.
+var s3UploadSem = make(chan struct{}, 32)
+
+// scheduleS3Upload pushes a local file into object storage asynchronously using
+// a bounded worker pool. The object is keyed by its BLAKE3 checksum, which makes
+// deduplication free: identical content maps to the same key, so duplicate
+// downloads never re-upload. The registry record's S3Key is set once the upload
+// lands, at which point the streaming handler serves straight from S3.
+//
+// Failures are logged but never fatal: the local copy remains registered and
+// streaming transparently falls back to disk until a retry succeeds.
+func scheduleS3Upload(regID uint, checksum, mimeType, localPath string) {
+	if !IsS3Enabled() || checksum == "" {
+		return
+	}
+	go func() {
+		// Acquire a slot — may block briefly if many uploads are in flight,
+		// which naturally backpressures the spawning goroutine.
+		s3UploadSem <- struct{}{}
+		defer func() { <-s3UploadSem }()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		if _, err := UploadFileToS3(ctx, checksum, mimeType, localPath); err != nil {
+			logger.Error("FileCore", "S3 upload failed — local copy remains active",
+				"checksum", checksum, "path", localPath, "error", err)
+			return
+		}
+
+		if err := db.DB.Model(&models.FileRegistry{}).Where("id = ?", regID).
+			Update("s3_key", checksum).Error; err != nil {
+			logger.Error("FileCore", "Failed to persist S3 key in registry", "id", regID, "error", err)
+			return
+		}
+		logger.Info("FileCore", "File pushed to S3 object storage", "checksum", checksum, "path", localPath)
+	}()
+}
+
+
 // GetAbsoluteSavePath resolves any relative or absolute download folder path
 // to ensure it is sandboxed and located inside the File Manager's root folder ("./data/manager")
 func GetAbsoluteSavePath(saveDir string) string {
@@ -152,6 +195,11 @@ func RegisterFile(filePath string, optURL string, optETag string, optTgFileID in
 			return nil, err
 		}
 		logger.Info("FileCore", "Registered new file in database", "checksum", checksum, "path", absPath)
+		// Asynchronously mirror the file into S3 object storage (keyed by
+		// checksum). Dedup is automatic: if the checksum already had an S3
+		// object we never reach this branch. Streaming prefers S3 once the
+		// upload completes and otherwise serves the local copy.
+		scheduleS3Upload(reg.ID, checksum, mimeType, absPath)
 		return &reg, nil
 	}
 
@@ -336,4 +384,39 @@ func CheckDuplicateByTorrentHash(torrentHash string, targetPath string) (bool, s
 
 	logger.Info("FileCore", "Instant Torrent download deduplication", "info_hash", torrentHash, "dest", absTarget)
 	return true, reg.FilePath, nil
+}
+
+// LookupRegistryByPath resolves a sandboxed local path to its FileRegistry
+// record. The streaming handler uses this to decide whether an object is also
+// stored in S3 (and therefore should be served from there for speed).
+//
+// Returns nil (and ok=false) when no record exists for the path.
+func LookupRegistryByPath(absPath string) (*models.FileRegistry, bool) {
+	if absPath == "" {
+		return nil, false
+	}
+	var reg models.FileRegistry
+	if err := db.DB.Where("file_path = ?", absPath).First(&reg).Error; err != nil {
+		return nil, false
+	}
+	return &reg, true
+}
+
+// LookupRegistryByChecksum resolves a BLAKE3 checksum to its registry record.
+func LookupRegistryByChecksum(checksum string) (*models.FileRegistry, bool) {
+	if checksum == "" {
+		return nil, false
+	}
+	var reg models.FileRegistry
+	if err := db.DB.Where("checksum = ?", checksum).First(&reg).Error; err != nil {
+		return nil, false
+	}
+	return &reg, true
+}
+
+// IsS3Stored reports whether a registry record is backed by an S3 object that
+// is available for streaming. It is the authoritative gate the file streaming
+// handler checks before serving from object storage.
+func IsS3Stored(reg *models.FileRegistry) bool {
+	return IsS3Enabled() && reg != nil && reg.S3Key != ""
 }

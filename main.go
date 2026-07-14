@@ -13,6 +13,7 @@ import (
 	"clever-connect/internal/db/pebble"
 	"clever-connect/internal/downloader"
 	"clever-connect/internal/ehcocore"
+	"clever-connect/internal/filecore"
 	"clever-connect/internal/geo"
 	"clever-connect/internal/handlers"
 	"clever-connect/internal/logger"
@@ -53,6 +54,20 @@ func main() {
 	// Initialize Database
 	database := db.InitDB(cfg)
 	_ = database // keep reference
+
+	// Initialize S3-Compatible Object Storage (Clever Cloud Cellar).
+	// Disabled automatically when CELLAR_ADDON_* credentials are absent, in
+	// which case the file system keeps using local disk with no degradation.
+	if cfg.S3Enabled {
+		if err := filecore.InitStorageCore(cfg.S3Host, cfg.S3KeyID, cfg.S3KeySecret, cfg.S3Bucket, cfg.S3Region); err != nil {
+			logger.Error("FileCore", "S3 storage engine failed to initialize — continuing with local disk", "error", err)
+		} else {
+			logger.Info("FileCore", "S3 object storage enabled",
+				"bucket", cfg.S3Bucket, "host", cfg.S3Host)
+		}
+	} else {
+		logger.Info("FileCore", "S3 object storage not configured — using local disk")
+	}
 
 	// Initialize Geo Geolocation & CDN Engine
 	if err := geo.GetEngine().Init("data"); err != nil {

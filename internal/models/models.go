@@ -375,6 +375,7 @@ type FileRegistry struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	Checksum    string    `gorm:"type:varchar(64);uniqueIndex;not null" json:"checksum"`
 	FilePath    string    `gorm:"type:text;not null" json:"file_path"`
+	S3Key       string    `gorm:"type:varchar(255);index" json:"s3_key"`
 	FileSize    int64     `json:"file_size"`
 	MimeType    string    `json:"mime_type"`
 	URL         string    `gorm:"type:text" json:"url"`
