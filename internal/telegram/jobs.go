@@ -139,6 +139,22 @@ func RunTelegramUploadJob(ctx context.Context, job *models.SchedulerJob, logFn f
 		return fmt.Errorf("invalid file path: %w", err)
 	}
 
+	// Preserve the original display name before we possibly swap in a
+	// materialized (S3-sourced) temp copy below.
+	origFileName := filepath.Base(safePath)
+
+	// Materialize a local-readable copy of the file. When the leecher archived
+	// the file to S3 and removed the local copy (stateless), this streams it
+	// back from object storage into a temp file. cleanup removes that temp file.
+	readPath, cleanup, err := filecore.MaterializeForUpload(safePath)
+	if err != nil {
+		return fmt.Errorf("file not available for upload: %w", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	safePath = readPath
+
 	info, err := os.Stat(safePath)
 	if err != nil {
 		return fmt.Errorf("file not found on disk: %w", err)
@@ -178,7 +194,7 @@ func RunTelegramUploadJob(ctx context.Context, job *models.SchedulerJob, logFn f
 		return fmt.Errorf("no target chat ID or admin ID found to send the file to")
 	}
 
-	fileName := filepath.Base(safePath)
+	fileName := origFileName
 	logFn("INFO", fmt.Sprintf("Preparing upload of %s (size %s) to chat %d", fileName, formatFileSize(info.Size()), chatID))
 
 	// Send initial progress text message via the active telebot instance

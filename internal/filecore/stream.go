@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"clever-connect/internal/logger"
@@ -85,4 +87,67 @@ func PresignDownloadRedirect(ctx context.Context, key, filename string, lifetime
 		return ""
 	}
 	return url
+}
+
+// MaterializeForUpload guarantees a local-readable copy of a file for upload
+// pipelines (e.g. the Telegram MTProto uploader) that can only read from disk.
+//
+//   - If the file still exists locally, it is returned as-is with a no-op cleanup.
+//   - Otherwise, if the file is archived in S3 (stateless leecher flow), it is
+//     streamed from object storage into a temp file whose path is returned; the
+//     caller MUST invoke cleanup() to remove it once the upload finishes.
+//
+// The temp file preserves the original file extension so media probing (ffprobe
+// etc.) keeps working. Returns an error when the file is neither on disk nor in
+// S3.
+func MaterializeForUpload(absPath string) (localPath string, cleanup func(), err error) {
+	if absPath == "" {
+		return "", nil, fmt.Errorf("empty path")
+	}
+
+	if info, statErr := os.Stat(absPath); statErr == nil {
+		if info.IsDir() {
+			return "", nil, fmt.Errorf("target is a directory: %s", absPath)
+		}
+		return absPath, func() {}, nil
+	}
+
+	// Local copy missing — fall back to S3 object storage.
+	reg, ok := LookupRegistryByPath(absPath)
+	if !ok || !IsS3Stored(reg) {
+		return "", nil, fmt.Errorf("file not found locally and not archived in S3: %s", absPath)
+	}
+
+	ext := filepath.Ext(absPath)
+	tmp, err := os.CreateTemp("", "s3-upload-*"+ext)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup = func() { _ = os.Remove(tmpPath) }
+
+	ctx, cancel := context.WithTimeout(context.Background(), archiveUploadCtxTimeout)
+	defer cancel()
+
+	out, gErr := GetObject(ctx, reg.S3Key, "")
+	if gErr != nil {
+		tmp.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("S3 fetch failed: %w", gErr)
+	}
+	defer out.Body.Close()
+
+	if _, cErr := io.Copy(tmp, out.Body); cErr != nil {
+		tmp.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("S3 download to temp failed: %w", cErr)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("temp file close failed: %w", err)
+	}
+
+	logger.Info("FileCore", "Materialized file from S3 for upload",
+		"key", reg.S3Key, "temp", tmpPath)
+	return tmpPath, cleanup, nil
 }

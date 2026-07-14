@@ -233,6 +233,28 @@ func (e *Engine) StartJob(jobID string) error {
 
 	// Deduplication pre-check
 	if resolvedFilename != "getfile.php" && resolvedFilename != "downloaded_file" && resolvedFilename != "" {
+		// S3 fast dedup: if this URL was already archived to S3 there is nothing
+		// to download — the object already exists. Mark the job complete and
+		// let the Telegram auto-upload stream it straight from S3.
+		if filecore.IsS3Enabled() {
+			if reg, ok := filecore.LookupRegistryByURL(downloadURL); ok && filecore.IsS3Stored(reg) {
+				logger.Info("Downloader", "HTTP download deduplicated via S3 (no re-download)",
+					"url", downloadURL, "checksum", reg.Checksum)
+				db.DB.Model(&models.LeechJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+					"status":      "completed",
+					"downloaded":  reg.FileSize,
+					"total_bytes": reg.FileSize,
+					"progress":    100.0,
+					"speed":       0.0,
+					"filename":    resolvedFilename,
+				})
+				e.tryQueueTelegramUpload(destPath, jobID, resolvedFilename)
+				cancel()
+				return nil
+			}
+		}
+
+		// Local hardlink dedup (existing behavior): the file is already on disk.
 		if matched, _, err := filecore.CheckDuplicateByURL(downloadURL, destPath); err == nil && matched {
 			logger.Info("Downloader", "HTTP download deduplicated (instant match)", "url", downloadURL, "dest", destPath)
 
@@ -256,17 +278,7 @@ func (e *Engine) StartJob(jobID string) error {
 			_, _ = filecore.RegisterFile(destPath, downloadURL, "", 0, "")
 
 			// Trigger auto-upload to Telegram if enabled
-			var leechCfg models.LeechConfig
-			if err := db.DB.First(&leechCfg).Error; err == nil && leechCfg.AutoUploadToTelegram {
-				absBase, _ := filepath.Abs("./data/manager")
-				relPath := strings.TrimPrefix(destPath, absBase)
-				if relPath == "" {
-					relPath = "/"
-				}
-				if queueFn := getAutoUploadFunc(); queueFn != nil {
-					_ = queueFn(relPath, leechCfg.AutoUploadChatID)
-				}
-			}
+			e.tryQueueTelegramUpload(destPath, jobID, resolvedFilename)
 
 			cancel()
 			return nil
@@ -404,50 +416,81 @@ func (e *Engine) monitorProgress(resp *grab.Response, jobID string, ctx context.
 				"filename":      finalName,
 			})
 
-			// Auto-upload to Telegram if enabled and download succeeded
-			if status == "completed" {
-				absSaveDir := getAbsoluteSavePath(job.SaveDirectory)
-				destPath := filepath.Join(absSaveDir, finalName)
+		// Auto-upload to Telegram if enabled and download succeeded
+		if status == "completed" {
+			absSaveDir := getAbsoluteSavePath(job.SaveDirectory)
+			destPath := filepath.Join(absSaveDir, finalName)
 
-				etag := ""
-				if resp.HTTPResponse != nil {
-					etag = resp.HTTPResponse.Header.Get("ETag")
+			etag := ""
+			if resp.HTTPResponse != nil {
+				etag = resp.HTTPResponse.Header.Get("ETag")
+			}
+
+			// Register + archive. When S3 is enabled the downloaded file is
+			// pushed to object storage synchronously and the local copy is
+			// removed (stateless: the disk never fills up and the file is
+			// permanent in S3 even if the application restarts). The Telegram
+			// auto-upload then streams the file back from S3.
+			if filecore.IsS3Enabled() {
+				if reg, err := filecore.RegisterAndArchiveToS3(destPath, job.URL, etag, 0, ""); err != nil {
+					logger.Error("Downloader", "S3 archive failed — keeping local copy",
+						"path", destPath, "error", err)
+					// Fall back to a plain local registration so the file is
+					// still discoverable/streamable from disk.
+					if _, e2 := filecore.RegisterFile(destPath, job.URL, etag, 0, ""); e2 != nil {
+						logger.Error("Downloader", "Local registration also failed", "path", destPath, "error", e2)
+					}
+				} else if reg != nil {
+					logger.Info("Downloader", "File archived to S3 and local copy removed",
+						"id", jobID, "checksum", reg.Checksum, "size", reg.FileSize)
 				}
-
-				// Register file with FileCore. If duplicate exists, it will delete and hardlink.
+			} else {
 				if _, err := filecore.RegisterFile(destPath, job.URL, etag, 0, ""); err != nil {
 					logger.Error("Downloader", "Failed to register downloaded file in registry", "path", destPath, "error", err)
 				}
-
-				var leechCfg models.LeechConfig
-				if err := db.DB.First(&leechCfg).Error; err == nil && leechCfg.AutoUploadToTelegram {
-
-					// Convert absolute path to relative path within file manager sandbox
-					absBase, _ := filepath.Abs("./data/manager")
-					relPath := strings.TrimPrefix(destPath, absBase)
-					if relPath == "" {
-						relPath = "/"
-					}
-
-					// Use the registered QueueUploadJob callback from the scheduler
-					if queueFn := getAutoUploadFunc(); queueFn != nil {
-						chatID := leechCfg.AutoUploadChatID
-						if err := queueFn(relPath, chatID); err != nil {
-							logger.Error("Downloader", "Failed to queue auto-upload to Telegram",
-								"id", jobID, "file", finalName, "error", err)
-						} else {
-							logger.Info("Downloader", "Auto-upload queued to Telegram",
-								"id", jobID, "file", finalName, "chat_id", chatID)
-						}
-					}
-				}
 			}
+
+			// Queue Telegram auto-upload. When the file is S3-backed (and the
+			// local copy was removed) the upload job fetches it from S3.
+			e.tryQueueTelegramUpload(destPath, jobID, finalName)
+		}
 
 			e.mu.Lock()
 			delete(e.activeJobs, jobID)
 			e.mu.Unlock()
 			return
 		}
+	}
+}
+
+// tryQueueTelegramUpload enqueues a Telegram auto-upload job for a completed
+// download (by file-manager-relative path) when auto-upload is enabled. The
+// upload job transparently fetches the file from S3 when the local copy is no
+// longer present, so this works identically for stateless (S3) and local flows.
+func (e *Engine) tryQueueTelegramUpload(destPath, jobID, finalName string) {
+	var leechCfg models.LeechConfig
+	if err := db.DB.First(&leechCfg).Error; err != nil || !leechCfg.AutoUploadToTelegram {
+		return
+	}
+
+	absBase, _ := filepath.Abs("./data/manager")
+	relPath := strings.TrimPrefix(destPath, absBase)
+	if relPath == "" {
+		relPath = "/"
+	}
+
+	queueFn := getAutoUploadFunc()
+	if queueFn == nil {
+		return
+	}
+
+	chatID := leechCfg.AutoUploadChatID
+	if err := queueFn(relPath, chatID); err != nil {
+		logger.Error("Downloader", "Failed to queue auto-upload to Telegram",
+			"id", jobID, "file", finalName, "error", err)
+	} else {
+		logger.Info("Downloader", "Auto-upload queued to Telegram",
+			"id", jobID, "file", finalName, "chat_id", chatID)
 	}
 }
 

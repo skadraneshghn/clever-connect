@@ -206,6 +206,62 @@ func (h *FileHandler) findActiveTorrentFile(absolutePath string) (*anacrolixTorr
 	return nil, false
 }
 
+// mergeS3VirtualFiles injects S3-backed FileRegistry records into a directory
+// listing as virtual entries. This is what makes the file manager browseable
+// when the stateless leecher stores files only in object storage: even though
+// the local copy was deleted, the file (or the virtual folder leading to it)
+// still shows up here.
+func (h *FileHandler) mergeS3VirtualFiles(safeDir string, virtualFiles map[string]FileItem) {
+	if !filecore.IsS3Enabled() {
+		return
+	}
+
+	prefix := safeDir
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+
+	var records []models.FileRegistry
+	if err := db.DB.Where("s3_key <> '' AND file_path LIKE ?", prefix+"%").
+		Find(&records).Error; err != nil {
+		return
+	}
+
+	for _, rec := range records {
+		rel := strings.TrimPrefix(rec.FilePath, prefix)
+		if rel == "" || rel == rec.FilePath {
+			continue
+		}
+		parts := strings.SplitN(filepath.ToSlash(rel), "/", 2)
+		name := parts[0]
+		if name == "" {
+			continue
+		}
+		// A physical or torrent-virtual entry already wins for this name.
+		if _, exists := virtualFiles[name]; exists {
+			continue
+		}
+		if len(parts) == 1 {
+			// The object lives directly in this directory.
+			virtualFiles[name] = FileItem{
+				Name:      name,
+				IsDir:     false,
+				Size:      rec.FileSize,
+				ModTime:   rec.CreatedAt,
+				Extension: filepath.Ext(name),
+			}
+		} else {
+			// The object lives in a deeper path — expose its top-level folder.
+			virtualFiles[name] = FileItem{
+				Name:    name,
+				IsDir:   true,
+				Size:    0,
+				ModTime: rec.CreatedAt,
+			}
+		}
+	}
+}
+
 // ListDirectory handles GET /api/files/list
 func (h *FileHandler) ListDirectory(c *gin.Context) {
 	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
@@ -299,6 +355,11 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 			}
 		}
 	}
+
+	// Merge S3-backed registry records as virtual entries. Files archived to
+	// S3 by the stateless leecher (local copy removed) still appear here so the
+	// file manager stays fully browsable from object storage.
+	h.mergeS3VirtualFiles(safePath, virtualFiles)
 
 	// Merge virtual files with physical ones
 	for _, vf := range virtualFiles {

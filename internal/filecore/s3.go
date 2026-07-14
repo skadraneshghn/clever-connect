@@ -76,6 +76,15 @@ func InitStorageCore(host, keyID, secret, bucket, region string) error {
 		//   https://<host>/<bucket>/<key>
 		o.BaseEndpoint = aws.String("https://" + host)
 		o.UsePathStyle = true
+		// Cellar (Scality S3) is NOT compatible with the AWS SDK v2 default
+		// trailing-checksum behavior, which sends
+		// "x-amz-content-sha256: STREAMING-UNSIGNED-PAYLOAD-TRAILER" and a CRC32
+		// trailer per part — Cellar rejects this with
+		// "XAmzContentSHA256Mismatch". Disabling automatic request checksum
+		// calculation and response checksum validation reverts the client to
+		// the classic, broadly-compatible signing path.
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	})
 
 	engine = &StorageEngine{

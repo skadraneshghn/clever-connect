@@ -126,7 +126,13 @@ func (h *LeechHandler) ListJobs(c *gin.Context) {
 			absSaveDir := filecore.GetAbsoluteSavePath(jobs[i].SaveDirectory)
 			destPath := filepath.Join(absSaveDir, jobs[i].Filename)
 			if _, err := os.Stat(destPath); os.IsNotExist(err) {
-				jobs[i].FileExists = false
+				// Local copy may have been removed by the stateless S3
+				// archive flow — treat the file as existing if it is in S3.
+				if reg, ok := filecore.LookupRegistryByPath(destPath); ok && filecore.IsS3Stored(reg) {
+					jobs[i].FileExists = true
+				} else {
+					jobs[i].FileExists = false
+				}
 			}
 		}
 	}

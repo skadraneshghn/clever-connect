@@ -248,6 +248,143 @@ func RegisterFile(filePath string, optURL string, optETag string, optTgFileID in
 	return &reg, nil
 }
 
+// archiveUploadCtxTimeout gives large files plenty of room to finish a parallel
+// multipart upload while still bounding runaway transfers.
+const archiveUploadCtxTimeout = 30 * time.Minute
+
+// RegisterAndArchiveToS3 is the stateless leecher pipeline: it pushes a
+// just-downloaded local file into S3 (parallel multipart, synchronous), records
+// the file metadata in the database with its S3 key, and then removes the
+// local copy so the container's ephemeral disk never fills up.
+//
+// S3 is the single source of truth: after this returns successfully the file
+// persists in object storage even if the application restarts, and every
+// later access (streaming, download, Telegram auto-upload) reads it from S3.
+//
+// Deduplication is checksum-based: if the content already lives in S3 the
+// upload is skipped entirely and only the redundant local copy is removed.
+// On S3 failure the local file is preserved as a fallback and the error is
+// returned so the caller can retry without losing data.
+//
+// The returned record always has S3Key set on success (reg.S3Key != "").
+func RegisterAndArchiveToS3(absPath, optURL, optETag string, optTgFileID int64, optTorrentHash string) (*models.FileRegistry, error) {
+	absPath, err := filepath.Abs(absPath)
+	if err != nil {
+		absPath = filepath.Clean(absPath)
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("file not found on disk: %w", err)
+	}
+
+	checksum, err := GetBlake3Checksum(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate checksum: %w", err)
+	}
+
+	mimeType := mime.TypeByExtension(filepath.Ext(absPath))
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	s3Key := checksum
+
+	// Look for an existing record with the same checksum (deduplication).
+	var reg models.FileRegistry
+	findErr := db.DB.Where("checksum = ?", checksum).First(&reg).Error
+
+	if findErr != nil {
+		// New file: create the registry record first (without S3Key) so the
+		// metadata always exists, then push to S3, then mark S3-backed.
+		reg = models.FileRegistry{
+			Checksum:    checksum,
+			FilePath:    absPath,
+			FileSize:    info.Size(),
+			MimeType:    mimeType,
+			URL:         optURL,
+			ETag:        optETag,
+			TgFileID:    optTgFileID,
+			TorrentHash: optTorrentHash,
+			CreatedAt:   time.Now(),
+		}
+		if err := db.DB.Create(&reg).Error; err != nil {
+			// Rare race: another worker created the same checksum. Re-query.
+			if e2 := db.DB.Where("checksum = ?", checksum).First(&reg).Error; e2 != nil {
+				return nil, err
+			}
+			findErr = nil
+		}
+	}
+
+	if findErr == nil {
+		// Duplicate content already registered. Make sure it is archived in S3.
+		if reg.S3Key == "" {
+			ctx, cancel := context.WithTimeout(context.Background(), archiveUploadCtxTimeout)
+			_, upErr := UploadFileToS3(ctx, s3Key, mimeType, absPath)
+			cancel()
+			if upErr != nil {
+				logger.Error("FileCore", "S3 archive upload failed for duplicate — keeping local copy",
+					"checksum", checksum, "path", absPath, "error", upErr)
+				return &reg, upErr
+			}
+			reg.S3Key = s3Key
+			db.DB.Model(&reg).Update("s3_key", s3Key)
+		}
+		// Update optional tags on the existing record if missing.
+		updateRegistryTags(&reg, optURL, optETag, optTgFileID, optTorrentHash)
+	} else {
+		// Newly created record — upload to S3.
+		ctx, cancel := context.WithTimeout(context.Background(), archiveUploadCtxTimeout)
+		_, upErr := UploadFileToS3(ctx, s3Key, mimeType, absPath)
+		cancel()
+		if upErr != nil {
+			logger.Error("FileCore", "S3 archive upload failed — keeping local copy",
+				"checksum", checksum, "path", absPath, "error", upErr)
+			return &reg, upErr
+		}
+		reg.S3Key = s3Key
+		db.DB.Model(&reg).Update("s3_key", s3Key)
+	}
+
+	// S3 now holds the object. Remove the local copy to keep the ephemeral
+	// disk clean (stateless). Also clean up any grab temp artifacts.
+	if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+		logger.Warn("FileCore", "Could not remove local copy after S3 archive",
+			"path", absPath, "error", err)
+	}
+	_ = os.Remove(absPath + ".gtmp")
+
+	logger.Info("FileCore", "File archived to S3 and local copy removed",
+		"checksum", checksum, "s3_key", s3Key, "size", info.Size())
+	return &reg, nil
+}
+
+// updateRegistryTags fills in optional metadata fields on an existing record
+// only when the caller supplied a value the record does not yet have.
+func updateRegistryTags(reg *models.FileRegistry, optURL, optETag string, optTgFileID int64, optTorrentHash string) {
+	updated := false
+	if optURL != "" && reg.URL == "" {
+		reg.URL = optURL
+		updated = true
+	}
+	if optETag != "" && reg.ETag == "" {
+		reg.ETag = optETag
+		updated = true
+	}
+	if optTgFileID != 0 && reg.TgFileID == 0 {
+		reg.TgFileID = optTgFileID
+		updated = true
+	}
+	if optTorrentHash != "" && reg.TorrentHash == "" {
+		reg.TorrentHash = optTorrentHash
+		updated = true
+	}
+	if updated {
+		db.DB.Save(reg)
+	}
+}
+
 // CheckDuplicateByTgID checks if a Telegram document is already registered and on disk.
 // If it exists, it hardlinks the original file to targetPath and returns true.
 func CheckDuplicateByTgID(tgID int64, targetPath string) (bool, string, error) {
@@ -409,6 +546,19 @@ func LookupRegistryByChecksum(checksum string) (*models.FileRegistry, bool) {
 	}
 	var reg models.FileRegistry
 	if err := db.DB.Where("checksum = ?", checksum).First(&reg).Error; err != nil {
+		return nil, false
+	}
+	return &reg, true
+}
+
+// LookupRegistryByURL resolves a source URL to its registry record (if any).
+// Used by the downloader to skip re-downloading files already archived in S3.
+func LookupRegistryByURL(url string) (*models.FileRegistry, bool) {
+	if url == "" {
+		return nil, false
+	}
+	var reg models.FileRegistry
+	if err := db.DB.Where("url = ?", url).First(&reg).Error; err != nil {
 		return nil, false
 	}
 	return &reg, true
