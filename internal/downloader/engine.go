@@ -237,7 +237,7 @@ func (e *Engine) StartJob(jobID string) error {
 		// to download — the object already exists. Mark the job complete and
 		// let the Telegram auto-upload stream it straight from S3.
 		if filecore.IsS3Enabled() {
-			if reg, ok := filecore.LookupRegistryByURL(downloadURL); ok && filecore.IsS3Stored(reg) {
+			if reg, ok := filecore.LookupRegistryByURL(job.URL); ok && filecore.IsS3Stored(reg) {
 				logger.Info("Downloader", "HTTP download deduplicated via S3 (no re-download)",
 					"url", downloadURL, "checksum", reg.Checksum)
 				db.DB.Model(&models.LeechJob{}).Where("id = ?", jobID).Updates(map[string]interface{}{

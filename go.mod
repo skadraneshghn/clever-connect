@@ -3,13 +3,20 @@ module clever-connect
 go 1.26.3
 
 require (
+	github.com/Diniboy1123/connect-ip-go v0.0.0-20260613064811-66cba32d7d33
 	github.com/Ehco1996/ehco v1.1.6
 	github.com/anacrolix/torrent v1.61.0
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
+	github.com/aws/aws-sdk-go-v2 v1.42.1
+	github.com/aws/aws-sdk-go-v2/config v1.32.30
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.29
+	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.22.33
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.1
 	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/cloudflare/cloudflare-go v0.117.0
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/coder/websocket v1.8.14
+	github.com/dunglas/httpsfv v1.0.2
 	github.com/getsentry/sentry-go v0.46.2
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -36,11 +43,13 @@ require (
 	github.com/urfave/cli/v2 v2.27.7
 	github.com/xtls/xray-core v1.260206.0
 	github.com/yinheli/qqwry v0.0.0-20160229183603-f50680010f4a
+	github.com/yosida95/uritemplate/v3 v3.0.2
 	golang.org/x/crypto v0.52.0
 	golang.org/x/image v0.41.0
 	golang.org/x/net v0.55.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.15.0
+	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 	google.golang.org/grpc v1.80.0
 	gopkg.in/telebot.v4 v4.0.0-beta.9
 	gorm.io/driver/mysql v1.6.0
@@ -59,7 +68,6 @@ require (
 	cyphar.com/go-pathrs v0.2.4 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/DataDog/zstd v1.5.7 // indirect
-	github.com/Diniboy1123/connect-ip-go v0.0.0-20260613064811-66cba32d7d33 // indirect
 	github.com/RoaringBitmap/roaring v1.2.3 // indirect
 	github.com/STARRY-S/zip v0.2.3 // indirect
 	github.com/ajg/form v1.5.1 // indirect
@@ -89,12 +97,8 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/anytls/sing-anytls v0.0.11 // indirect
 	github.com/apernet/quic-go v0.57.2-0.20260111184307-eec823306178 // indirect
-	github.com/aws/aws-sdk-go-v2 v1.42.1 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.14 // indirect
-	github.com/aws/aws-sdk-go-v2/config v1.32.30 // indirect
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.29 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.30 // indirect
-	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.22.33 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.30 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.30 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.31 // indirect
@@ -102,7 +106,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.23 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.30 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.31 // indirect
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.4.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.32.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.37.1 // indirect
@@ -151,7 +154,6 @@ require (
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
-	github.com/dunglas/httpsfv v1.0.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.9.1 // indirect
 	github.com/edsrzf/mmap-go v1.1.0 // indirect
@@ -395,7 +397,6 @@ require (
 	github.com/xrash/smetrics v0.0.0-20250705151800-55b8f293f342 // indirect
 	github.com/xtls/reality v0.0.0-20251116175510-cd53f7d50237 // indirect
 	github.com/yinheli/mahonia v0.0.0-20131226213531-0eef680515cc // indirect
-	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
@@ -421,7 +422,6 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260523011958-0a33c5d7ca68 // indirect
