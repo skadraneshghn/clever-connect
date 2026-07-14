@@ -2,6 +2,7 @@ package filecore
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"strings"
@@ -13,8 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	"github.com/aws/smithy-go/middleware"
 )
 
 // StorageEngine wraps a high-performance S3-compatible client and a presign
@@ -34,13 +33,32 @@ type StorageEngine struct {
 // is not configured, which makes IsS3Enabled() trivially cheap.
 var engine *StorageEngine
 
-// InitStorageCore bootstraps the S3-compatible object storage connection.
+// InitStorageCore bootstraps the S3-compatible object storage connection tuned
+// for Clever Cloud Cellar (Scality S3 / Ceph RGW family).
 //
-// It configures a tuned HTTP transport (large idle-connection pool, HTTP/2
-// enabled by the Go net/http default) to prevent socket starvation under
-// heavy parallel multipart traffic, points the client at the custom Cellar
-// endpoint with path-style addressing, and verifies (auto-creates) the
-// target bucket so the rest of the system can upload immediately.
+// # Why HTTP/1.1 only?
+//
+// Cellar verifies x-amz-content-sha256 on every UploadPart by computing the
+// SHA256 of the raw received bytes and comparing against the header value.
+// When the connection uses HTTP/2, the Go runtime frames the body in H2 DATA
+// chunks whose byte boundaries differ from the raw content, causing the
+// server-side SHA256 to diverge from the SDK-computed value → 400
+// XAmzContentSHA256Mismatch.  HTTP/1.1 with Content-Length sends the exact
+// bytes the SDK hashed, eliminating the mismatch permanently.
+//
+// # Why NOT UNSIGNED-PAYLOAD?
+//
+// UNSIGNED-PAYLOAD (x-amz-content-sha256: UNSIGNED-PAYLOAD) is supported by
+// Scality / Cellar only for pre-signed URLs.  For SigV4-authenticated
+// UploadPart over HTTPS it is ignored: the server still verifies the actual
+// SHA256, compares it against the literal string "UNSIGNED-PAYLOAD", and
+// returns XAmzContentSHA256Mismatch.
+//
+// # Why RequestChecksumCalculation = WhenRequired?
+//
+// AWS SDK v2 ≥ v1.36 appends optional CRC32/CRC64 "flexible checksum" trailers
+// by default.  Cellar rejects these unknown trailers with a 400 error.
+// Setting WhenRequired suppresses them for all operations.
 //
 // This function MUST be called after the database has been initialized.
 func InitStorageCore(host, keyID, secret, bucket, region string) error {
@@ -49,18 +67,29 @@ func InitStorageCore(host, keyID, secret, bucket, region string) error {
 		return nil
 	}
 
-	// Optimized transport: a generous keep-alive connection pool keeps parallel
-	// multipart part uploads from churning TCP connections to the Cellar host.
+	// ─── HTTP/1.1-only transport ───────────────────────────────────────────
+	// Force HTTP/1.1 by advertising only "http/1.1" in the TLS ALPN extension.
+	// This prevents the TLS handshake from negotiating HTTP/2 even if Cellar
+	// advertises h2 support.  HTTP/1.1 with Content-Length sends bytes exactly
+	// as the SDK hashed them, satisfying Cellar's SHA256 verification.
+	//
+	// Connection pooling settings prevent socket starvation under the parallel
+	// multipart upload workers (concurrency × parts in flight at once).
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
-			MaxIdleConns:          500,
-			MaxIdleConnsPerHost:   100,
+			MaxIdleConns:          200,
+			MaxIdleConnsPerHost:   50,
 			MaxConnsPerHost:       0,
 			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
+			TLSHandshakeTimeout:   15 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			ForceAttemptHTTP2:     true,
+			// Disable HTTP/2 at the TLS-ALPN level — the ONLY reliable way.
+			// Setting ForceAttemptHTTP2: false alone is insufficient when the
+			// server also advertises "h2" in its ALPN; NextProtos overrides it.
+			TLSClientConfig: &tls.Config{
+				NextProtos: []string{"http/1.1"},
+			},
 		},
 	}
 
@@ -74,30 +103,23 @@ func InitStorageCore(host, keyID, secret, bucket, region string) error {
 	}
 
 	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		// Cellar is addressed with path-style URLs:
-		//   https://<host>/<bucket>/<key>
+		// Cellar uses path-style URLs: https://<host>/<bucket>/<key>
 		o.BaseEndpoint = aws.String("https://" + host)
 		o.UsePathStyle = true
-		// Cellar (Scality S3) is NOT compatible with the AWS SDK v2 default
-		// trailing-checksum behavior, which sends
-		// "x-amz-content-sha256: STREAMING-UNSIGNED-PAYLOAD-TRAILER" and a CRC32
-		// trailer per part — Cellar rejects this with
-		// "XAmzContentSHA256Mismatch". Disabling automatic request checksum
-		// calculation and response checksum validation reverts the client to
-		// the classic, broadly-compatible signing path.
+
+		// Suppress the optional CRC32/CRC64 flexible-checksum trailers added
+		// by SDK v2 ≥ v1.36 by default.  Cellar rejects unknown trailing
+		// headers with a 400 error.  WhenRequired means "only send a checksum
+		// when the specific S3 operation explicitly requires one", which covers
+		// zero operations in the normal upload/download flow.
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
-		// Force UNSIGNED-PAYLOAD for every operation. Over HTTPS the SDK
-		// default is to compute a real SHA256 of the body and sign it.  Cellar
-		// (Scality) verifies the same hash on its side but arrives at a
-		// different value when the SDK's internal buffering/chunked-encoding
-		// wrapping is in play, producing XAmzContentSHA256Mismatch on every
-		// multipart UploadPart.  UNSIGNED-PAYLOAD is part of the S3 spec and
-		// instructs the server to skip payload hash verification — accepted by
-		// all S3-compatible stores including Scality Cellar.
-		o.APIOptions = append(o.APIOptions, func(stack *middleware.Stack) error {
-			return v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware(stack)
-		})
+
+		// DO NOT add SwapComputePayloadSHA256ForUnsignedPayloadMiddleware here.
+		// Cellar requires a real SHA256 hash for authenticated UploadPart; it
+		// does not honour UNSIGNED-PAYLOAD for non-presigned requests.
+		// The real SHA256 is computed by the SDK's default ComputePayloadSHA256
+		// middleware and matches the bytes transmitted over HTTP/1.1.
 	})
 
 	engine = &StorageEngine{
@@ -107,18 +129,17 @@ func InitStorageCore(host, keyID, secret, bucket, region string) error {
 	}
 
 	if err := ensureBucket(context.Background(), bucket); err != nil {
-		// Bucket verification failed — log but keep the engine. Individual
-		// uploads will surface the concrete error, and the caller can retry.
 		logger.Error("FileCore", "S3 bucket verification/creation failed — uploads will error until resolved",
 			"bucket", bucket, "error", err)
 		engine = nil
 		return err
 	}
 
-	logger.Info("FileCore", "S3 object storage engine initialized",
+	logger.Info("FileCore", "S3 object storage engine initialized (HTTP/1.1, real-SHA256 mode)",
 		"host", host, "bucket", bucket, "region", region)
 	return nil
 }
+
 
 // ensureBucket verifies the configured bucket exists and creates it on demand.
 // Creating a bucket that already exists is a safe no-op on S3-compatible stores.

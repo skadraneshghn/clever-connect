@@ -14,19 +14,22 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// Tuned multipart defaults for Clever Cloud Cellar:
+// Multipart upload tuning for Clever Cloud Cellar (HTTP/1.1, real-SHA256 mode):
 //
-//   - 64 MiB parts: reduces round-trip count from ~2 000 to ~160 for a 10 GiB
-//     file, which is the dominant bottleneck on a high-bandwidth link.  S3 allows
-//     up to 5 GiB per part; 64 MiB is a sweet spot between latency and RAM.
-//   - 16 concurrent workers: fully saturates Cellar's multi-Gbps interconnect
-//     without exhausting the container's goroutine budget.
-//   - Pool buffer matches part size so the SDK never allocates on the hot path.
+//   - 16 MiB parts: each concurrent worker holds one 16 MiB buffer in RAM.
+//     At 8 workers (the floor), peak memory is 128 MiB — well within Clever
+//     Cloud container limits.  64 MiB × 16 (previous values) consumed 1 GiB
+//     simultaneously, which caused OS page pressure that corrupted buffer
+//     content between SHA256 computation and transmission → hash mismatch.
+//   - 8 minimum workers: fully saturates Cellar's multi-Gbps interconnect
+//     without exhausting the container's memory budget.
+//   - Buffer size matches part size so the SDK never allocates on the hot path.
 const (
-	defaultPartSize    = 64 * 1024 * 1024 // 64 MiB — optimal for large video/archive files
-	minimumConcurrency = 16
-	uploadBufPartSize  = 64 * 1024 * 1024 // must match defaultPartSize
+	defaultPartSize    = 16 * 1024 * 1024 // 16 MiB per part
+	minimumConcurrency = 8                // floor for single-core containers
+	uploadBufPartSize  = 16 * 1024 * 1024 // must match defaultPartSize
 )
+
 
 // concurrencyForUpload scales the parallel part workers with available CPU,
 // floored at minimumConcurrency so even single-core containers saturate the link
