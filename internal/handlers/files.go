@@ -454,6 +454,49 @@ func (h *FileHandler) SearchFiles(c *gin.Context) {
 		return
 	}
 
+	// Also search S3-backed files in the database — these have no local copy so
+	// WalkDir above cannot see them, but their metadata is fully queryable.
+	if filecore.IsS3Enabled() {
+		var s3Records []models.FileRegistry
+		likeQuery := "%" + query + "%"
+		// Search by file_path basename (the filename is part of the path) and
+		// limit to files under the requested directory prefix.
+		dbErr := db.DB.Where(
+			"s3_key <> '' AND file_path LIKE ? AND LOWER(file_path) LIKE LOWER(?)",
+			safePath+"%",
+			"%"+likeQuery,
+		).Limit(limit - len(results)).Find(&s3Records).Error
+		if dbErr == nil {
+			seen := make(map[string]struct{}, len(results))
+			for _, r := range results {
+				if name, ok := r["name"].(string); ok {
+					seen[name] = struct{}{}
+				}
+			}
+			for _, rec := range s3Records {
+				name := filepath.Base(rec.FilePath)
+				if _, already := seen[name]; already {
+					continue
+				}
+				relPath, _ := filepath.Rel(h.rootDir, rec.FilePath)
+				if relPath == "" {
+					relPath = name
+				}
+				relPath = "/" + filepath.ToSlash(relPath)
+				results = append(results, gin.H{
+					"name":      name,
+					"is_dir":    false,
+					"size":      rec.FileSize,
+					"mod_time":  rec.CreatedAt,
+					"extension": filepath.Ext(name),
+					"path":      relPath,
+					"s3_key":    rec.S3Key,
+				})
+				seen[name] = struct{}{}
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, results)
 }
 
@@ -496,16 +539,29 @@ func (h *FileHandler) StreamOrDownload(c *gin.Context) {
 	// 2. If the file is mirrored in S3 object storage, stream it straight from
 	// there with HTTP Range passthrough (sub-second seeking, zero disk I/O).
 	// This is the fast path on Clever Cloud where local disk is ephemeral.
-	if reg, ok := filecore.LookupRegistryByPath(safePath); ok && filecore.IsS3Stored(reg) {
-		disposition := ""
-		if c.Query("download") == "true" {
-			disposition = `attachment; filename="` + filepath.Base(safePath) + `"`
+	if reg, ok := filecore.LookupRegistryByPath(safePath); ok {
+		if filecore.IsS3Stored(reg) {
+			disposition := ""
+			if c.Query("download") == "true" {
+				disposition = `attachment; filename="` + filepath.Base(safePath) + `"`
+			}
+			if filecore.StreamS3Object(c.Request.Context(), c.Writer, reg.S3Key,
+				c.GetHeader("Range"), reg.MimeType, disposition) {
+				return
+			}
+			// S3 fetch failed — fall through to local disk below.
+		} else {
+			// Registry record found but S3 upload not yet complete (upload in
+			// progress or failed). If local copy is also missing, surface a
+			// clear 503 instead of a cryptic 404.
+			if _, statErr := os.Stat(safePath); statErr != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error":   "File is being archived to object storage — please retry in a moment",
+					"details": "The file has been downloaded but its S3 upload has not yet completed.",
+				})
+				return
+			}
 		}
-		if filecore.StreamS3Object(c.Request.Context(), c.Writer, reg.S3Key,
-			c.GetHeader("Range"), reg.MimeType, disposition) {
-			return
-		}
-		// S3 fetch failed — fall through to local disk below.
 	}
 
 	// 3. Fall back to standard disk file streaming (either non-torrent file, or fully completed torrent file)
@@ -751,9 +807,23 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 		return
 	}
 
-	// Register uploaded file (deduplicates automatically if already existing)
-	if _, err := filecore.RegisterFile(safeFilePath, "", "", 0, ""); err != nil {
-		logger.Error("Files", "Failed to register uploaded file in registry", "path", safeFilePath, "error", err)
+	// Register + archive to S3 (synchronous: upload completes before we return
+	// the response, then the local copy is removed). This guarantees the file is
+	// permanently stored in object storage even on ephemeral Clever Cloud disk.
+	if filecore.IsS3Enabled() {
+		if _, err := filecore.RegisterAndArchiveToS3(safeFilePath, "", "", 0, ""); err != nil {
+			logger.Error("Files", "S3 archive failed for uploaded file — keeping local copy",
+				"path", safeFilePath, "error", err)
+			// Fall back: at least register it locally so it is discoverable.
+			if _, regErr := filecore.RegisterFile(safeFilePath, "", "", 0, ""); regErr != nil {
+				logger.Error("Files", "Local registration also failed", "path", safeFilePath, "error", regErr)
+			}
+		}
+	} else {
+		// S3 disabled: register locally (async background push when S3 is re-enabled).
+		if _, err := filecore.RegisterFile(safeFilePath, "", "", 0, ""); err != nil {
+			logger.Error("Files", "Failed to register uploaded file in registry", "path", safeFilePath, "error", err)
+		}
 	}
 
 	logger.Info("Files", "File uploaded successfully", "folder", targetFolder, "filename", filename, "ip", c.ClientIP())

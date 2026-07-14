@@ -14,24 +14,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// Tuned multipart defaults. 5 MiB is the minimum legal S3 part size, which
-// gives the parallel uploader the maximum number of in-flight chunks and
-// therefore the highest bandwidth utilization for small/medium files.
+// Tuned multipart defaults for Clever Cloud Cellar:
+//
+//   - 64 MiB parts: reduces round-trip count from ~2 000 to ~160 for a 10 GiB
+//     file, which is the dominant bottleneck on a high-bandwidth link.  S3 allows
+//     up to 5 GiB per part; 64 MiB is a sweet spot between latency and RAM.
+//   - 16 concurrent workers: fully saturates Cellar's multi-Gbps interconnect
+//     without exhausting the container's goroutine budget.
+//   - Pool buffer matches part size so the SDK never allocates on the hot path.
 const (
-	defaultPartSize     = 5 * 1024 * 1024
-	defaultConcurrency  = 0 // 0 => computed from runtime below
-	minimumConcurrency  = 8
-	uploadBufPartSize   = 5 * 1024 * 1024
+	defaultPartSize    = 64 * 1024 * 1024 // 64 MiB — optimal for large video/archive files
+	minimumConcurrency = 16
+	uploadBufPartSize  = 64 * 1024 * 1024 // must match defaultPartSize
 )
 
 // concurrencyForUpload scales the parallel part workers with available CPU,
-// with a sane floor so even single-core containers stream multiple parts at
-// once (the bottleneck is network, not CPU).
+// floored at minimumConcurrency so even single-core containers saturate the link
+// (the bottleneck is always network, not CPU).
 func concurrencyForUpload() int {
-	c := defaultConcurrency
-	if c <= 0 {
-		c = runtime.GOMAXPROCS(0) * 2
-	}
+	c := runtime.GOMAXPROCS(0) * 4
 	if c < minimumConcurrency {
 		c = minimumConcurrency
 	}
@@ -45,11 +46,9 @@ func (e *StorageEngine) newUploader() *manager.Uploader {
 	return manager.NewUploader(e.S3Client, func(u *manager.Uploader) {
 		u.PartSize = defaultPartSize
 		u.Concurrency = concurrencyForUpload()
-		// Pooled, pre-allocated seekable buffers drastically cut GC pressure
+		// Pre-allocated seekable buffers matching the part size cut GC pressure
 		// and allocation latency while parts are shuffled to S3 in parallel.
 		u.BufferProvider = manager.NewBufferedReadSeekerWriteToPool(uploadBufPartSize)
-		// Leave the checksum default off for Cellar compatibility (some
-		// S3-compatible stores reject trailing checksum algorithms).
 	})
 }
 

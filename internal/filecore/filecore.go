@@ -385,8 +385,10 @@ func updateRegistryTags(reg *models.FileRegistry, optURL, optETag string, optTgF
 	}
 }
 
-// CheckDuplicateByTgID checks if a Telegram document is already registered and on disk.
-// If it exists, it hardlinks the original file to targetPath and returns true.
+// CheckDuplicateByTgID checks if a Telegram document is already registered.
+// When the file only lives in S3 (local copy removed by the stateless leecher)
+// it still returns true so callers can stream it from object storage rather than
+// re-downloading.
 func CheckDuplicateByTgID(tgID int64, targetPath string) (bool, string, error) {
 	if tgID == 0 {
 		return false, "", nil
@@ -398,13 +400,18 @@ func CheckDuplicateByTgID(tgID int64, targetPath string) (bool, string, error) {
 		return false, "", nil
 	}
 
-	// Verify master file exists on disk
-	if _, err := os.Stat(reg.FilePath); err != nil {
-		// File was deleted from disk, clean record or ignore
+	// Fast path: file lives only in S3 (local copy was removed).
+	if _, statErr := os.Stat(reg.FilePath); statErr != nil {
+		if reg.S3Key != "" && IsS3Enabled() {
+			logger.Info("FileCore", "Telegram dedup via S3 (no local copy)",
+				"tg_file_id", tgID, "s3_key", reg.S3Key)
+			return true, reg.S3Key, nil
+		}
+		// File was deleted from disk with no S3 fallback — treat as not found.
 		return false, "", nil
 	}
 
-	// Create hardlink to targetPath
+	// File is on disk — create a hardlink at targetPath.
 	absTarget, err := filepath.Abs(targetPath)
 	if err != nil {
 		absTarget = targetPath
@@ -418,8 +425,10 @@ func CheckDuplicateByTgID(tgID int64, targetPath string) (bool, string, error) {
 	return true, reg.FilePath, nil
 }
 
-// CheckDuplicateByURL checks if a URL is already registered, sends a HEAD request to verify,
-// and if valid, hardlinks the existing file to targetPath to avoid downloading it.
+// CheckDuplicateByURL checks if a URL is already registered, sends a HEAD request to
+// verify, and if valid, deduplicates the download. When the file only lives in S3 (local
+// copy removed by the stateless leecher) it returns true with the S3 key so callers can
+// stream it from object storage rather than re-downloading.
 func CheckDuplicateByURL(urlStr string, targetPath string) (bool, string, error) {
 	if urlStr == "" {
 		return false, "", nil
@@ -432,12 +441,17 @@ func CheckDuplicateByURL(urlStr string, targetPath string) (bool, string, error)
 		return false, "", nil
 	}
 
-	// Verify master file exists on disk
-	if _, err := os.Stat(reg.FilePath); err != nil {
+	// Fast path: file lives only in S3 (local copy was removed).
+	if _, statErr := os.Stat(reg.FilePath); statErr != nil {
+		if reg.S3Key != "" && IsS3Enabled() {
+			logger.Info("FileCore", "HTTP dedup via S3 (no local copy)",
+				"url", urlStr, "s3_key", reg.S3Key)
+			return true, reg.S3Key, nil
+		}
 		return false, "", nil
 	}
 
-	// Perform a fast HEAD request to check ETag or Content-Length
+	// File is on disk — perform a fast HEAD request to confirm it hasn't changed.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -494,7 +508,9 @@ func CheckDuplicateByURL(urlStr string, targetPath string) (bool, string, error)
 	return false, "", nil
 }
 
-// CheckDuplicateByTorrentHash checks if a torrent info hash is already fully registered and completed.
+// CheckDuplicateByTorrentHash checks if a torrent info hash is already fully registered.
+// When the file only lives in S3 (local copy removed) it returns true with the S3 key so
+// callers can stream from object storage rather than re-seeding the torrent.
 func CheckDuplicateByTorrentHash(torrentHash string, targetPath string) (bool, string, error) {
 	if torrentHash == "" {
 		return false, "", nil
@@ -506,10 +522,17 @@ func CheckDuplicateByTorrentHash(torrentHash string, targetPath string) (bool, s
 		return false, "", nil
 	}
 
-	if _, err := os.Stat(reg.FilePath); err != nil {
+	// Fast path: file lives only in S3 (local copy was removed).
+	if _, statErr := os.Stat(reg.FilePath); statErr != nil {
+		if reg.S3Key != "" && IsS3Enabled() {
+			logger.Info("FileCore", "Torrent dedup via S3 (no local copy)",
+				"torrent_hash", torrentHash, "s3_key", reg.S3Key)
+			return true, reg.S3Key, nil
+		}
 		return false, "", nil
 	}
 
+	// File is on disk — create a hardlink at targetPath.
 	absTarget, err := filepath.Abs(targetPath)
 	if err != nil {
 		absTarget = targetPath

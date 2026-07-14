@@ -13,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/smithy-go/middleware"
 )
 
 // StorageEngine wraps a high-performance S3-compatible client and a presign
@@ -85,6 +87,17 @@ func InitStorageCore(host, keyID, secret, bucket, region string) error {
 		// the classic, broadly-compatible signing path.
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		// Force UNSIGNED-PAYLOAD for every operation. Over HTTPS the SDK
+		// default is to compute a real SHA256 of the body and sign it.  Cellar
+		// (Scality) verifies the same hash on its side but arrives at a
+		// different value when the SDK's internal buffering/chunked-encoding
+		// wrapping is in play, producing XAmzContentSHA256Mismatch on every
+		// multipart UploadPart.  UNSIGNED-PAYLOAD is part of the S3 spec and
+		// instructs the server to skip payload hash verification — accepted by
+		// all S3-compatible stores including Scality Cellar.
+		o.APIOptions = append(o.APIOptions, func(stack *middleware.Stack) error {
+			return v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware(stack)
+		})
 	})
 
 	engine = &StorageEngine{
