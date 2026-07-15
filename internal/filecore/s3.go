@@ -46,19 +46,26 @@ var engine *StorageEngine
 // XAmzContentSHA256Mismatch.  HTTP/1.1 with Content-Length sends the exact
 // bytes the SDK hashed, eliminating the mismatch permanently.
 //
-// # Why NOT UNSIGNED-PAYLOAD?
+// # Why RequestChecksumCalculation = WhenRequired (client-level)?
 //
-// UNSIGNED-PAYLOAD (x-amz-content-sha256: UNSIGNED-PAYLOAD) is supported by
-// Scality / Cellar only for pre-signed URLs.  For SigV4-authenticated
-// UploadPart over HTTPS it is ignored: the server still verifies the actual
-// SHA256, compares it against the literal string "UNSIGNED-PAYLOAD", and
-// returns XAmzContentSHA256Mismatch.
+// AWS SDK v2 ≥ v1.36 appends optional CRC32/CRC64 "flexible checksum"
+// trailers by default.  Cellar rejects these unknown trailers with a 400
+// error.  Setting WhenRequired suppresses them for all operations.
 //
-// # Why RequestChecksumCalculation = WhenRequired?
+// NOTE: the manager.Uploader has its OWN RequestChecksumCalculation field
+// (defaults to WhenSupported) that is separate from this client-level
+// setting.  The uploader's field is what controls whether
+// ChecksumAlgorithm=CRC32 is auto-set on UploadPartInput — see
+// uploader.go::newUploader for the matching fix.
 //
-// AWS SDK v2 ≥ v1.36 appends optional CRC32/CRC64 "flexible checksum" trailers
-// by default.  Cellar rejects these unknown trailers with a 400 error.
-// Setting WhenRequired suppresses them for all operations.
+// # Real SHA256, not UNSIGNED-PAYLOAD
+//
+// The S3 operation middleware stack installs dynamicPayloadSigningMiddleware
+// (ID "ComputePayloadHash") which sends "UNSIGNED-PAYLOAD" as
+// x-amz-content-sha256 for HTTPS requests.  Cellar does NOT honour
+// UNSIGNED-PAYLOAD for authenticated (non-presigned) UploadPart over HTTPS
+// and returns XAmzContentSHA256Mismatch.  The uploader swaps that middleware
+// back to ComputePayloadSHA256 (real digest) — see uploader.go::newUploader.
 //
 // This function MUST be called after the database has been initialized.
 func InitStorageCore(host, keyID, secret, bucket, region string) error {
@@ -112,14 +119,13 @@ func InitStorageCore(host, keyID, secret, bucket, region string) error {
 		// headers with a 400 error.  WhenRequired means "only send a checksum
 		// when the specific S3 operation explicitly requires one", which covers
 		// zero operations in the normal upload/download flow.
+		//
+		// NOTE: this is the CLIENT-level setting.  The manager.Uploader has
+		// its own RequestChecksumCalculation field (see uploader.go) that
+		// independently controls whether ChecksumAlgorithm=CRC32 is auto-set.
+		// Both must be WhenRequired to prevent aws-chunked trailing checksums.
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
-
-		// DO NOT add SwapComputePayloadSHA256ForUnsignedPayloadMiddleware here.
-		// Cellar requires a real SHA256 hash for authenticated UploadPart; it
-		// does not honour UNSIGNED-PAYLOAD for non-presigned requests.
-		// The real SHA256 is computed by the SDK's default ComputePayloadSHA256
-		// middleware and matches the bytes transmitted over HTTP/1.1.
 	})
 
 	engine = &StorageEngine{

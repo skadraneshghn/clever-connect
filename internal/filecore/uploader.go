@@ -10,20 +10,48 @@ import (
 	"clever-connect/internal/logger"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	smithymiddleware "github.com/aws/smithy-go/middleware"
 )
 
 // Multipart upload tuning for Clever Cloud Cellar (HTTP/1.1, real-SHA256 mode):
 //
 //   - 16 MiB parts: each concurrent worker holds one 16 MiB buffer in RAM.
 //     At 8 workers (the floor), peak memory is 128 MiB — well within Clever
-//     Cloud container limits.  64 MiB × 16 (previous values) consumed 1 GiB
-//     simultaneously, which caused OS page pressure that corrupted buffer
-//     content between SHA256 computation and transmission → hash mismatch.
+//     Cloud container limits.
 //   - 8 minimum workers: fully saturates Cellar's multi-Gbps interconnect
 //     without exhausting the container's memory budget.
 //   - Buffer size matches part size so the SDK never allocates on the hot path.
+//
+// # Checksum / payload-hash strategy
+//
+// The manager.Uploader struct has its OWN RequestChecksumCalculation field
+// that defaults to WhenSupported — it is independent of the S3 client's
+// RequestChecksumCalculation setting.  When left at WhenSupported, the
+// uploader auto-sets ChecksumAlgorithm=CRC32 on every UploadPartInput.
+//
+// That CRC32 algorithm triggers the SDK's ComputeInputPayloadChecksum
+// middleware to take the *trailing-checksum* path for HTTPS requests:
+// it wraps each part body in aws-chunked content-encoding with a CRC32
+// trailer and sets x-amz-content-sha256 to
+// "STREAMING-UNSIGNED-PAYLOAD-TRAILER".  Cellar / Ceph RGW does NOT support
+// aws-chunked encoding for UploadPart: it computes the SHA256 of the raw
+// received bytes (including the chunked-encoding framing) and compares
+// it against the header value, producing a 400 XAmzContentSHA256Mismatch.
+//
+// Setting RequestChecksumCalculation=WhenRequired on the uploader prevents
+// auto-setting ChecksumAlgorithm, so the trailing-checksum / aws-chunked
+// path is never taken.
+//
+// Separately, the S3 operation middleware stack installs a
+// dynamicPayloadSigningMiddleware (same ID as ComputePayloadSHA256) that
+// sends "UNSIGNED-PAYLOAD" as x-amz-content-sha256 for HTTPS requests.
+// Cellar does not honour UNSIGNED-PAYLOAD for authenticated (non-presigned)
+// UploadPart requests and returns XAmzContentSHA256Mismatch.  We therefore
+// swap that middleware back to the real ComputePayloadSHA256 so the SDK
+// hashes the actual body bytes and sends the true digest.
 const (
 	defaultPartSize    = 16 * 1024 * 1024 // 16 MiB per part
 	minimumConcurrency = 8                // floor for single-core containers
@@ -49,9 +77,42 @@ func (e *StorageEngine) newUploader() *manager.Uploader {
 	return manager.NewUploader(e.S3Client, func(u *manager.Uploader) {
 		u.PartSize = defaultPartSize
 		u.Concurrency = concurrencyForUpload()
+
+		// Prevent the uploader from auto-setting ChecksumAlgorithm=CRC32.
+		// The Uploader struct has its own RequestChecksumCalculation field
+		// (defaults to WhenSupported) that is independent of the S3 client's
+		// setting.  WhenSupported makes the uploader set CRC32 on every part,
+		// which triggers aws-chunked trailing-checksum encoding that Cellar
+		// rejects with XAmzContentSHA256Mismatch.
+		u.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+
 		// Pre-allocated seekable buffers matching the part size cut GC pressure
 		// and allocation latency while parts are shuffled to S3 in parallel.
 		u.BufferProvider = manager.NewBufferedReadSeekerWriteToPool(uploadBufPartSize)
+
+		// Force real SHA256 payload hashing for every S3 operation the uploader
+		// performs (UploadPart, PutObject, CreateMultipartUpload, …).
+		//
+		// The SDK installs dynamicPayloadSigningMiddleware (same middleware ID
+		// as ComputePayloadSHA256) which sends "UNSIGNED-PAYLOAD" as
+		// x-amz-content-sha256 for HTTPS.  Cellar does not honour
+		// UNSIGNED-PAYLOAD for authenticated UploadPart and returns
+		// XAmzContentSHA256Mismatch.  Swapping it back to ComputePayloadSHA256
+		// makes the SDK hash the real body bytes and send the true digest.
+		//
+		// Swap is a no-op for operations that already use ComputePayloadSHA256
+		// (CreateMultipartUpload, CompleteMultipartUpload, AbortMultipartUpload);
+		// it only affects operations where UseDynamicPayloadSigningMiddleware
+		// replaced it (UploadPart, PutObject).
+		u.ClientOptions = append(u.ClientOptions, func(o *s3.Options) {
+			o.APIOptions = append(o.APIOptions, func(stack *smithymiddleware.Stack) error {
+				_, _ = stack.Finalize.Swap(
+					(*v4.ComputePayloadSHA256)(nil).ID(),
+					&v4.ComputePayloadSHA256{},
+				)
+				return nil
+			})
+		})
 	})
 }
 
