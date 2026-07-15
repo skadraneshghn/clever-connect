@@ -12,7 +12,8 @@ export const DashboardPage: React.FC = () => {
     cpu, memory, disk, activeConnectionsCount, clients, bandwidthHistory, totalBandwidth, logs, initWebSocket, disconnectClient, blockClient,
     mem_total_gb, mem_used_gb, disk_total_gb, disk_used_gb, uptime_seconds, app_mem_mb, go_version, os_runtime,
     active_leeches, active_torrents, active_scheds,
-    os_platform, os_kernel, swap_total_gb, swap_used_gb, swap_percent
+    os_platform, os_kernel, swap_total_gb, swap_used_gb, swap_percent,
+    s3_enabled, s3_object_count, s3_total_size_gb
   } = useServerStore();
 
   useEffect(() => {
@@ -136,6 +137,13 @@ export const DashboardPage: React.FC = () => {
                 <tr><td>System RAM</td><td>{mem_used_gb.toFixed(1)} / {mem_total_gb.toFixed(0)} GB</td><td className="balance-val">{memory}%</td></tr>
                 {swap_total_gb > 0 && <tr><td>Swap Memory</td><td>{swap_used_gb.toFixed(1)} / {swap_total_gb.toFixed(0)} GB</td><td className="balance-val">{swap_percent.toFixed(0)}%</td></tr>}
                 <tr><td>System Storage</td><td>{disk_used_gb.toFixed(1)} / {disk_total_gb.toFixed(0)} GB</td><td className="balance-val">{disk}%</td></tr>
+                {s3_enabled && (
+                  <tr>
+                    <td>S3 Object Storage</td>
+                    <td>{s3_object_count} objects · {s3_total_size_gb >= 1 ? `${s3_total_size_gb.toFixed(2)} GB` : `${(s3_total_size_gb * 1024).toFixed(1)} MB`}</td>
+                    <td className="balance-val" style={{ color: '#3b82f6' }}>Active</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

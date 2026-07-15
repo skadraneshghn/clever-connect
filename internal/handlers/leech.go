@@ -119,9 +119,10 @@ func (h *LeechHandler) ListJobs(c *gin.Context) {
 		return
 	}
 
-	// Populate FileExists for completed jobs
+	// Populate FileExists and S3Stored for completed jobs
 	for i := range jobs {
 		jobs[i].FileExists = true
+		jobs[i].S3Stored = false
 		if jobs[i].Status == "completed" {
 			absSaveDir := filecore.GetAbsoluteSavePath(jobs[i].SaveDirectory)
 			destPath := filepath.Join(absSaveDir, jobs[i].Filename)
@@ -130,8 +131,14 @@ func (h *LeechHandler) ListJobs(c *gin.Context) {
 				// archive flow — treat the file as existing if it is in S3.
 				if reg, ok := filecore.LookupRegistryByPath(destPath); ok && filecore.IsS3Stored(reg) {
 					jobs[i].FileExists = true
+					jobs[i].S3Stored = true
 				} else {
 					jobs[i].FileExists = false
+				}
+			} else {
+				// File is on disk — check if it is also archived in S3.
+				if reg, ok := filecore.LookupRegistryByPath(destPath); ok && filecore.IsS3Stored(reg) {
+					jobs[i].S3Stored = true
 				}
 			}
 		}

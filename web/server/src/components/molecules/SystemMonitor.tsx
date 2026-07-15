@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useServerStore } from '../../store/dashboardStore';
-import { FiCpu, FiHardDrive, FiActivity, FiClock, FiActivity as FiNet, FiThermometer, FiChevronDown, FiChevronUp } from 'react-icons/fi';
+import { FiCpu, FiHardDrive, FiActivity, FiClock, FiActivity as FiNet, FiThermometer, FiChevronDown, FiChevronUp, FiCloud } from 'react-icons/fi';
 
 export const SystemMonitor: React.FC = () => {
   const state = useServerStore();
@@ -64,6 +64,14 @@ export const SystemMonitor: React.FC = () => {
   const diskWriteSpeed = state.disk_write_bytes_sec ?? 0;
   const netRecvSpeed = state.net_recv_bytes_sec ?? 0;
   const netSentSpeed = state.net_sent_bytes_sec ?? 0;
+  const s3Enabled = state.s3_enabled ?? false;
+  const s3ObjectCount = state.s3_object_count ?? 0;
+  const s3TotalSizeGB = state.s3_total_size_gb ?? 0;
+
+  const formatS3Size = (gb: number): string => {
+    if (gb >= 1) return `${gb.toFixed(2)} GB`;
+    return `${(gb * 1024).toFixed(1)} MB`;
+  };
 
   return (
     <div className="g-card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -208,6 +216,18 @@ export const SystemMonitor: React.FC = () => {
         </div>
 
       </div>
+
+      {/* S3 Object Storage info */}
+      {s3Enabled && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'rgba(59,130,246,0.04)', border: '1px solid rgba(59,130,246,0.15)', borderRadius: 8, fontSize: 12 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, color: 'var(--color-brand-text)' }}>
+            <FiCloud style={{ color: '#3b82f6' }} /> <strong style={{ color: '#3b82f6' }}>S3 Object Storage</strong>
+          </span>
+          <span style={{ color: 'var(--color-brand-heading)', fontWeight: 600 }}>
+            {s3ObjectCount} objects · {formatS3Size(s3TotalSizeGB)}
+          </span>
+        </div>
+      )}
 
       {/* Hardware Temp & Freq info */}
       <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--color-brand-bg)', border: '1px dashed var(--color-brand-border)', borderRadius: 8, fontSize: 12 }}>

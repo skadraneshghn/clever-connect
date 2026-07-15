@@ -62,6 +62,9 @@ interface ServerState {
   boot_time: number;
   os_platform: string;
   os_kernel: string;
+  s3_enabled: boolean;
+  s3_object_count: number;
+  s3_total_size_gb: number;
 }
 
 export const useServerStore = create<ServerState>((set, get) => {
@@ -99,6 +102,9 @@ export const useServerStore = create<ServerState>((set, get) => {
     boot_time: Date.now() / 1000 - 7200,
     os_platform: 'ubuntu',
     os_kernel: '5.15.0-generic',
+    s3_enabled: false,
+    s3_object_count: 0,
+    s3_total_size_gb: 0,
     clients: [
       { id: '1', username: 'salman_desktop', ip: '82.102.23.45', country: 'Iran', flag: '🇮🇷', protocol: 'VLESS-XTLS', connectedAt: '12:04:12', duration: '02h 35m', uploadSpeed: 2.4, downloadSpeed: 12.5, active: true },
       { id: '2', username: 'john_iphone', ip: '188.45.67.12', country: 'Germany', flag: '🇩🇪', protocol: 'Shadowsocks', connectedAt: '13:10:00', duration: '01h 29m', uploadSpeed: 1.1, downloadSpeed: 5.8, active: true },
@@ -232,7 +238,10 @@ export const useServerStore = create<ServerState>((set, get) => {
                     cpu_temp: data.cpu_temp || state.cpu_temp,
                     boot_time: data.boot_time || state.boot_time,
                     os_platform: data.os_platform || state.os_platform,
-                    os_kernel: data.os_kernel || state.os_kernel
+                    os_kernel: data.os_kernel || state.os_kernel,
+                    s3_enabled: data.s3_enabled || false,
+                    s3_object_count: data.s3_object_count || 0,
+                    s3_total_size_gb: data.s3_total_size_gb || 0
                   };
                 });
               } else if (data.type === 'log') {

@@ -143,6 +143,7 @@ type LeechJob struct {
 	UsePremium    bool      `json:"use_premium" gorm:"default:false"`
 	ErrorMessage  string    `json:"error_message"`
 	FileExists    bool      `gorm:"-" json:"file_exists"`
+	S3Stored      bool      `gorm:"-" json:"s3_stored"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }

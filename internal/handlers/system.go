@@ -14,6 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"clever-connect/internal/db"
+	"clever-connect/internal/filecore"
+	"clever-connect/internal/models"
+
 	"github.com/gin-gonic/gin"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -48,6 +52,9 @@ type SystemStats struct {
 	OSPlatform        string    `json:"os_platform"`
 	OSKernel          string    `json:"os_kernel"`
 	AppMemMB          float64   `json:"app_mem_mb"`
+	S3Enabled         bool      `json:"s3_enabled"`
+	S3ObjectCount     int64     `json:"s3_object_count"`
+	S3TotalSizeGB     float64   `json:"s3_total_size_gb"`
 }
 
 var (
@@ -203,6 +210,18 @@ func collectStats() {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	statsCached.AppMemMB = float64(m.Alloc) / 1024 / 1024
+
+	// 8. S3 object storage info (queried from the FileRegistry — real data)
+	statsCached.S3Enabled = filecore.IsS3Enabled()
+	if filecore.IsS3Enabled() {
+		var count int64
+		var totalSize int64
+		db.DB.Model(&models.FileRegistry{}).Where("s3_key <> ''").Count(&count)
+		db.DB.Model(&models.FileRegistry{}).Where("s3_key <> ''").
+			Select("COALESCE(SUM(file_size), 0)").Scan(&totalSize)
+		statsCached.S3ObjectCount = count
+		statsCached.S3TotalSizeGB = float64(totalSize) / 1024 / 1024 / 1024
+	}
 }
 
 // GetSystemStats handles GET /api/system/stats and returns cached stats instantly

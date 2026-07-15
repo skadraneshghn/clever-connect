@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FiCpu, FiHardDrive, FiActivity, FiClock } from 'react-icons/fi';
+import { FiCpu, FiHardDrive, FiActivity, FiClock, FiCloud } from 'react-icons/fi';
 
 interface Stats {
   cpu_percent: number;
@@ -11,6 +11,9 @@ interface Stats {
   disk_percent: number;
   app_mem_mb: number;
   uptime_seconds: number;
+  s3_enabled?: boolean;
+  s3_object_count?: number;
+  s3_total_size_gb?: number;
 }
 
 export const SystemMonitor: React.FC = () => {
@@ -23,7 +26,10 @@ export const SystemMonitor: React.FC = () => {
     disk_used_gb: 21,
     disk_percent: 17.5,
     app_mem_mb: 6.2,
-    uptime_seconds: 90
+    uptime_seconds: 90,
+    s3_enabled: false,
+    s3_object_count: 0,
+    s3_total_size_gb: 0
   });
   const [loading, setLoading] = useState(true);
 
@@ -95,6 +101,15 @@ export const SystemMonitor: React.FC = () => {
 
   const getStrokeDashoffset = (percent: number) => {
     return circumference - (Math.min(100, Math.max(0, percent)) / 100) * circumference;
+  };
+
+  const s3Enabled = stats.s3_enabled ?? false;
+  const s3ObjectCount = stats.s3_object_count ?? 0;
+  const s3TotalSizeGB = stats.s3_total_size_gb ?? 0;
+
+  const formatS3Size = (gb: number): string => {
+    if (gb >= 1) return `${gb.toFixed(2)} GB`;
+    return `${(gb * 1024).toFixed(1)} MB`;
   };
 
   return (
@@ -240,6 +255,18 @@ export const SystemMonitor: React.FC = () => {
         </div>
 
       </div>
+
+      {/* S3 Object Storage info */}
+      {s3Enabled && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'rgba(59,130,246,0.04)', border: '1px solid rgba(59,130,246,0.15)', borderRadius: 8, fontSize: 12 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, color: 'var(--color-brand-text)' }}>
+            <FiCloud style={{ color: '#3b82f6' }} /> <strong style={{ color: '#3b82f6' }}>S3 Object Storage</strong>
+          </span>
+          <span style={{ color: 'var(--color-brand-heading)', fontWeight: 600 }}>
+            {s3ObjectCount} objects · {formatS3Size(s3TotalSizeGB)}
+          </span>
+        </div>
+      )}
 
       {/* Row with Go App Alloc & Uptime */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, borderTop: '1px solid var(--color-brand-border)', paddingTop: 12 }}>

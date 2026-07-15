@@ -5,7 +5,7 @@ import { showGlobalAlert, showGlobalConfirm } from '../store/dialogStore';
 import { 
 	FiPlay, FiPause, FiTrash2, FiFolder, FiPlus, FiSettings, 
 	FiGlobe, FiCheck, FiX, FiLink, FiDownloadCloud, FiServer,
-	FiChevronLeft, FiFolderPlus, FiInfo, FiDownload
+	FiChevronLeft, FiFolderPlus, FiInfo, FiDownload, FiCloud
 } from 'react-icons/fi';
 
 interface LeechJob {
@@ -21,6 +21,7 @@ interface LeechJob {
 	threads: number;
 	error_message: string;
 	file_exists?: boolean;
+	s3_stored?: boolean;
 	created_at: string;
 }
 
@@ -481,7 +482,7 @@ export const LeechPage: React.FC = () => {
 									}}>
 										<div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
 											<div style={{ color: '#ef4444', fontSize: 13, fontWeight: 'bold' }}>
-												File is missing physically on disk
+												File not found on disk or in S3
 											</div>
 											<div style={{ display: 'flex', gap: 12 }}>
 												<button 
@@ -539,10 +540,19 @@ export const LeechPage: React.FC = () => {
 											textTransform: 'uppercase',
 											background: job.status === 'completed' ? 'rgba(34,197,94,0.1)' : job.status === 'downloading' ? 'rgba(59,130,246,0.1)' : 'rgba(107,114,128,0.1)',
 											color: job.status === 'completed' ? '#22c55e' : job.status === 'downloading' ? '#3b82f6' : '#6b7280'
-										}}>
-											{job.status}
+									}}>
+										{job.status}
+									</span>
+									{job.s3_stored && (
+										<span style={{
+											fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 40,
+											textTransform: 'uppercase', background: 'rgba(59,130,246,0.1)',
+											color: '#3b82f6', display: 'flex', alignItems: 'center', gap: 3
+										}} title="File is archived in S3 Object Storage">
+											<FiCloud size={9} /> S3
 										</span>
-									</div>
+									)}
+								</div>
 									<div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, flexWrap: 'wrap' }}>
 										<span style={{ fontSize: 11, color: 'var(--color-brand-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
 											<FiLink size={11} /> {job.url.length > 55 ? `${job.url.substring(0, 55)}...` : job.url}

@@ -621,6 +621,9 @@ func (h *WSHandler) ServeWS(c *gin.Context) {
 					"active_leeches":       activeLeechCount,
 					"active_torrents":      activeTorrentCount,
 					"active_scheds":        activeSchedulerCount,
+					"s3_enabled":           sysStats.S3Enabled,
+					"s3_object_count":      sysStats.S3ObjectCount,
+					"s3_total_size_gb":     sysStats.S3TotalSizeGB,
 					"soroush_tunnel":       soroush.GetStatus(),
 				}
 			}

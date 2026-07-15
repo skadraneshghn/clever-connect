@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ type FileItem struct {
 	Size      int64     `json:"size"`
 	ModTime   time.Time `json:"mod_time"`
 	Extension string    `json:"extension"`
+	S3Key     string    `json:"s3_key"` // non-empty when the file is archived in S3 object storage
 }
 
 type FileHandler struct {
@@ -249,6 +251,7 @@ func (h *FileHandler) mergeS3VirtualFiles(safeDir string, virtualFiles map[strin
 				Size:      rec.FileSize,
 				ModTime:   rec.CreatedAt,
 				Extension: filepath.Ext(name),
+				S3Key:     rec.S3Key,
 			}
 		} else {
 			// The object lives in a deeper path — expose its top-level folder.
@@ -295,6 +298,30 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 			ModTime:   info.ModTime(),
 			Extension: filepath.Ext(entry.Name()),
 		})
+	}
+
+	// Annotate physical files with their S3 key so the UI can show an
+	// S3-storage badge.  Batch-query the registry for all S3-backed records
+	// whose file_path falls under this directory.
+	if filecore.IsS3Enabled() {
+		prefix := safePath
+		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+			prefix += string(filepath.Separator)
+		}
+		var s3Records []models.FileRegistry
+		db.DB.Where("s3_key <> '' AND file_path LIKE ?", prefix+"%").Find(&s3Records)
+		for _, rec := range s3Records {
+			rel := strings.TrimPrefix(rec.FilePath, prefix)
+			if rel == "" || rel == rec.FilePath || strings.Contains(filepath.ToSlash(rel), "/") {
+				continue // not a direct child or in a subdirectory
+			}
+			for i := range files {
+				if files[i].Name == rel && !files[i].IsDir {
+					files[i].S3Key = rec.S3Key
+					break
+				}
+			}
+		}
 	}
 
 	// Merge in virtual files for active torrents that should be in this folder
@@ -388,13 +415,28 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 
 	diskTotal, diskFree, diskUsed := getDiskInfo(h.rootDir)
 
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"current_path": displayPath,
 		"files":        files,
 		"disk_total":   diskTotal,
 		"disk_free":    diskFree,
 		"disk_used":    diskUsed,
-	})
+		"s3_enabled":   filecore.IsS3Enabled(),
+	}
+
+	// Include S3 bucket usage stats so the file manager UI can show them
+	// alongside local disk info.
+	if filecore.IsS3Enabled() {
+		var s3Count int64
+		var s3Size int64
+		db.DB.Model(&models.FileRegistry{}).Where("s3_key <> ''").Count(&s3Count)
+		db.DB.Model(&models.FileRegistry{}).Where("s3_key <> ''").
+			Select("COALESCE(SUM(file_size), 0)").Scan(&s3Size)
+		response["s3_object_count"] = s3Count
+		response["s3_total_size"] = s3Size
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // SearchFiles handles GET /api/files/search
@@ -768,13 +810,58 @@ func (h *FileHandler) DeleteItem(c *gin.Context) {
 		return
 	}
 
+	// Clean up S3 objects + registry rows for every S3-backed file at or
+	// beneath this path.  This must run BEFORE os.RemoveAll so the registry
+	// rows (keyed by file_path) are still available.
+	h.deleteS3Entries(safePath)
+
 	if err := os.RemoveAll(safePath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete item", "details": err.Error()})
-		return
+		// Local file may already be gone (stateless S3 flow) — that's OK.
+		if !os.IsNotExist(err) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete item", "details": err.Error()})
+			return
+		}
 	}
 
 	logger.Info("Files", "File system item deleted successfully", "path", req.Path, "ip", c.ClientIP())
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Item deleted successfully"})
+}
+
+// deleteS3Entries removes all S3 objects and FileRegistry rows whose
+// file_path equals or is nested under safePath.  Safe to call when S3 is
+// disabled (no-op).
+func (h *FileHandler) deleteS3Entries(safePath string) {
+	if !filecore.IsS3Enabled() {
+		// Even without S3, clean up stale registry rows so they don't
+		// reappear as virtual files in listings.
+		db.DB.Where("file_path = ? OR file_path LIKE ?", safePath, safePath+string(filepath.Separator)+"%").
+			Delete(&models.FileRegistry{})
+		return
+	}
+
+	prefix := safePath
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+
+	var records []models.FileRegistry
+	db.DB.Where("file_path = ? OR file_path LIKE ?", safePath, prefix+"%").Find(&records)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	for _, rec := range records {
+		if rec.S3Key != "" {
+			if err := filecore.DeleteFromS3(ctx, rec.S3Key); err != nil {
+				logger.Warn("Files", "Failed to delete S3 object", "key", rec.S3Key, "error", err)
+			}
+		}
+		db.DB.Unscoped().Delete(&rec)
+	}
+
+	if len(records) > 0 {
+		logger.Info("Files", "S3 objects and registry rows cleaned up", "count", len(records), "path", safePath)
+	}
 }
 
 // UploadFile handles POST /api/files/upload
@@ -916,12 +1003,52 @@ func (h *FileHandler) MoveItem(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create destination parent folder"})
 		return
 	}
+
+	// Update FileRegistry rows so S3-backed files remain findable at their
+	// new path.  S3 objects are keyed by content checksum (not by path), so
+	// only the registry file_path needs updating — no S3 copy/delete.
+	h.relocateS3Entries(safeSrc, safeDst)
+
 	if err := os.Rename(safeSrc, safeDst); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to move item", "details": err.Error()})
-		return
+		// Local file may not exist (stateless S3 flow) — that's OK if the
+		// registry was already updated above.
+		if !os.IsNotExist(err) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to move item", "details": err.Error()})
+			return
+		}
 	}
 	logger.Info("Files", "Item moved/renamed successfully", "src", req.SrcPath, "dst", req.DstPath)
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Item moved successfully"})
+}
+
+// relocateS3Entries updates the file_path of all FileRegistry rows that
+// match safeSrc (exact or nested under it) to the corresponding path under
+// safeDst.  This keeps S3-backed files discoverable after a rename/move.
+func (h *FileHandler) relocateS3Entries(safeSrc, safeDst string) {
+	// Single file — exact match.
+	var reg models.FileRegistry
+	if err := db.DB.Where("file_path = ?", safeSrc).First(&reg).Error; err == nil {
+		reg.FilePath = safeDst
+		db.DB.Model(&reg).Update("file_path", safeDst)
+		return
+	}
+
+	// Directory — update every nested file.
+	prefix := safeSrc
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	var records []models.FileRegistry
+	db.DB.Where("file_path LIKE ?", prefix+"%").Find(&records)
+	dstPrefix := safeDst
+	if !strings.HasSuffix(dstPrefix, string(filepath.Separator)) {
+		dstPrefix += string(filepath.Separator)
+	}
+	for _, rec := range records {
+		rel := strings.TrimPrefix(rec.FilePath, prefix)
+		newPath := dstPrefix + rel
+		db.DB.Model(&models.FileRegistry{}).Where("id = ?", rec.ID).Update("file_path", newPath)
+	}
 }
 
 // CopyItem handles POST /api/files/copy for duplicating items

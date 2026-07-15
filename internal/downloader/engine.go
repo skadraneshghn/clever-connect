@@ -346,6 +346,20 @@ func (e *Engine) DeleteJob(jobID string, deleteFiles bool) {
 			_ = os.Remove(destPath)
 			// Remove temporary grab files too (.grab files)
 			_ = os.Remove(destPath + ".gtmp")
+
+			// Delete the S3 object and clean up the registry row so the
+			// file doesn't reappear as a virtual entry in listings.
+			if reg, ok := filecore.LookupRegistryByPath(destPath); ok {
+				if reg.S3Key != "" {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+					if err := filecore.DeleteFromS3(ctx, reg.S3Key); err != nil {
+						logger.Warn("Downloader", "Failed to delete S3 object on job cleanup",
+							"key", reg.S3Key, "error", err)
+					}
+					cancel()
+				}
+				db.DB.Unscoped().Delete(&reg)
+			}
 		}
 		db.DB.Unscoped().Delete(&job)
 	}

@@ -33,6 +33,7 @@ export interface LeechJob {
   threads: number;
   error_message: string;
   file_exists?: boolean;
+  s3_stored?: boolean;
   created_at: string;
   updated_at: string;
 }

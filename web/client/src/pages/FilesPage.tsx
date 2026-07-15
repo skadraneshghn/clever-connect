@@ -7,7 +7,7 @@ import {
 	FiImage, FiVideo, FiZoomIn, FiZoomOut, FiRotateCw, FiX, FiCheck,
 	FiChevronRight, FiChevronDown, FiScissors, FiCopy, FiClipboard, FiInfo, FiArchive, FiShare2,
 	FiPlay, FiPause, FiMaximize2, FiChevronLeft, FiExternalLink,
-	FiRotateCcw, FiVolume2, FiVolumeX, FiTv, FiMinimize2
+	FiRotateCcw, FiVolume2, FiVolumeX, FiTv, FiMinimize2, FiCloud
 } from 'react-icons/fi';
 import Editor from '@monaco-editor/react';
 
@@ -17,6 +17,7 @@ interface FileItem {
 	size: number;
 	mod_time: string;
 	extension: string;
+	s3_key?: string;
 }
 
 interface ClipboardState {
@@ -671,6 +672,10 @@ export const FilesPage: React.FC = () => {
 	const [diskFree, setDiskFree] = useState<number>(0);
 	const [diskUsed, setDiskUsed] = useState<number>(0);
 
+	const [s3Enabled, setS3Enabled] = useState<boolean>(false);
+	const [s3ObjectCount, setS3ObjectCount] = useState<number>(0);
+	const [s3TotalSize, setS3TotalSize] = useState<number>(0);
+
 	// Lightbox Gallery States
 	const [isLightboxOpen, setIsLightboxOpen] = useState<boolean>(false);
 	const [lightboxIndex, setLightboxIndex] = useState<number>(0);
@@ -772,6 +777,9 @@ export const FilesPage: React.FC = () => {
 				setDiskTotal(data.disk_total || 0);
 				setDiskFree(data.disk_free || 0);
 				setDiskUsed(data.disk_used || 0);
+				setS3Enabled(data.s3_enabled || false);
+				setS3ObjectCount(data.s3_object_count || 0);
+				setS3TotalSize(data.s3_total_size || 0);
 				
 				// Update structural sidebar helper
 				updateFolderTree(data.current_path || '/', data.files || []);
@@ -1515,6 +1523,15 @@ export const FilesPage: React.FC = () => {
 								</span>
 							</div>
 						)}
+						{s3Enabled && (
+							<div style={{ display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--color-brand-border)', paddingLeft: 20 }}>
+								<span style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-brand-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>S3 Object Storage</span>
+								<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
+									<FiCloud size={12} style={{ color: '#3b82f6' }} />
+									{s3ObjectCount} objects · {formatSize(s3TotalSize)}
+								</span>
+							</div>
+						)}
 					</div>
 					
 					{/* Status labels */}
@@ -1680,8 +1697,15 @@ export const FilesPage: React.FC = () => {
 											style={{ position: 'absolute', left: 8, top: 8, cursor: 'pointer', width: 14, height: 14 }}
 										/>
 
-										{/* Visual Icon */}
-										<div style={{ marginTop: 10 }}>{getFileIcon(file)}</div>
+									{/* Visual Icon */}
+									<div style={{ marginTop: 10, position: 'relative' }}>
+										{getFileIcon(file)}
+										{file.s3_key && (
+											<span style={{ position: 'absolute', top: -2, right: -8, display: 'flex', alignItems: 'center', justifyContent: 'center', width: 16, height: 16, borderRadius: '50%', background: '#3b82f6', color: '#fff', fontSize: 8, border: '1px solid var(--color-brand-card)' }} title="Stored in S3 Object Storage">
+												<FiCloud size={8} />
+											</span>
+										)}
+									</div>
 
 										{/* Name and size details */}
 										<div style={{ width: '100%', textAlign: 'center', marginTop: 8 }}>
@@ -1746,10 +1770,15 @@ export const FilesPage: React.FC = () => {
 											<div style={{ display: 'flex', flexShrink: 0 }}>
 												{file.is_dir ? <FiFolder style={{ color: '#eab308', fontSize: 20 }} /> : <FiFile style={{ color: '#64748b', fontSize: 20 }} />}
 											</div>
-											<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-												{file.name}
+										<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-brand-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+											{file.name}
+										</span>
+										{file.s3_key && (
+											<span style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: 9, color: '#3b82f6', fontWeight: 600, background: 'rgba(59,130,246,0.1)', padding: '1px 5px', borderRadius: 4, whiteSpace: 'nowrap', flexShrink: 0 }} title="Stored in S3 Object Storage">
+												<FiCloud size={9} /> S3
 											</span>
-										</div>
+										)}
+									</div>
 
 										<div style={{ display: 'flex', alignItems: 'center', gap: 24, fontSize: 11, color: 'var(--color-brand-text)' }}>
 											<span style={{ width: 80, textAlign: 'right' }}>{file.is_dir ? 'DIR' : formatSize(file.size)}</span>
@@ -1778,8 +1807,13 @@ export const FilesPage: React.FC = () => {
 						{/* Preview Header */}
 						<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--color-brand-border)', paddingBottom: 10, marginBottom: 12 }}>
 							<div>
-								<h3 style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260, whiteSpace: 'nowrap' }}>
+								<h3 style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-brand-heading)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260, whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 5 }}>
 									{previewFile.name}
+									{previewFile.s3_key && (
+										<span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, color: '#3b82f6', fontWeight: 600, fontSize: 10, background: 'rgba(59,130,246,0.1)', padding: '1px 5px', borderRadius: 4, flexShrink: 0 }} title="Stored in S3 Object Storage">
+											<FiCloud size={10} /> S3
+										</span>
+									)}
 								</h3>
 								<span style={{ fontSize: 10, color: 'var(--color-brand-text)' }}>
 									{previewFile.is_dir ? 'Directory Node' : formatSize(previewFile.size)}
@@ -1917,15 +1951,25 @@ export const FilesPage: React.FC = () => {
 													<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>File Format</td>
 													<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{previewFile.extension.toUpperCase()}</td>
 												</tr>
-												<tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
-													<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>File Size</td>
-													<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{formatSize(previewFile.size)}</td>
-												</tr>
+											<tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
+												<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>File Size</td>
+												<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{formatSize(previewFile.size)}</td>
+											</tr>
+											<tr>
+												<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Modified</td>
+												<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{new Date(previewFile.mod_time).toLocaleString()}</td>
+											</tr>
+											{previewFile.s3_key && (
 												<tr>
-													<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Modified</td>
-													<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{new Date(previewFile.mod_time).toLocaleString()}</td>
+													<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Storage</td>
+													<td style={{ padding: '6px 0', textAlign: 'right' }}>
+														<span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#3b82f6', fontWeight: 600, fontSize: 11 }}>
+															<FiCloud size={11} /> S3 Object
+														</span>
+													</td>
 												</tr>
-											</tbody>
+											)}
+										</tbody>
 										</table>
 									</div>
 
@@ -2022,15 +2066,25 @@ export const FilesPage: React.FC = () => {
 													<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Type</td>
 													<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{previewFile.extension.toUpperCase() || 'Binary'}</td>
 												</tr>
-												<tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
-													<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Size</td>
-													<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{formatSize(previewFile.size)}</td>
-												</tr>
+											<tr style={{ borderBottom: '1px solid var(--color-brand-border)' }}>
+												<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Size</td>
+												<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{formatSize(previewFile.size)}</td>
+											</tr>
+											<tr>
+												<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Modified</td>
+												<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{new Date(previewFile.mod_time).toLocaleString()}</td>
+											</tr>
+											{previewFile.s3_key && (
 												<tr>
-													<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Modified</td>
-													<td style={{ padding: '6px 0', textAlign: 'right', color: 'var(--color-brand-heading)' }}>{new Date(previewFile.mod_time).toLocaleString()}</td>
+													<td style={{ padding: '6px 0', color: 'var(--color-brand-text)', fontWeight: 600 }}>Storage</td>
+													<td style={{ padding: '6px 0', textAlign: 'right' }}>
+														<span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#3b82f6', fontWeight: 600, fontSize: 11 }}>
+															<FiCloud size={11} /> S3 Object
+														</span>
+													</td>
 												</tr>
-											</tbody>
+											)}
+										</tbody>
 										</table>
 									</div>
 									<a 
