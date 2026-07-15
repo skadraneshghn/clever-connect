@@ -1220,6 +1220,53 @@ export const FilesPage: React.FC = () => {
 		setClipboard({ action: 'cut', srcParent: currentPath, items: [file] });
 	};
 
+	// Move a single local file to S3 storage (cut: upload to S3 + delete local).
+	// Runs as a scheduler job so it is cancellable, retryable and visible.
+	const handleMoveToS3 = async (file: FileItem) => {
+		const targetPath = currentPath === '/' ? `/${file.name}` : `${currentPath}/${file.name}`;
+		try {
+			const res = await fetch('/api/files/to-s3', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+				body: JSON.stringify({ paths: [targetPath] })
+			});
+			if (res.ok) {
+				const data = await res.json();
+				showGlobalAlert(`Move to S3 job queued! Job ID: ${data.job_id}`, { title: 'Move to S3 Queued', variant: 'success' });
+				fetchFiles(currentPath);
+			} else {
+				const errData = await res.json();
+				showGlobalAlert(`Failed to move to S3: ${errData.error}`, { title: 'Move to S3 Failed', variant: 'error' });
+			}
+		} catch (err: any) {
+			showGlobalAlert(`Error moving to S3: ${err.message}`, { title: 'Error', variant: 'error' });
+		}
+	};
+
+	// Bulk move selected items (files and/or folders) to S3 storage in a single job.
+	const handleMoveToS3Bulk = async () => {
+		if (selectedItems.length === 0) return;
+		const paths = selectedItems.map(name => currentPath === '/' ? `/${name}` : `${currentPath}/${name}`);
+		try {
+			const res = await fetch('/api/files/to-s3', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+				body: JSON.stringify({ paths })
+			});
+			if (res.ok) {
+				const data = await res.json();
+				showGlobalAlert(`Move to S3 job queued for ${selectedItems.length} items! Job ID: ${data.job_id}`, { title: 'Bulk Move to S3 Queued', variant: 'success' });
+				setSelectedItems([]);
+				fetchFiles(currentPath);
+			} else {
+				const errData = await res.json();
+				showGlobalAlert(`Failed to move to S3: ${errData.error}`, { title: 'Move to S3 Failed', variant: 'error' });
+			}
+		} catch (err: any) {
+			showGlobalAlert(`Error moving to S3: ${err.message}`, { title: 'Error', variant: 'error' });
+		}
+	};
+
 	// Bulk operations (one-by-one execution)
 	const handleSendToTelegramBulk = async () => {
 		if (selectedItems.length === 0) return;
@@ -1906,10 +1953,37 @@ export const FilesPage: React.FC = () => {
 								}}
 								title="Send selected files to Telegram one by one"
 							>
-								<FiSend size={14} /> Send Telegram
-							</button>
+							<FiSend size={14} /> Send Telegram
+						</button>
 
-							{/* Share Link / Download Button */}
+						{/* Move to S3 Button (cut: upload + delete local) */}
+						{s3Enabled && (
+							<button
+								type="button"
+								disabled={selectedItems.length === 0}
+								onClick={handleMoveToS3Bulk}
+								style={{
+									padding: '6px 10px',
+									borderRadius: 6,
+									border: '1px solid var(--color-brand-border)',
+									background: selectedItems.length > 0 ? 'rgba(59,130,246,0.1)' : 'transparent',
+									color: selectedItems.length > 0 ? '#3b82f6' : 'var(--color-brand-muted)',
+									cursor: selectedItems.length > 0 ? 'pointer' : 'not-allowed',
+									opacity: selectedItems.length > 0 ? 1 : 0.5,
+									display: 'flex',
+									alignItems: 'center',
+									gap: 4,
+									fontSize: 12,
+									fontWeight: 600,
+									transition: 'all 0.15s'
+								}}
+								title="Move selected items to S3 storage (cut: upload + delete local)"
+							>
+								<FiCloud size={14} /> Move to S3
+							</button>
+						)}
+
+						{/* Share Link / Download Button */}
 							<button 
 								type="button"
 								disabled={selectedItems.length === 0}
@@ -3246,10 +3320,19 @@ export const FilesPage: React.FC = () => {
 								onClick={() => { handleShareLink(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
 								style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
 							>
-								<FiDownload size={14} style={{ color: '#a855f7' }} /> Get Download Link
+							<FiDownload size={14} style={{ color: '#a855f7' }} /> Get Download Link
+						</div>
+						{s3Enabled && !contextMenu.file.s3_key && (
+							<div
+								className="context-menu-item"
+								onClick={() => { handleMoveToS3(contextMenu.file!); setContextMenu({ ...contextMenu, visible: false }); }}
+								style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, cursor: 'pointer', color: 'var(--color-brand-heading)' }}
+							>
+								<FiCloud size={14} style={{ color: '#3b82f6' }} /> Move to S3
 							</div>
-						</>
-					)}
+						)}
+					</>
+				)}
 
 					<div 
 						className="context-menu-item" 

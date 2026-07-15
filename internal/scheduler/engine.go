@@ -795,6 +795,89 @@ func (s *Scheduler) registerBuiltinJobs() {
 		return nil
 	})
 
+	// Move local files/directories to S3 object storage (cut: upload + delete
+	// local). Expands directories recursively, archives every file via the
+	// stateless leecher pipeline, and removes now-empty source directories on
+	// full success. On any failure the affected local files are preserved.
+	s.RegisterJob("file_to_s3", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
+		if !filecore.IsS3Enabled() {
+			return fmt.Errorf("S3 object storage is not enabled")
+		}
+
+		var payload struct {
+			Paths []string `json:"paths"`
+		}
+		if err := json.Unmarshal([]byte(job.Payload), &payload); err != nil {
+			return fmt.Errorf("failed to parse move-to-S3 payload: %w", err)
+		}
+
+		// Expand directories into the individual files they contain.
+		var filePaths []string
+		for _, p := range payload.Paths {
+			info, err := os.Stat(p)
+			if err != nil {
+				logFn("WARN", fmt.Sprintf("Skipping missing path: %s (%v)", p, err))
+				continue
+			}
+			if info.IsDir() {
+				_ = filepath.WalkDir(p, func(path string, d os.DirEntry, err error) error {
+					if err != nil {
+						return nil
+					}
+					if !d.IsDir() {
+						filePaths = append(filePaths, path)
+					}
+					return nil
+				})
+			} else {
+				filePaths = append(filePaths, p)
+			}
+		}
+
+		total := len(filePaths)
+		if total == 0 {
+			logFn("INFO", "No files to archive to S3")
+			db.DB.Model(job).Update("progress", 100)
+			return nil
+		}
+
+		logFn("INFO", fmt.Sprintf("Moving %d file(s) to S3 (upload + remove local)", total))
+
+		var failed int
+		for i, fp := range filePaths {
+			select {
+			case <-ctx.Done():
+				return context.Canceled
+			default:
+			}
+
+			if _, err := filecore.RegisterAndArchiveToS3(fp, "", "", 0, ""); err != nil {
+				logFn("ERROR", fmt.Sprintf("Failed to archive %s: %v", fp, err))
+				failed++
+			} else {
+				logFn("INFO", fmt.Sprintf("Archived %s to S3", filepath.Base(fp)))
+			}
+
+			progress := ((i + 1) * 100) / total
+			db.DB.Model(job).Update("progress", progress)
+		}
+
+		if failed > 0 {
+			return fmt.Errorf("%d/%d files failed to archive to S3", failed, total)
+		}
+
+		// Full success — clean up the now-empty source directories that were
+		// passed in (their files were already removed by RegisterAndArchiveToS3).
+		for _, p := range payload.Paths {
+			if info, err := os.Stat(p); err == nil && info.IsDir() {
+				_ = os.RemoveAll(p)
+			}
+		}
+
+		logFn("INFO", fmt.Sprintf("Successfully moved all %d file(s) to S3", total))
+		return nil
+	})
+
 	// Leech download job (wrapper)
 	s.RegisterJob("leech_download", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
 		logFn("INFO", "Leech download job queued via scheduler")

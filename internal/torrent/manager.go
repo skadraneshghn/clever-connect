@@ -55,6 +55,9 @@ type TorrentManager struct {
 	client          *torrent.Client
 	mu              sync.Mutex
 	speeds          map[string]*torrentSpeed
+	registeredFiles map[string]bool // tracks per-file S3 registration (infoHash:filePath)
+	completing      map[string]bool // infoHash -> true while a torrent is being archived to S3
+	archiveSem      chan struct{}   // bounds concurrent S3 archive (move) operations to protect memory
 	stopStats       chan struct{}
 	uploadLimiter   *rate.Limiter
 	downloadLimiter *rate.Limiter
@@ -154,6 +157,9 @@ func Init() error {
 	Manager = &TorrentManager{
 		client:          client,
 		speeds:          make(map[string]*torrentSpeed),
+		registeredFiles: make(map[string]bool),
+		completing:      make(map[string]bool),
+		archiveSem:      make(chan struct{}, 4),
 		stopStats:       make(chan struct{}),
 		uploadLimiter:   uploadLimiter,
 		downloadLimiter: downloadLimiter,
@@ -163,6 +169,11 @@ func Init() error {
 	var jobs []models.TorrentJob
 	if err := db.DB.Find(&jobs).Error; err == nil {
 		for _, job := range jobs {
+			// Skip torrents that have been fully archived to S3 — their local
+			// files were removed, so re-adding them would re-download everything.
+			if job.Status == "completed" {
+				continue
+			}
 			if job.MagnetURI != "" {
 				t, err := client.AddMagnet(job.MagnetURI)
 				if err == nil {
@@ -282,6 +293,14 @@ func (m *TorrentManager) updateStats() {
 	for _, t := range torrents {
 		infoHash := t.InfoHash().HexString()
 
+		// Skip torrents that are currently being archived to S3 — their stats
+		// are frozen until onTorrentCompleted finishes and removes the entry.
+		// This also prevents the per-second Save below from clobbering the
+		// "completed" status that onTorrentCompleted writes.
+		if m.completing[infoHash] {
+			continue
+		}
+
 		var totalBytes int64
 		var downloaded int64
 		var uploaded int64
@@ -348,10 +367,27 @@ func (m *TorrentManager) updateStats() {
 				if downloaded >= totalBytes {
 					if job.Status != "seeding" && job.Status != "completed" {
 						job.Status = "seeding"
-						go m.onTorrentCompleted(t, &job)
+						m.completing[infoHash] = true
+						go m.onTorrentCompleted(t, job.InfoHash, job.SaveDirectory)
 					}
 				} else {
 					job.Status = "downloading"
+
+					// Per-file completion: register each fully-downloaded file
+					// to S3 immediately (don't wait for the whole torrent).
+					// This ensures files are archived as soon as they are
+					// available on disk, even in selective/partial downloads.
+					if filecore.IsS3Enabled() {
+						for _, f := range t.Files() {
+							if f.Length() > 0 && f.BytesCompleted() >= f.Length() {
+								fileKey := infoHash + ":" + f.Path()
+								if !m.registeredFiles[fileKey] {
+									m.registeredFiles[fileKey] = true
+									go m.registerTorrentFile(job.InfoHash, job.SaveDirectory, f.Path())
+								}
+							}
+						}
+					}
 				}
 			}
 			db.DB.Save(&job)
@@ -575,18 +611,16 @@ func (m *TorrentManager) ApplyFilePriorities(t *torrent.Torrent, selectedFilesJS
 	}
 }
 
-// onTorrentCompleted is triggered when a torrent is fully downloaded.
-// It iterates over all torrent files and registers them with FileCore.
-func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, job *models.TorrentJob) {
-	// Wait for metadata to resolve
-	select {
-	case <-t.GotInfo():
-	case <-time.After(10 * time.Second):
-		logger.Error("Torrent", "Timeout waiting for metadata on completion", "info_hash", job.InfoHash)
-		return
-	}
-
-	saveDir := job.SaveDirectory
+// registerTorrentFile archives a single completed torrent file into S3 object
+// storage as soon as the file is fully downloaded (before the whole torrent
+// completes). It performs a real "move": the file is uploaded to S3 and then
+// the local copy is removed, so the container's ephemeral disk never fills up.
+//
+// registerTorrentFile is only invoked when S3 is enabled, so this is always a
+// move. Failures are logged but never fatal: on S3 upload failure the local
+// copy is kept (RegisterAndArchiveToS3 returns before removing it) and the
+// in-memory registeredFiles guard resets on restart, which naturally retries.
+func (m *TorrentManager) registerTorrentFile(infoHash, saveDir, filePath string) {
 	if saveDir == "" {
 		saveDir = "./data/manager/downloads"
 	}
@@ -595,14 +629,100 @@ func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, job *models.Torr
 		absSaveDir = saveDir
 	}
 
+	torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, filePath))
+	if info, err := os.Stat(torrentFilePath); err == nil && !info.IsDir() {
+		// Bound concurrent S3 archives to protect container memory when many
+		// files complete at once (each upload holds multi-MiB part buffers).
+		m.archiveSem <- struct{}{}
+		defer func() { <-m.archiveSem }()
+
+		logger.Info("Torrent", "Per-file S3 archive triggered (move to S3)", "path", torrentFilePath, "info_hash", infoHash)
+		if _, err := filecore.RegisterAndArchiveToS3(torrentFilePath, "", "", 0, infoHash); err != nil {
+			logger.Error("Torrent", "Failed to archive torrent file to S3 — local copy kept", "path", torrentFilePath, "error", err)
+		}
+	}
+}
+
+// onTorrentCompleted is triggered when a torrent is fully downloaded. It
+// archives every downloaded file into S3 object storage (a real "move":
+// upload then remove the local copy) so the container's ephemeral disk never
+// fills up. Files already archived by the per-file path (local copy removed)
+// are detected via the missing-on-disk check and skipped.
+//
+// On full success the job is marked "completed" so Init() does not re-add and
+// re-download it on restart (the local files are gone, archived in S3). On any
+// archive failure it stays "seeding" so a restart can retry the missing files.
+func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, infoHash, saveDir string) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.completing, infoHash)
+		m.mu.Unlock()
+	}()
+
+	// Wait for metadata to resolve
+	select {
+	case <-t.GotInfo():
+	case <-time.After(10 * time.Second):
+		logger.Error("Torrent", "Timeout waiting for metadata on completion", "info_hash", infoHash)
+		return
+	}
+
+	if saveDir == "" {
+		saveDir = "./data/manager/downloads"
+	}
+	absSaveDir, err := filepath.Abs(saveDir)
+	if err != nil {
+		absSaveDir = saveDir
+	}
+
+	s3Enabled := filecore.IsS3Enabled()
+	anyFailed := false
+
 	for _, f := range t.Files() {
 		torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, f.Path()))
-		if info, err := os.Stat(torrentFilePath); err == nil && !info.IsDir() {
-			logger.Info("Torrent", "Registering completed torrent file in database", "path", torrentFilePath)
-			_, err = filecore.RegisterFile(torrentFilePath, "", "", 0, job.InfoHash)
-			if err != nil {
-				logger.Error("Torrent", "Failed to register completed torrent file", "path", torrentFilePath, "error", err)
+		info, err := os.Stat(torrentFilePath)
+		if err != nil || info.IsDir() {
+			// File already archived to S3 (local copy removed) or missing — skip.
+			continue
+		}
+
+		// Mark as registered so per-file detection doesn't re-archive it.
+		m.mu.Lock()
+		m.registeredFiles[infoHash+":"+f.Path()] = true
+		m.mu.Unlock()
+
+		if s3Enabled {
+			m.archiveSem <- struct{}{}
+			archived := true
+			func() {
+				defer func() { <-m.archiveSem }()
+				logger.Info("Torrent", "Archiving completed torrent file to S3 (move)", "path", torrentFilePath, "info_hash", infoHash)
+				if _, aErr := filecore.RegisterAndArchiveToS3(torrentFilePath, "", "", 0, infoHash); aErr != nil {
+					logger.Error("Torrent", "Failed to archive torrent file to S3 — local copy kept", "path", torrentFilePath, "error", aErr)
+					archived = false
+				}
+			}()
+			if !archived {
+				anyFailed = true
 			}
+		} else {
+			logger.Info("Torrent", "Registering completed torrent file in database", "path", torrentFilePath)
+			if _, rErr := filecore.RegisterFile(torrentFilePath, "", "", 0, infoHash); rErr != nil {
+				logger.Error("Torrent", "Failed to register completed torrent file", "path", torrentFilePath, "error", rErr)
+				anyFailed = true
+			}
+		}
+	}
+
+	// All files archived to S3 — mark completed so Init() does not re-add and
+	// re-download this torrent on restart (local files are gone). When S3 is
+	// disabled the local files remain, so keep "seeding" instead.
+	if s3Enabled && !anyFailed {
+		if err := db.DB.Model(&models.TorrentJob{}).Where("info_hash = ?", infoHash).
+			Update("status", "completed").Error; err != nil {
+			logger.Error("Torrent", "Failed to mark torrent completed after S3 archive", "info_hash", infoHash, "error", err)
+		} else {
+			logger.Info("Torrent", "Torrent fully archived to S3, marked completed", "info_hash", infoHash)
 		}
 	}
 }

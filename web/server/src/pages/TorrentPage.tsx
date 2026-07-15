@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAuthStore } from '../store/authStore';
 import { useJobsStore } from '../store/jobsStore';
-import { 
-	FiPlay, FiPause, FiTrash2, FiFolder, FiPlus, FiSettings, 
+import {
+	FiPlay, FiPause, FiTrash2, FiFolder, FiPlus, FiSettings,
 	FiGlobe, FiCheck, FiX, FiLink, FiDownloadCloud, FiServer,
-	FiChevronLeft, FiFolderPlus, FiInfo, FiDownload, FiLayers
+	FiChevronLeft, FiFolderPlus, FiInfo, FiDownload, FiLayers, FiCloud
 } from 'react-icons/fi';
 import { showGlobalAlert } from '../store/dialogStore';
 
@@ -23,6 +23,8 @@ interface TorrentJob {
 	upload_speed: number;
 	peers: number;
 	error_message: string;
+	file_exists?: boolean;
+	s3_stored?: boolean;
 	created_at: string;
 }
 
@@ -721,9 +723,9 @@ export const TorrentPage: React.FC = () => {
 			) : (
 				<div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 					{torrents.map((t) => {
-						const isDone = t.status === 'completed' || t.status === 'seeding';
-						const fileMissing = isDone && t.file_exists === false;
-						const isHovered = hoveredTorrentHash === t.info_hash;
+					const isDone = t.status === 'completed' || t.status === 'seeding';
+					const fileMissing = isDone && t.file_exists === false && !t.s3_stored;
+					const isHovered = hoveredTorrentHash === t.info_hash;
 						const showOverlay = fileMissing && isHovered && !dismissedOverlays[t.info_hash];
 
 						return (
@@ -884,9 +886,25 @@ export const TorrentPage: React.FC = () => {
 											background: t.status === 'downloading' ? 'rgba(56, 189, 248, 0.1)' : t.status === 'completed' || t.status === 'seeding' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
 											color: t.status === 'downloading' ? '#0284c7' : t.status === 'completed' || t.status === 'seeding' ? '#16a34a' : '#4b5563'
 										}}>
-											{t.status}
+										{t.status}
+									</span>
+									{t.s3_stored && (
+										<span style={{
+											display: 'inline-flex',
+											alignItems: 'center',
+											gap: 4,
+											textTransform: 'uppercase',
+											fontSize: 10,
+											fontWeight: 700,
+											padding: '2px 6px',
+											borderRadius: 4,
+											background: 'rgba(59, 130, 246, 0.1)',
+											color: '#3b82f6'
+										}}>
+											<FiCloud size={10} /> Archived to S3
 										</span>
-										{t.status === 'downloading' && (
+									)}
+									{t.status === 'downloading' && (
 											<>
 												<span>DL: <strong style={{ color: '#ea580c' }}>{formatSpeed(t.download_speed)}</strong></span>
 												<span>UL: <strong style={{ color: '#3b82f6' }}>{formatSpeed(t.upload_speed)}</strong></span>

@@ -483,6 +483,7 @@ func main() {
 			protected.POST("/files/copy", fileHandler.CopyItem)
 			protected.POST("/files/compress", fileHandler.CompressItems)
 			protected.POST("/files/decompress", fileHandler.DecompressItem)
+			protected.POST("/files/to-s3", fileHandler.MoveToS3)
 
 			// Remote Downloader (Leecher) API Endpoints
 			protected.GET("/leech/jobs", leechHandler.ListJobs)

@@ -1229,3 +1229,68 @@ func (h *FileHandler) DecompressItem(c *gin.Context) {
 		"job_id":  job.ID,
 	})
 }
+
+// MoveToS3 handles POST /api/files/to-s3 to move local files/directories into
+// S3 object storage. This is a real "cut": each file is uploaded to S3 and the
+// local copy is removed only after a successful upload. The work runs as a
+// scheduler job so it is cancellable, retryable, and visible in the job
+// queue — and so it works for bulk selections of many items.
+//
+// The moved files remain browseable/streamable: the file manager already
+// surfaces S3-backed FileRegistry records as virtual entries (see
+// mergeS3VirtualFiles) and the stream handler serves them straight from S3.
+func (h *FileHandler) MoveToS3(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+	var req struct {
+		Paths []string `json:"paths" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+	if !filecore.IsS3Enabled() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "S3 object storage is not enabled"})
+		return
+	}
+
+	var absolutePaths []string
+	for _, p := range req.Paths {
+		safe, err := h.securePath(p)
+		if err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied for: " + p})
+			return
+		}
+		absolutePaths = append(absolutePaths, safe)
+	}
+
+	payloadBytes, err := json.Marshal(struct {
+		Paths []string `json:"paths"`
+	}{Paths: absolutePaths})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal payload"})
+		return
+	}
+
+	job, err := scheduler.Engine.SubmitJob(
+		"file_to_s3",
+		fmt.Sprintf("Move %d items to S3", len(absolutePaths)),
+		fmt.Sprintf("Moving %d local item(s) to S3 object storage (cut: upload + delete local)", len(absolutePaths)),
+		"files",
+		5,
+		string(payloadBytes),
+		"",
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to submit move-to-S3 job", "details": err.Error()})
+		return
+	}
+
+	logger.Info("Files", "Submitted move-to-S3 job", "jobID", job.ID, "items", len(absolutePaths), "ip", c.ClientIP())
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Move to S3 job queued successfully",
+		"job_id":  job.ID,
+	})
+}

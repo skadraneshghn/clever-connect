@@ -166,6 +166,7 @@ type TorrentJob struct {
 	SelectedFiles string    `gorm:"type:text" json:"selected_files"` // JSON array of selected file indices
 	ErrorMessage  string    `json:"error_message"`
 	FileExists    bool      `gorm:"-" json:"file_exists"`
+	S3Stored      bool      `gorm:"-" json:"s3_stored"` // true when the torrent's files are archived in S3 object storage
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }

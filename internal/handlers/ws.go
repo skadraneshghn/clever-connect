@@ -825,6 +825,14 @@ func (h *WSHandler) ServeWSJobs(c *gin.Context) {
 						torrentList[i].FileExists = false
 					}
 				}
+
+				// Report whether the torrent's files are archived in S3 object storage
+				// (the local copy may have been removed by the stateless move-to-S3 flow).
+				var s3Count int64
+				db.DB.Model(&models.FileRegistry{}).
+					Where("torrent_hash = ? AND s3_key <> ''", torrentList[i].InfoHash).
+					Count(&s3Count)
+				torrentList[i].S3Stored = s3Count > 0
 			}
 
 			// Populate FileExists for completed leech jobs
