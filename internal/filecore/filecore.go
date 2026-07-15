@@ -267,7 +267,13 @@ const archiveUploadCtxTimeout = 30 * time.Minute
 // returned so the caller can retry without losing data.
 //
 // The returned record always has S3Key set on success (reg.S3Key != "").
-func RegisterAndArchiveToS3(absPath, optURL, optETag string, optTgFileID int64, optTorrentHash string) (*models.FileRegistry, error) {
+//
+// When keepSparse is true the local copy is left on disk instead of being
+// removed. This is used by the torrent manager for archived torrent files:
+// anacrolix re-stats the file (checkCompleteFileSizes) and would re-request
+// pieces if the file vanished, so the caller turns it into a sparse stub
+// (logical size preserved, data blocks freed) instead of deleting it.
+func RegisterAndArchiveToS3(absPath, optURL, optETag string, optTgFileID int64, optTorrentHash string, keepSparse bool) (*models.FileRegistry, error) {
 	absPath, err := filepath.Abs(absPath)
 	if err != nil {
 		absPath = filepath.Clean(absPath)
@@ -348,15 +354,18 @@ func RegisterAndArchiveToS3(absPath, optURL, optETag string, optTgFileID int64, 
 	}
 
 	// S3 now holds the object. Remove the local copy to keep the ephemeral
-	// disk clean (stateless). Also clean up any grab temp artifacts.
-	if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
-		logger.Warn("FileCore", "Could not remove local copy after S3 archive",
-			"path", absPath, "error", err)
+	// disk clean (stateless), unless the caller asked to keep it as a sparse
+	// stub (torrent files). Also clean up any grab temp artifacts.
+	if !keepSparse {
+		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			logger.Warn("FileCore", "Could not remove local copy after S3 archive",
+				"path", absPath, "error", err)
+		}
 	}
 	_ = os.Remove(absPath + ".gtmp")
 
-	logger.Info("FileCore", "File archived to S3 and local copy removed",
-		"checksum", checksum, "s3_key", s3Key, "size", info.Size())
+	logger.Info("FileCore", "File archived to S3",
+		"checksum", checksum, "s3_key", s3Key, "size", info.Size(), "keep_local", keepSparse)
 	return &reg, nil
 }
 

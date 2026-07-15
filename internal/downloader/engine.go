@@ -446,7 +446,7 @@ func (e *Engine) monitorProgress(resp *grab.Response, jobID string, ctx context.
 			// permanent in S3 even if the application restarts). The Telegram
 			// auto-upload then streams the file back from S3.
 			if filecore.IsS3Enabled() {
-				if reg, err := filecore.RegisterAndArchiveToS3(destPath, job.URL, etag, 0, ""); err != nil {
+				if reg, err := filecore.RegisterAndArchiveToS3(destPath, job.URL, etag, 0, "", false); err != nil {
 					logger.Error("Downloader", "S3 archive failed — keeping local copy",
 						"path", destPath, "error", err)
 					// Fall back to a plain local registration so the file is

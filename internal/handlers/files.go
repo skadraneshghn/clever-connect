@@ -898,7 +898,7 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 	// the response, then the local copy is removed). This guarantees the file is
 	// permanently stored in object storage even on ephemeral Clever Cloud disk.
 	if filecore.IsS3Enabled() {
-		if _, err := filecore.RegisterAndArchiveToS3(safeFilePath, "", "", 0, ""); err != nil {
+		if _, err := filecore.RegisterAndArchiveToS3(safeFilePath, "", "", 0, "", false); err != nil {
 			logger.Error("Files", "S3 archive failed for uploaded file — keeping local copy",
 				"path", safeFilePath, "error", err)
 			// Fall back: at least register it locally so it is discoverable.

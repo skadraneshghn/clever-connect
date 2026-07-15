@@ -614,12 +614,17 @@ func (m *TorrentManager) ApplyFilePriorities(t *torrent.Torrent, selectedFilesJS
 // registerTorrentFile archives a single completed torrent file into S3 object
 // storage as soon as the file is fully downloaded (before the whole torrent
 // completes). It performs a real "move": the file is uploaded to S3 and then
-// the local copy is removed, so the container's ephemeral disk never fills up.
+// turned into a sparse stub on disk (logical size kept, data blocks freed)
+// rather than deleted. Keeping the file present at its full size is what stops
+// anacrolix's checkCompleteFileSizes size check from flagging the pieces as
+// incomplete and re-downloading them; freeing the blocks keeps the ephemeral
+// disk from filling up.
 //
 // registerTorrentFile is only invoked when S3 is enabled, so this is always a
 // move. Failures are logged but never fatal: on S3 upload failure the local
-// copy is kept (RegisterAndArchiveToS3 returns before removing it) and the
-// in-memory registeredFiles guard resets on restart, which naturally retries.
+// copy is kept full (RegisterAndArchiveToS3 returns before punching the hole)
+// and the in-memory registeredFiles guard resets on restart, which naturally
+// retries.
 func (m *TorrentManager) registerTorrentFile(infoHash, saveDir, filePath string) {
 	if saveDir == "" {
 		saveDir = "./data/manager/downloads"
@@ -637,20 +642,28 @@ func (m *TorrentManager) registerTorrentFile(infoHash, saveDir, filePath string)
 		defer func() { <-m.archiveSem }()
 
 		logger.Info("Torrent", "Per-file S3 archive triggered (move to S3)", "path", torrentFilePath, "info_hash", infoHash)
-		if _, err := filecore.RegisterAndArchiveToS3(torrentFilePath, "", "", 0, infoHash); err != nil {
+		if _, err := filecore.RegisterAndArchiveToS3(torrentFilePath, "", "", 0, infoHash, true); err != nil {
 			logger.Error("Torrent", "Failed to archive torrent file to S3 — local copy kept", "path", torrentFilePath, "error", err)
+			return
+		}
+		// S3 upload succeeded: free the local data blocks while keeping the
+		// logical size so anacrolix does not re-download the file.
+		if err := punchHole(torrentFilePath); err != nil {
+			logger.Warn("Torrent", "S3 archive succeeded but could not free local blocks",
+				"path", torrentFilePath, "error", err)
 		}
 	}
 }
 
 // onTorrentCompleted is triggered when a torrent is fully downloaded. It
 // archives every downloaded file into S3 object storage (a real "move":
-// upload then remove the local copy) so the container's ephemeral disk never
-// fills up. Files already archived by the per-file path (local copy removed)
-// are detected via the missing-on-disk check and skipped.
+// upload then free the local data blocks, keeping a sparse size stub) so the
+// container's ephemeral disk never fills up. Files already archived by the
+// per-file path (registeredFiles guard set) are skipped so their sparse stubs
+// are never re-uploaded (which would archive zero-filled content).
 //
 // On full success the job is marked "completed" so Init() does not re-add and
-// re-download it on restart (the local files are gone, archived in S3). On any
+// re-download it on restart (the local files are archived in S3). On any
 // archive failure it stays "seeding" so a restart can retry the missing files.
 func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, infoHash, saveDir string) {
 	defer func() {
@@ -679,17 +692,26 @@ func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, infoHash, saveDi
 	anyFailed := false
 
 	for _, f := range t.Files() {
+		fileKey := infoHash + ":" + f.Path()
+
+		// Skip files already archived by the per-file path. Their local copy
+		// is now a sparse stub; re-archiving it would upload zero-filled
+		// content under a different checksum and pollute the registry.
+		m.mu.Lock()
+		if m.registeredFiles[fileKey] {
+			m.mu.Unlock()
+			continue
+		}
+		m.registeredFiles[fileKey] = true
+		m.mu.Unlock()
+
 		torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, f.Path()))
 		info, err := os.Stat(torrentFilePath)
 		if err != nil || info.IsDir() {
-			// File already archived to S3 (local copy removed) or missing — skip.
+			// File missing on disk (e.g. archived and removed by an older
+			// build) or is a directory — skip.
 			continue
 		}
-
-		// Mark as registered so per-file detection doesn't re-archive it.
-		m.mu.Lock()
-		m.registeredFiles[infoHash+":"+f.Path()] = true
-		m.mu.Unlock()
 
 		if s3Enabled {
 			m.archiveSem <- struct{}{}
@@ -697,13 +719,20 @@ func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, infoHash, saveDi
 			func() {
 				defer func() { <-m.archiveSem }()
 				logger.Info("Torrent", "Archiving completed torrent file to S3 (move)", "path", torrentFilePath, "info_hash", infoHash)
-				if _, aErr := filecore.RegisterAndArchiveToS3(torrentFilePath, "", "", 0, infoHash); aErr != nil {
+				if _, aErr := filecore.RegisterAndArchiveToS3(torrentFilePath, "", "", 0, infoHash, true); aErr != nil {
 					logger.Error("Torrent", "Failed to archive torrent file to S3 — local copy kept", "path", torrentFilePath, "error", aErr)
 					archived = false
 				}
 			}()
 			if !archived {
 				anyFailed = true
+			} else {
+				// S3 upload succeeded: free the local data blocks while
+				// keeping the logical size so anacrolix does not re-download.
+				if err := punchHole(torrentFilePath); err != nil {
+					logger.Warn("Torrent", "S3 archive succeeded but could not free local blocks",
+						"path", torrentFilePath, "error", err)
+				}
 			}
 		} else {
 			logger.Info("Torrent", "Registering completed torrent file in database", "path", torrentFilePath)

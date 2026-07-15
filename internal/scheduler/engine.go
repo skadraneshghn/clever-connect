@@ -851,7 +851,7 @@ func (s *Scheduler) registerBuiltinJobs() {
 			default:
 			}
 
-			if _, err := filecore.RegisterAndArchiveToS3(fp, "", "", 0, ""); err != nil {
+			if _, err := filecore.RegisterAndArchiveToS3(fp, "", "", 0, "", false); err != nil {
 				logFn("ERROR", fmt.Sprintf("Failed to archive %s: %v", fp, err))
 				failed++
 			} else {
