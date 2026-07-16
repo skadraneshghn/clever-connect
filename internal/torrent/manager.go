@@ -373,17 +373,22 @@ func (m *TorrentManager) updateStats() {
 				} else {
 					job.Status = "downloading"
 
-					// Per-file completion: register each fully-downloaded file
-					// to S3 immediately (don't wait for the whole torrent).
-					// This ensures files are archived as soon as they are
-					// available on disk, even in selective/partial downloads.
+					// Per-file pipeline: as each individual torrent file finishes
+					// downloading, submit a torrent_s3_move scheduler job so the
+					// enterprise job engine handles S3 upload → disk punch →
+					// Telegram upload in a persistent, retryable, crash-safe way.
+					// The in-memory registeredFiles map guards against duplicate
+					// submissions within a session; DB idempotency inside
+					// submitTorrentS3MoveJob handles restarts.
 					if filecore.IsS3Enabled() {
 						for _, f := range t.Files() {
 							if f.Length() > 0 && f.BytesCompleted() >= f.Length() {
 								fileKey := infoHash + ":" + f.Path()
 								if !m.registeredFiles[fileKey] {
 									m.registeredFiles[fileKey] = true
-									go m.registerTorrentFile(job.InfoHash, job.SaveDirectory, f.Path())
+									// Run in a goroutine: DB idempotency check must not
+									// block the stats loop while holding the mutex.
+									go submitTorrentS3MoveJob(m, job.InfoHash, job.SaveDirectory, f.Path(), 0)
 								}
 							}
 						}
@@ -611,60 +616,24 @@ func (m *TorrentManager) ApplyFilePriorities(t *torrent.Torrent, selectedFilesJS
 	}
 }
 
-// registerTorrentFile archives a single completed torrent file into S3 object
-// storage as soon as the file is fully downloaded (before the whole torrent
-// completes). It performs a real "move": the file is uploaded to S3 and then
-// turned into a sparse stub on disk (logical size kept, data blocks freed)
-// rather than deleted. Keeping the file present at its full size is what stops
-// anacrolix's checkCompleteFileSizes size check from flagging the pieces as
-// incomplete and re-downloading them; freeing the blocks keeps the ephemeral
-// disk from filling up.
+// registerTorrentFile has been replaced by the stateful scheduler pipeline.
+// Per-file S3 archiving is now handled by the "torrent_s3_move" scheduler job
+// type (see pipeline.go: RunTorrentS3MoveJob). Jobs are submitted via the
+// QueueTorrentS3MoveJob callback bridge registered in scheduler.Init(), which
+// makes every step crash-safe, retryable, and visible in the scheduler UI.
+
+// onTorrentCompleted is triggered when a torrent is fully downloaded.
 //
-// registerTorrentFile is only invoked when S3 is enabled, so this is always a
-// move. Failures are logged but never fatal: on S3 upload failure the local
-// copy is kept full (RegisterAndArchiveToS3 returns before punching the hole)
-// and the in-memory registeredFiles guard resets on restart, which naturally
-// retries.
-func (m *TorrentManager) registerTorrentFile(infoHash, saveDir, filePath string) {
-	if saveDir == "" {
-		saveDir = "./data/manager/downloads"
-	}
-	absSaveDir, err := filepath.Abs(saveDir)
-	if err != nil {
-		absSaveDir = saveDir
-	}
-
-	torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, filePath))
-	if info, err := os.Stat(torrentFilePath); err == nil && !info.IsDir() {
-		// Bound concurrent S3 archives to protect container memory when many
-		// files complete at once (each upload holds multi-MiB part buffers).
-		m.archiveSem <- struct{}{}
-		defer func() { <-m.archiveSem }()
-
-		logger.Info("Torrent", "Per-file S3 archive triggered (move to S3)", "path", torrentFilePath, "info_hash", infoHash)
-		if _, err := filecore.RegisterAndArchiveToS3(torrentFilePath, "", "", 0, infoHash, true); err != nil {
-			logger.Error("Torrent", "Failed to archive torrent file to S3 — local copy kept", "path", torrentFilePath, "error", err)
-			return
-		}
-		// S3 upload succeeded: free the local data blocks while keeping the
-		// logical size so anacrolix does not re-download the file.
-		if err := punchHole(torrentFilePath); err != nil {
-			logger.Warn("Torrent", "S3 archive succeeded but could not free local blocks",
-				"path", torrentFilePath, "error", err)
-		}
-	}
-}
-
-// onTorrentCompleted is triggered when a torrent is fully downloaded. It
-// archives every downloaded file into S3 object storage (a real "move":
-// upload then free the local data blocks, keeping a sparse size stub) so the
-// container's ephemeral disk never fills up. Files already archived by the
-// per-file path (registeredFiles guard set) are skipped so their sparse stubs
-// are never re-uploaded (which would archive zero-filled content).
+// It iterates all torrent files and, for any file not yet submitted to the
+// scheduler pipeline (not in registeredFiles), submits a torrent_s3_move job
+// via submitTorrentS3MoveJob. The job handles: S3 upload → punchHole → Telegram
+// upload chain, with full retry and crash-recovery support.
 //
-// On full success the job is marked "completed" so Init() does not re-add and
-// re-download it on restart (the local files are archived in S3). On any
-// archive failure it stays "seeding" so a restart can retry the missing files.
+// Files already handled by the per-file hook in updateStats() (registeredFiles
+// guard already set) are skipped to prevent duplicate submissions.
+//
+// When S3 is disabled, files are registered locally via filecore.RegisterFile
+// (original behaviour preserved).
 func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, infoHash, saveDir string) {
 	defer func() {
 		m.mu.Lock()
@@ -672,7 +641,7 @@ func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, infoHash, saveDi
 		m.mu.Unlock()
 	}()
 
-	// Wait for metadata to resolve
+	// Wait for metadata to resolve.
 	select {
 	case <-t.GotInfo():
 	case <-time.After(10 * time.Second):
@@ -689,69 +658,63 @@ func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, infoHash, saveDi
 	}
 
 	s3Enabled := filecore.IsS3Enabled()
-	anyFailed := false
+	anyLocalFailed := false // only relevant when S3 is disabled
 
 	for _, f := range t.Files() {
 		fileKey := infoHash + ":" + f.Path()
 
-		// Skip files already archived by the per-file path. Their local copy
-		// is now a sparse stub; re-archiving it would upload zero-filled
-		// content under a different checksum and pollute the registry.
+		// Check and set the in-memory guard atomically.
 		m.mu.Lock()
-		if m.registeredFiles[fileKey] {
-			m.mu.Unlock()
+		alreadyQueued := m.registeredFiles[fileKey]
+		if !alreadyQueued {
+			m.registeredFiles[fileKey] = true
+		}
+		m.mu.Unlock()
+
+		if alreadyQueued {
+			// Per-file hook already submitted a torrent_s3_move job for this
+			// file. Skip it to avoid duplicates.
 			continue
 		}
-		m.registeredFiles[fileKey] = true
-		m.mu.Unlock()
 
 		torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, f.Path()))
 		info, err := os.Stat(torrentFilePath)
 		if err != nil || info.IsDir() {
-			// File missing on disk (e.g. archived and removed by an older
-			// build) or is a directory — skip.
+			// File missing (already archived by a previous run) or is a
+			// directory — skip without re-enabling the guard.
 			continue
 		}
 
 		if s3Enabled {
-			m.archiveSem <- struct{}{}
-			archived := true
-			func() {
-				defer func() { <-m.archiveSem }()
-				logger.Info("Torrent", "Archiving completed torrent file to S3 (move)", "path", torrentFilePath, "info_hash", infoHash)
-				if _, aErr := filecore.RegisterAndArchiveToS3(torrentFilePath, "", "", 0, infoHash, true); aErr != nil {
-					logger.Error("Torrent", "Failed to archive torrent file to S3 — local copy kept", "path", torrentFilePath, "error", aErr)
-					archived = false
-				}
-			}()
-			if !archived {
-				anyFailed = true
-			} else {
-				// S3 upload succeeded: free the local data blocks while
-				// keeping the logical size so anacrolix does not re-download.
-				if err := punchHole(torrentFilePath); err != nil {
-					logger.Warn("Torrent", "S3 archive succeeded but could not free local blocks",
-						"path", torrentFilePath, "error", err)
-				}
-			}
+			// Submit a scheduler job for each unarchived file.
+			// submitTorrentS3MoveJob runs the DB idempotency check in a
+			// goroutine so it never blocks here.
+			go submitTorrentS3MoveJob(m, infoHash, saveDir, f.Path(), 0)
 		} else {
-			logger.Info("Torrent", "Registering completed torrent file in database", "path", torrentFilePath)
+			// S3 disabled — register locally (original behaviour).
+			logger.Info("Torrent", "Registering completed torrent file in database (S3 disabled)",
+				"path", torrentFilePath)
 			if _, rErr := filecore.RegisterFile(torrentFilePath, "", "", 0, infoHash); rErr != nil {
-				logger.Error("Torrent", "Failed to register completed torrent file", "path", torrentFilePath, "error", rErr)
-				anyFailed = true
+				logger.Error("Torrent", "Failed to register completed torrent file",
+					"path", torrentFilePath, "error", rErr)
+				anyLocalFailed = true
 			}
 		}
 	}
 
-	// All files archived to S3 — mark completed so Init() does not re-add and
-	// re-download this torrent on restart (local files are gone). When S3 is
-	// disabled the local files remain, so keep "seeding" instead.
-	if s3Enabled && !anyFailed {
-		if err := db.DB.Model(&models.TorrentJob{}).Where("info_hash = ?", infoHash).
-			Update("status", "completed").Error; err != nil {
-			logger.Error("Torrent", "Failed to mark torrent completed after S3 archive", "info_hash", infoHash, "error", err)
-		} else {
-			logger.Info("Torrent", "Torrent fully archived to S3, marked completed", "info_hash", infoHash)
-		}
+	// When S3 is enabled the scheduler jobs handle status updates as they
+	// complete. When S3 is disabled and all local registrations succeeded,
+	// mark the torrent as "seeding" (files remain on disk).
+	if !s3Enabled && !anyLocalFailed {
+		logger.Info("Torrent", "All files registered locally (S3 disabled), staying in seeding mode",
+			"info_hash", infoHash)
+	}
+
+	// When S3 is enabled the torrent_s3_move jobs will update their own status;
+	// we cannot know here whether all jobs will succeed. The torrent stays in
+	// "seeding" until the scheduler jobs mark individual files complete.
+	if s3Enabled {
+		logger.Info("Torrent", "Submitted scheduler jobs for remaining torrent files — scheduler will handle S3+Telegram pipeline",
+			"info_hash", infoHash)
 	}
 }

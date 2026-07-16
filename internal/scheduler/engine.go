@@ -20,6 +20,7 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 	"clever-connect/internal/telegram"
+	"clever-connect/internal/torrent"
 
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
@@ -130,6 +131,34 @@ func Init() {
 		// Initialize RetryJob in telegram package
 		telegram.RetryJob = func(jobID uint) error {
 			return Engine.RetryJob(jobID)
+		}
+
+		// Wire the torrent → S3 → Telegram pipeline callback.
+		// This is the same bridge pattern as QueueUploadJob: the torrent
+		// package sets a package-level function variable that the scheduler
+		// populates here, keeping the import direction one-way
+		// (scheduler → torrent; torrent does NOT import scheduler).
+		torrent.QueueTorrentS3MoveJob = func(infoHash, saveDir, filePath string, chatID int64) error {
+			payload := torrent.TorrentS3MovePayload{
+				InfoHash:      infoHash,
+				FilePath:      filePath,
+				SaveDirectory: saveDir,
+				ChatID:        chatID,
+			}
+			payloadBytes, err := json.Marshal(payload)
+			if err != nil {
+				return fmt.Errorf("failed to marshal torrent_s3_move payload: %w", err)
+			}
+			_, err = Engine.SubmitJob(
+				"torrent_s3_move",
+				fmt.Sprintf("S3 Move: %s", filepath.Base(filePath)),
+				fmt.Sprintf("Move torrent file '%s' (hash=%s) to S3, then upload to Telegram", filepath.Base(filePath), infoHash),
+				"download",
+				5, // balanced priority
+				string(payloadBytes),
+				"",
+			)
+			return err
 		}
 
 		// Register auto-upload callback for the downloader bridge
@@ -930,6 +959,17 @@ func (s *Scheduler) registerBuiltinJobs() {
 	// Telegram parallel multi-connection file download
 	s.RegisterJob("telegram_download", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
 		return telegram.RunTelegramDownloadJob(ctx, job, logFn)
+	})
+
+	// Torrent per-file S3 move + Telegram upload pipeline.
+	// Triggered automatically by the torrent stats loop as each individual
+	// file in a torrent completes downloading. The handler:
+	//   1. Streams the file to S3 (parallel multipart upload).
+	//   2. Punches the local disk blocks (sparse stub preserves logical size
+	//      so anacrolix does not re-request pieces).
+	//   3. Submits a downstream telegram_upload job.
+	s.RegisterJob("torrent_s3_move", func(ctx context.Context, job *models.SchedulerJob, logFn func(string, string)) error {
+		return torrent.RunTorrentS3MoveJob(ctx, job, logFn)
 	})
 
 	// Geo IP & CDN scan sweep
