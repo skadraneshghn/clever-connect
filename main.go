@@ -543,11 +543,12 @@ func main() {
 			// Enterprise Job Scheduler API Endpoints
 			protected.GET("/scheduler/jobs", schedulerHandler.ListJobs)
 			protected.POST("/scheduler/jobs", schedulerHandler.CreateJob)
+			protected.POST("/scheduler/jobs/bulk-action", schedulerHandler.BulkAction) // Must be before :id routes
+			protected.POST("/scheduler/jobs/reorder", schedulerHandler.ReorderJobs)    // Must be before :id routes
 			protected.POST("/scheduler/jobs/:id/cancel", schedulerHandler.CancelJob)
 			protected.POST("/scheduler/jobs/:id/retry", schedulerHandler.RetryJob)
 			protected.POST("/scheduler/jobs/:id/force", schedulerHandler.ForceRunJob)
 			protected.POST("/scheduler/jobs/:id/delete", schedulerHandler.DeleteJob)
-			protected.POST("/scheduler/jobs/reorder", schedulerHandler.ReorderJobs)
 			protected.GET("/scheduler/jobs/:id/logs", schedulerHandler.GetJobLogs)
 			protected.GET("/scheduler/config", schedulerHandler.GetConfig)
 			protected.POST("/scheduler/config", schedulerHandler.SaveConfig)

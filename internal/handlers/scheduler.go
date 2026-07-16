@@ -277,6 +277,69 @@ func (h *SchedulerHandler) DeleteJob(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "job_id": id})
 }
+// BulkAction performs retry, delete, or cancel on multiple jobs in one request.
+// Jobs are processed sequentially to avoid SQLite write-lock contention.
+// POST /api/scheduler/jobs/bulk-action
+//
+// Request body:
+//
+//	{ "action": "retry"|"delete"|"cancel", "job_ids": [1, 2, 3] }
+//
+// Response body:
+//
+//	{ "status": "processed", "action": "...", "succeeded": [...], "failed": [...] }
+func (h *SchedulerHandler) BulkAction(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+	var input struct {
+		Action string `json:"action" binding:"required"`
+		JobIDs []uint `json:"job_ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request parameters", "details": err.Error()})
+		return
+	}
+	if len(input.JobIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "job_ids must not be empty"})
+		return
+	}
+	if scheduler.Engine == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Scheduler engine not initialized"})
+		return
+	}
+
+	succeeded := make([]uint, 0, len(input.JobIDs))
+	failed := make([]gin.H, 0)
+
+	// Sequential execution prevents concurrent SQLite write-lock contention.
+	for _, id := range input.JobIDs {
+		var err error
+		switch input.Action {
+		case "retry":
+			err = scheduler.Engine.RetryJob(id)
+		case "delete":
+			err = scheduler.Engine.DeleteJob(id)
+		case "cancel":
+			err = scheduler.Engine.CancelJob(id)
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported bulk action: " + input.Action})
+			return
+		}
+		if err != nil {
+			failed = append(failed, gin.H{"job_id": id, "error": err.Error()})
+		} else {
+			succeeded = append(succeeded, id)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "processed",
+		"action":    input.Action,
+		"succeeded": succeeded,
+		"failed":    failed,
+	})
+}
 
 // ReorderJobs updates priorities for job queue reordering.
 // POST /api/scheduler/jobs/reorder
