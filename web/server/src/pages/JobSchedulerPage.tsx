@@ -422,7 +422,7 @@ export const JobSchedulerPage: React.FC = () => {
     if (action === 'delete') {
       const ok = await showGlobalConfirm(
         `Permanently delete ${targetIds.length} selected job${targetIds.length > 1 ? 's' : ''} and all associated logs?`,
-        { title: 'Bulk Delete', variant: 'danger' }
+        { title: 'Bulk Delete', variant: 'error' }
       );
       if (!ok) return;
     }
