@@ -100,9 +100,14 @@ func InitDB(cfg *config.Config) *gorm.DB {
 				"database", cfg.MySQLDBName,
 			)
 			if sqlDB, err := DB.DB(); err == nil {
-				sqlDB.SetMaxOpenConns(100)
-				sqlDB.SetMaxIdleConns(10)
-				sqlDB.SetConnMaxLifetime(time.Hour)
+				// Clever Cloud MySQL addon enforces a hard limit of 5 concurrent
+				// connections per user. We cap at 4 to leave one slot free for
+				// admin/monitoring tools, and keep idle connections low so they
+				// are promptly returned and reused rather than sitting open.
+				sqlDB.SetMaxOpenConns(4)
+				sqlDB.SetMaxIdleConns(2)
+				sqlDB.SetConnMaxLifetime(5 * time.Minute)
+				sqlDB.SetConnMaxIdleTime(2 * time.Minute)
 			}
 		}
 	}

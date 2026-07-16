@@ -272,18 +272,24 @@ func (m *TorrentManager) statsLoop() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	var tick int
 	for {
 		select {
 		case <-m.stopStats:
 			return
 		case <-ticker.C:
-			m.updateStats()
+			tick++
+			// Persist DB stats every 5 seconds to reduce connection pressure.
+			// In-memory speeds are updated every tick for the UI.
+			m.updateStats(tick%5 == 0)
 		}
 	}
 }
 
-// updateStats recalculates progress, seeds/peers, and delta upload/download speeds
-func (m *TorrentManager) updateStats() {
+// updateStats recalculates progress, seeds/peers, and delta upload/download speeds.
+// persistDB controls whether the computed values are written to the database.
+// Call with persistDB=true every ~5 seconds to reduce DB connection pressure.
+func (m *TorrentManager) updateStats(persistDB bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -348,6 +354,12 @@ func (m *TorrentManager) updateStats() {
 			speedInfo.lastDownloaded = downloaded
 			speedInfo.lastUploaded = uploaded
 			speedInfo.lastTime = now
+		}
+
+		// Only persist to DB every 5 ticks to stay under the Clever Cloud
+		// 5-connection MySQL limit. In-memory state is always current.
+		if !persistDB {
+			continue
 		}
 
 		// Save updates to database

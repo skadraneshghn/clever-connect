@@ -139,13 +139,24 @@ func RunTorrentS3MoveJob(ctx context.Context, job *models.SchedulerJob, logFn fu
 	// ── 2. File existence check ───────────────────────────────────────────────
 	info, err := os.Stat(torrentFilePath)
 	if err != nil {
-		// File missing — may already be archived. Check registry.
+		// File missing from local disk. Check if it was already successfully
+		// archived to S3 in a previous run (after a container restart the
+		// ephemeral disk is empty but the registry row persists).
+		//
+		// Search strategy (most specific → least specific):
+		//  1. file_path exact match — best signal that this specific file was archived.
+		//  2. torrent_hash + non-empty s3_key — fallback for single-file torrents
+		//     where the registry was written with only the hash.
 		var reg models.FileRegistry
-		if db.DB.Where("torrent_hash = ? AND s3_key != ''", payload.InfoHash).First(&reg).Error == nil {
-			logFn("INFO", fmt.Sprintf("File already archived (s3_key=%s) — skipping upload, chaining Telegram", reg.S3Key))
+		if db.DB.Where("file_path = ? AND s3_key != ''", torrentFilePath).First(&reg).Error == nil {
+			logFn("INFO", fmt.Sprintf("File already archived by path match (s3_key=%s) — chaining Telegram", reg.S3Key))
 			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
 		}
-		return fmt.Errorf("torrent file missing on local storage and no S3 registry found: %w", err)
+		if db.DB.Where("torrent_hash = ? AND s3_key != ''", payload.InfoHash).First(&reg).Error == nil {
+			logFn("INFO", fmt.Sprintf("File already archived via torrent_hash (s3_key=%s) — chaining Telegram", reg.S3Key))
+			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
+		}
+		return fmt.Errorf("torrent file missing on local storage and no S3 registry found (path=%s): %w", torrentFilePath, err)
 	}
 	if info.IsDir() {
 		return fmt.Errorf("target path is a directory, expected a file: %s", torrentFilePath)

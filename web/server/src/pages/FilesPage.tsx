@@ -933,6 +933,34 @@ export const FilesPage: React.FC = () => {
 
 	const filteredFiles = sortedFiles.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
 
+	// Keyboard shortcut: Ctrl+A / Cmd+A to select all files in the current folder
+	useEffect(() => {
+		const handleKeyDown = (e: KeyboardEvent) => {
+			// Don't intercept Ctrl+A if user is typing in form inputs, textareas, code editors, etc.
+			const target = e.target as HTMLElement;
+			if (
+				target.tagName === 'INPUT' ||
+				target.tagName === 'TEXTAREA' ||
+				target.tagName === 'SELECT' ||
+				target.isContentEditable ||
+				target.closest('.monaco-editor') ||
+				target.closest('.cm-editor')
+			) {
+				return;
+			}
+
+			if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+				e.preventDefault();
+				setSelectedItems(filteredFiles.map(x => x.name));
+			}
+		};
+
+		window.addEventListener('keydown', handleKeyDown);
+		return () => {
+			window.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [filteredFiles]);
+
 	// Clipboard / Pasteboard actions
 	const handleCopy = () => {
 		if (selectedItems.length === 0) return;
