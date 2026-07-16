@@ -139,24 +139,56 @@ func RunTorrentS3MoveJob(ctx context.Context, job *models.SchedulerJob, logFn fu
 	// ── 2. File existence check ───────────────────────────────────────────────
 	info, err := os.Stat(torrentFilePath)
 	if err != nil {
-		// File missing from local disk. Check if it was already successfully
-		// archived to S3 in a previous run (after a container restart the
-		// ephemeral disk is empty but the registry row persists).
+		// File missing from local disk. This typically means the Clever Cloud
+		// container restarted (ephemeral disk wiped) after the job was queued
+		// but before it could run — or the file was already archived by another
+		// pipeline component (the file leecher) under a different registry path.
 		//
-		// Search strategy (most specific → least specific):
-		//  1. file_path exact match — best signal that this specific file was archived.
-		//  2. torrent_hash + non-empty s3_key — fallback for single-file torrents
-		//     where the registry was written with only the hash.
+		// Three-tier lookup strategy (most specific → broadest):
+		//  1. Exact file_path match — file was previously archived by this job.
+		//  2. torrent_hash match  — single-file torrent archived in an earlier run.
+		//  3. Basename LIKE match — file leecher already uploaded the same file
+		//     to S3 under a different local path (common when leecher and torrent
+		//     client both downloaded the same content).
+		baseName := filepath.Base(torrentFilePath)
 		var reg models.FileRegistry
+
 		if db.DB.Where("file_path = ? AND s3_key != ''", torrentFilePath).First(&reg).Error == nil {
-			logFn("INFO", fmt.Sprintf("File already archived by path match (s3_key=%s) — chaining Telegram", reg.S3Key))
+			logFn("INFO", fmt.Sprintf("File already archived by exact path (s3_key=%s) — chaining Telegram", reg.S3Key))
 			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
 		}
+
 		if db.DB.Where("torrent_hash = ? AND s3_key != ''", payload.InfoHash).First(&reg).Error == nil {
 			logFn("INFO", fmt.Sprintf("File already archived via torrent_hash (s3_key=%s) — chaining Telegram", reg.S3Key))
 			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
 		}
-		return fmt.Errorf("torrent file missing on local storage and no S3 registry found (path=%s): %w", torrentFilePath, err)
+
+		// Broadest fallback: match by filename — catches the case where the
+		// file leecher downloaded and archived the same file but to a different
+		// local path. LIKE with leading % is intentional (we match the suffix).
+		if db.DB.Where("file_path LIKE ? AND s3_key != ''", "%/"+baseName).First(&reg).Error == nil {
+			logFn("INFO", fmt.Sprintf(
+				"File found in S3 registry by filename match (leecher path=%s, s3_key=%s) — chaining Telegram",
+				reg.FilePath, reg.S3Key,
+			))
+			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
+		}
+
+		// File is unrecoverable: not on disk, not in any S3 registry entry.
+		// Bumping RetryCount past the limit prevents the scheduler from
+		// retrying this job endlessly — there is nothing to upload.
+		logFn("ERROR", fmt.Sprintf(
+			"File not found on disk and not in S3 registry (path=%s). "+
+				"Most likely the container restarted and the ephemeral disk was wiped. "+
+				"Marking job as permanently failed to prevent futile retries.",
+			torrentFilePath,
+		))
+		job.RetryCount = 9999 // sentinel: force permanent failure in engine
+		return fmt.Errorf(
+			"file lost from ephemeral disk and not found in S3 registry by path, "+
+				"torrent_hash, or filename — cannot recover (path=%s): %w",
+			torrentFilePath, err,
+		)
 	}
 	if info.IsDir() {
 		return fmt.Errorf("target path is a directory, expected a file: %s", torrentFilePath)
@@ -167,11 +199,18 @@ func RunTorrentS3MoveJob(ctx context.Context, job *models.SchedulerJob, logFn fu
 		logFn("INFO", "File is a sparse stub — checking registry for existing S3 key")
 		var reg models.FileRegistry
 		if db.DB.Where("torrent_hash = ? AND s3_key != ''", payload.InfoHash).First(&reg).Error == nil {
-			logFn("INFO", fmt.Sprintf("S3 key confirmed (%s) — chaining Telegram upload", reg.S3Key))
+			logFn("INFO", fmt.Sprintf("S3 key confirmed via torrent_hash (%s) — chaining Telegram upload", reg.S3Key))
 			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
 		}
-		// Sparse stub but no S3 key: previous upload failed — retry.
-		return fmt.Errorf("file is a sparse stub but has no S3 key in registry — retrying upload")
+		// Try basename match — leecher may have archived the file under a different path.
+		if db.DB.Where("file_path LIKE ? AND s3_key != ''", "%/"+filepath.Base(torrentFilePath)).First(&reg).Error == nil {
+			logFn("INFO", fmt.Sprintf("S3 key found via filename match (%s) — chaining Telegram upload", reg.S3Key))
+			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
+		}
+		// Sparse stub but no S3 key found anywhere — previous upload failed mid-way.
+		// Allow the scheduler to retry (do NOT set RetryCount sentinel here because
+		// the stub still exists: we can retry the upload from the sparse stub path).
+		return fmt.Errorf("file is a sparse stub but has no S3 key in registry — will retry upload")
 	}
 
 	// ── 3. Upload to S3 ───────────────────────────────────────────────────────
