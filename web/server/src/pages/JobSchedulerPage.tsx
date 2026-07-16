@@ -127,6 +127,10 @@ const PAGE_STYLES = `
     60%  { transform: scale(1.18); }
     100% { transform: scale(1);   opacity: 1; }
   }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
 
   .scheduler-progress-anim {
     background-image: repeating-linear-gradient(
@@ -287,6 +291,27 @@ const PAGE_STYLES = `
     background: rgba(239,68,68,0.1);
     color: #ef4444;
   }
+
+  /* ── Toast notification ── */
+  @keyframes toastIn  { from { transform: translateX(-50%) translateY(20px); opacity:0; } to { transform: translateX(-50%) translateY(0); opacity:1; } }
+  @keyframes toastOut { from { opacity:1; } to { opacity:0; } }
+  .sched-toast {
+    position: fixed;
+    bottom: 88px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1100;
+    padding: 10px 20px;
+    border-radius: 14px;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.15);
+    animation: toastIn 0.3s cubic-bezier(0.16,1,0.3,1);
+    backdrop-filter: blur(12px);
+  }
+  .sched-toast--ok  { background: rgba(34,197,94,0.15);  border:1px solid rgba(34,197,94,0.3);  color:#15803d; }
+  .sched-toast--err { background: rgba(239,68,68,0.12);  border:1px solid rgba(239,68,68,0.3);  color:#b91c1c; }
 `;
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -311,8 +336,16 @@ export const JobSchedulerPage: React.FC = () => {
   });
 
   // ── Bulk selection state ──────────────────────────────────────────────────
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [bulkLoading, setBulkLoading] = useState(false);
+  const [selectedIds,  setSelectedIds]  = useState<Set<number>>(new Set());
+  const [bulkLoading,  setBulkLoading]  = useState(false);
+  const [toast,        setToast]        = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
+  const [configSaving, setConfigSaving] = useState(false);
+
+  // Auto-dismiss toast after 3.5 s
+  const showToast = useCallback((msg: string, type: 'ok' | 'err' = 'ok') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -330,9 +363,9 @@ export const JobSchedulerPage: React.FC = () => {
 
   const refresh = useCallback(async () => {
     const [j, s, c] = await Promise.all([api('/jobs'), api('/stats'), api('/config')]);
-    if (j.jobs)                  setJobs(j.jobs);
-    if (s.total_jobs !== undefined) setStats(s);
-    if (c.max_concurrent_jobs)   setConfig(c);
+    if (j.jobs)                           setJobs(j.jobs);
+    if (s.total_jobs !== undefined)       setStats(s);
+    if (c.max_concurrent_jobs !== undefined) setConfig(c); // use !== undefined, not truthiness
   }, [api]);
 
   useEffect(() => {
@@ -359,9 +392,21 @@ export const JobSchedulerPage: React.FC = () => {
   };
 
   const saveConfig = async () => {
-    await api('/config', { method: 'POST', body: JSON.stringify(config) });
-    setShowConfig(false);
-    refresh();
+    setConfigSaving(true);
+    try {
+      const res = await api('/config', { method: 'POST', body: JSON.stringify(config) });
+      if (res.status === 'saved') {
+        setShowConfig(false);
+        showToast('Scheduler configuration saved successfully.');
+        refresh();
+      } else {
+        showToast(res.error || 'Failed to save configuration.', 'err');
+      }
+    } catch (e) {
+      showToast('Network error saving configuration.', 'err');
+    } finally {
+      setConfigSaving(false);
+    }
   };
 
   const loadLogs = async (id: number) => {
@@ -434,17 +479,36 @@ export const JobSchedulerPage: React.FC = () => {
         body: JSON.stringify({ action, job_ids: targetIds }),
       });
       if (res.status === 'processed') {
+        const succeeded: number[] = res.succeeded || [];
+        const failed: { job_id: number; error: string }[] = res.failed || [];
+
         // Deselect jobs that were successfully acted upon
-        const succeededSet = new Set<number>((res.succeeded as number[]) || []);
         setSelectedIds(prev => {
           const next = new Set(prev);
-          succeededSet.forEach(id => next.delete(id));
+          succeeded.forEach(id => next.delete(id));
           return next;
         });
+
+        if (failed.length === 0) {
+          showToast(`✓ ${action.charAt(0).toUpperCase() + action.slice(1)} applied to ${succeeded.length} job${succeeded.length !== 1 ? 's' : ''}.`);
+        } else if (succeeded.length === 0) {
+          showToast(
+            `All ${failed.length} job${failed.length !== 1 ? 's' : ''} failed to ${action}. Check job statuses.`,
+            'err'
+          );
+        } else {
+          showToast(
+            `${action.charAt(0).toUpperCase() + action.slice(1)}: ${succeeded.length} succeeded, ${failed.length} failed.`,
+            'err'
+          );
+        }
         refresh();
+      } else {
+        showToast(res.error || `Bulk ${action} failed. Please try again.`, 'err');
       }
     } catch (err) {
       console.error('Bulk action failed:', err);
+      showToast('Network error. Please try again.', 'err');
     } finally {
       setBulkLoading(false);
     }
@@ -460,6 +524,13 @@ export const JobSchedulerPage: React.FC = () => {
   return (
     <div style={{ position:'relative', minHeight:'calc(100vh - 80px)', paddingBottom: selectedCount > 0 ? 100 : 0 }}>
       <style>{PAGE_STYLES}</style>
+
+      {/* ── Toast notification ── */}
+      {toast && (
+        <div className={`sched-toast sched-toast--${toast.type}`}>
+          {toast.type === 'ok' ? '✓ ' : '⚠ '}{toast.msg}
+        </div>
+      )}
 
       {/* ── Header ── */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
@@ -810,8 +881,13 @@ export const JobSchedulerPage: React.FC = () => {
               </div>
             </div>
             <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:8 }}>
-              <button className="btn" onClick={() => setShowConfig(false)}>Cancel</button>
-              <button className="btn btn--primary" onClick={saveConfig}>Save Configuration</button>
+              <button className="btn" onClick={() => setShowConfig(false)} disabled={configSaving}>Cancel</button>
+              <button className="btn btn--primary" onClick={saveConfig} disabled={configSaving}
+                style={{ display:'flex', alignItems:'center', gap:6 }}>
+                {configSaving ? (
+                  <><FiRefreshCw size={13} style={{ animation:'spin 0.8s linear infinite' }}/> Saving…</>
+                ) : 'Save Configuration'}
+              </button>
             </div>
           </div>
         </div>

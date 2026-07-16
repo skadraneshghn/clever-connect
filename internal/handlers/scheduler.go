@@ -438,23 +438,29 @@ func (h *SchedulerHandler) SaveConfig(c *gin.Context) {
 
 	var cfg models.SchedulerConfig
 	if err := db.DB.First(&cfg).Error; err == nil {
-		cfg.MaxConcurrentJobs = input.MaxConcurrentJobs
-		cfg.DefaultPriority = input.DefaultPriority
-		cfg.RetryLimit = input.RetryLimit
-		cfg.RetryDelaySeconds = input.RetryDelaySeconds
-		cfg.JobTimeoutSeconds = input.JobTimeoutSeconds
-		cfg.PurgeAfterDays = input.PurgeAfterDays
-		cfg.EnableCronJobs = input.EnableCronJobs
-		cfg.EnableNotifications = input.EnableNotifications
-		db.DB.Save(&cfg)
+		// Use map-based update so zero-value booleans (false) are correctly persisted.
+		// GORM's Save/Updates with struct silently skips zero-value fields.
+		db.DB.Model(&cfg).Updates(map[string]interface{}{
+			"max_concurrent_jobs":   input.MaxConcurrentJobs,
+			"default_priority":      input.DefaultPriority,
+			"retry_limit":           input.RetryLimit,
+			"retry_delay_seconds":   input.RetryDelaySeconds,
+			"job_timeout_seconds":   input.JobTimeoutSeconds,
+			"purge_after_days":      input.PurgeAfterDays,
+			"enable_cron_jobs":      input.EnableCronJobs,
+			"enable_notifications":  input.EnableNotifications,
+		})
 	} else {
 		db.DB.Create(&input)
 		cfg = input
 	}
 
-	// Hot-reload the scheduler engine
+	// Hot-reload the scheduler engine with the freshly-persisted config
 	if scheduler.Engine != nil {
-		scheduler.Engine.UpdateConfig(&cfg)
+		var fresh models.SchedulerConfig
+		if err := db.DB.First(&fresh).Error; err == nil {
+			scheduler.Engine.UpdateConfig(&fresh)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "saved"})

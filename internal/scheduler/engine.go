@@ -490,12 +490,21 @@ func (s *Scheduler) GetStats() map[string]interface{} {
 }
 
 // UpdateConfig hot-reloads the scheduler configuration.
+// It updates both the in-memory workerCount (used by dispatchJobs) and
+// signals the queue scanner to pick up the new timeout/retry settings,
+// which are re-read from the DB at dispatch time anyway.
 func (s *Scheduler) UpdateConfig(cfg *models.SchedulerConfig) {
 	s.mu.Lock()
 	s.workerCount = cfg.MaxConcurrentJobs
 	s.mu.Unlock()
 
-	logger.Info("Scheduler", "Configuration updated", "maxWorkers", cfg.MaxConcurrentJobs)
+	logger.Info("Scheduler", "Configuration hot-reloaded",
+		"maxWorkers", cfg.MaxConcurrentJobs,
+		"retryLimit", cfg.RetryLimit,
+		"retryDelaySec", cfg.RetryDelaySeconds,
+		"jobTimeoutSec", cfg.JobTimeoutSeconds,
+		"purgeAfterDays", cfg.PurgeAfterDays,
+	)
 	s.wakeup()
 }
 
@@ -609,42 +618,66 @@ func (s *Scheduler) executeJob(job *models.SchedulerJob, ctx context.Context, ca
 	}
 
 	if execErr != nil {
-		// Check if it was cancelled
-		if ctx.Err() == context.Canceled {
+		// ── Determine whether this was a cancellation, timeout, or real failure ──
+		switch ctx.Err() {
+		case context.Canceled:
+			// Cancelled by user or scheduler shutdown
+			msg := "Job was cancelled by user"
+			if execErr != nil && execErr != context.Canceled {
+				msg = fmt.Sprintf("Job cancelled: %s", execErr.Error())
+			}
 			db.DB.Model(job).Updates(map[string]interface{}{
 				"status":      models.JobStatusCancelled,
-				"message":     "Job was cancelled",
+				"message":     msg,
 				"finished_at": finishedAt,
 			})
 			s.addLog(job.ID, "WARN", "Job was cancelled")
-		} else {
-			// Check retry
-			var retryLimit int
-			if err := db.DB.First(&cfg).Error; err == nil {
-				retryLimit = cfg.RetryLimit
-			}
+			s.addLog(job.ID, "ERROR", fmt.Sprintf("Cancellation reason: %s", execErr.Error()))
 
-			if job.RetryCount < retryLimit {
+		case context.DeadlineExceeded:
+			// Job timed out based on JobTimeoutSeconds config
+			if err := db.DB.First(&cfg).Error; err == nil {
+				s.addLog(job.ID, "ERROR", fmt.Sprintf(
+					"Job timed out after %d seconds (configured JobTimeoutSeconds). Last error: %s",
+					cfg.JobTimeoutSeconds, execErr.Error(),
+				))
+			} else {
+				s.addLog(job.ID, "ERROR", fmt.Sprintf("Job timed out. Last error: %s", execErr.Error()))
+			}
+			db.DB.Model(job).Updates(map[string]interface{}{
+				"status":      models.JobStatusFailed,
+				"message":     fmt.Sprintf("Timed out: %s", execErr.Error()),
+				"finished_at": finishedAt,
+			})
+
+		default:
+			// Real execution error — check retry
+			if err := db.DB.First(&cfg).Error; err != nil {
+				cfg.RetryLimit = 3
+				cfg.RetryDelaySeconds = 30
+			}
+			s.addLog(job.ID, "ERROR", fmt.Sprintf("Job failed with error: %s", execErr.Error()))
+
+			if job.RetryCount < cfg.RetryLimit {
 				retryDelay := time.Duration(cfg.RetryDelaySeconds) * time.Second
 				db.DB.Model(job).Updates(map[string]interface{}{
 					"status":      models.JobStatusQueued,
 					"retry_count": job.RetryCount + 1,
-					"message":     fmt.Sprintf("Retry %d/%d: %s", job.RetryCount+1, retryLimit, execErr.Error()),
+					"message":     fmt.Sprintf("Retry %d/%d: %s", job.RetryCount+1, cfg.RetryLimit, execErr.Error()),
 					"progress":    0,
 				})
-				s.addLog(job.ID, "WARN", fmt.Sprintf("Job failed, scheduling retry %d/%d in %v: %s", job.RetryCount+1, retryLimit, retryDelay, execErr.Error()))
-
-				// Schedule delayed retry
-				time.AfterFunc(retryDelay, func() {
-					s.wakeup()
-				})
+				s.addLog(job.ID, "WARN", fmt.Sprintf(
+					"Job failed, scheduling retry %d/%d in %v: %s",
+					job.RetryCount+1, cfg.RetryLimit, retryDelay, execErr.Error(),
+				))
+				time.AfterFunc(retryDelay, func() { s.wakeup() })
 			} else {
 				db.DB.Model(job).Updates(map[string]interface{}{
 					"status":      models.JobStatusFailed,
 					"message":     execErr.Error(),
 					"finished_at": finishedAt,
 				})
-				s.addLog(job.ID, "ERROR", fmt.Sprintf("Job failed permanently: %s", execErr.Error()))
+				s.addLog(job.ID, "ERROR", fmt.Sprintf("Job failed permanently after %d retries: %s", cfg.RetryLimit, execErr.Error()))
 			}
 		}
 
