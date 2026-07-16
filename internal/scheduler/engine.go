@@ -873,11 +873,28 @@ func (s *Scheduler) registerBuiltinJobs() {
 			return fmt.Errorf("failed to parse move-to-S3 payload: %w", err)
 		}
 
-		// Expand directories into the individual files they contain.
+		// Expand directories into individual files; for missing paths attempt
+		// a registry lookup before skipping — the file may already be in S3
+		// (archived by a prior run or the torrent/leecher pipeline).
 		var filePaths []string
+		var alreadyArchived int
 		for _, p := range payload.Paths {
 			info, err := os.Stat(p)
 			if err != nil {
+				// Path missing from disk — try S3 registry before skipping.
+				baseName := filepath.Base(p)
+				var reg models.FileRegistry
+				if db.DB.Where("file_path = ? AND s3_key != ''", p).First(&reg).Error == nil {
+					logFn("INFO", fmt.Sprintf("Already in S3 (exact path match, s3_key=%s): %s", reg.S3Key, baseName))
+					alreadyArchived++
+					continue
+				}
+				if db.DB.Where("file_path LIKE ? AND s3_key != ''", "%/"+baseName).First(&reg).Error == nil {
+					logFn("INFO", fmt.Sprintf("Already in S3 (filename match, s3_key=%s): %s", reg.S3Key, baseName))
+					alreadyArchived++
+					continue
+				}
+				// Truly missing — not on disk, not in any S3 registry entry.
 				logFn("WARN", fmt.Sprintf("Skipping missing path: %s (%v)", p, err))
 				continue
 			}
@@ -898,9 +915,20 @@ func (s *Scheduler) registerBuiltinJobs() {
 
 		total := len(filePaths)
 		if total == 0 {
-			logFn("INFO", "No files to archive to S3")
-			db.DB.Model(job).Update("progress", 100)
-			return nil
+			if alreadyArchived > 0 {
+				// All files are already safely in S3 — this is a genuine success.
+				logFn("INFO", fmt.Sprintf("All %d file(s) already archived in S3 — nothing to upload", alreadyArchived))
+				db.DB.Model(job).Update("progress", 100)
+				return nil
+			}
+			// Nothing on disk AND nothing in registry — files were lost
+			// (ephemeral disk wiped). Mark permanently failed so the scheduler
+			// stops retrying: there is nothing to recover.
+			logFn("ERROR", "No files found on disk or in S3 registry. "+
+				"The ephemeral disk was likely wiped by a container restart. "+
+				"Marking job permanently failed.")
+			job.RetryCount = 9999 // sentinel: prevent futile retries
+			return fmt.Errorf("all %d requested path(s) are missing from disk and not found in S3 registry — files lost on ephemeral disk", len(payload.Paths))
 		}
 
 		logFn("INFO", fmt.Sprintf("Moving %d file(s) to S3 (upload + remove local)", total))
