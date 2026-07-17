@@ -61,16 +61,50 @@ func scheduleS3Upload(regID uint, checksum, mimeType, localPath string) {
 }
 
 
+// GetAbsolutePath takes a raw path string (which could be absolute, relative,
+// from Windows/Linux, or even double-prefixed/mismatched due to different execution PWDs)
+// and guarantees it returns a clean, absolute path sandboxed inside the file manager root.
+func GetAbsolutePath(rawPath string) string {
+	if rawPath == "" {
+		return ""
+	}
+
+	absBase, err := filepath.Abs("./data/manager")
+	if err != nil {
+		absBase = "./data/manager"
+	}
+
+	// Normalize all path separators to forward slash for inspection
+	normalized := filepath.ToSlash(rawPath)
+
+	// Look for the sandbox boundary "data/manager/" or "data/manager" to extract the clean relative path.
+	// This heals any mismatched, container-specific, or double-prefixed absolute roots.
+	markerWithSlash := "data/manager/"
+	markerNoSlash := "data/manager"
+
+	if idx := strings.LastIndex(normalized, markerWithSlash); idx != -1 {
+		rel := normalized[idx+len(markerWithSlash):]
+		return filepath.Clean(filepath.Join(absBase, rel))
+	} else if idx := strings.LastIndex(normalized, markerNoSlash); idx != -1 {
+		rel := normalized[idx+len(markerNoSlash):]
+		return filepath.Clean(filepath.Join(absBase, rel))
+	}
+
+	// If no marker is found, but the path is already absolute, return it cleaned.
+	// This supports arbitrary absolute paths (e.g. system temp directories in unit tests).
+	if filepath.IsAbs(rawPath) {
+		return filepath.Clean(rawPath)
+	}
+
+	// If no marker is found and it's relative, clean it up relative to the sandbox base.
+	cleanRel := filepath.Clean("/" + rawPath)
+	return filepath.Clean(filepath.Join(absBase, cleanRel))
+}
+
 // GetAbsoluteSavePath resolves any relative or absolute download folder path
 // to ensure it is sandboxed and located inside the File Manager's root folder ("./data/manager")
 func GetAbsoluteSavePath(saveDir string) string {
-	absBase, _ := filepath.Abs("./data/manager")
-	absSave, err := filepath.Abs(saveDir)
-	if err == nil && strings.HasPrefix(absSave, absBase) {
-		return absSave
-	}
-	clean := filepath.Clean("/" + saveDir)
-	return filepath.Join(absBase, clean)
+	return GetAbsolutePath(saveDir)
 }
 
 // GetBlake3Checksum calculates the 256-bit BLAKE3 hash of a file.
@@ -154,10 +188,7 @@ func copyFile(src, dst string) error {
 // creates a hardlink to the master file, and returns the existing registry record.
 func RegisterFile(filePath string, optURL string, optETag string, optTgFileID int64, optTorrentHash string) (*models.FileRegistry, error) {
 	// Clean and get absolute path
-	absPath, err := filepath.Abs(filePath)
-	if err != nil {
-		absPath = filePath
-	}
+	absPath := GetAbsolutePath(filePath)
 
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -274,10 +305,7 @@ const archiveUploadCtxTimeout = 30 * time.Minute
 // pieces if the file vanished, so the caller turns it into a sparse stub
 // (logical size preserved, data blocks freed) instead of deleting it.
 func RegisterAndArchiveToS3(absPath, optURL, optETag string, optTgFileID int64, optTorrentHash string, keepSparse bool) (*models.FileRegistry, error) {
-	absPath, err := filepath.Abs(absPath)
-	if err != nil {
-		absPath = filepath.Clean(absPath)
-	}
+	absPath = GetAbsolutePath(absPath)
 
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -564,6 +592,7 @@ func LookupRegistryByPath(absPath string) (*models.FileRegistry, bool) {
 	if absPath == "" {
 		return nil, false
 	}
+	absPath = GetAbsolutePath(absPath)
 	var reg models.FileRegistry
 	if err := db.DB.Where("file_path = ?", absPath).First(&reg).Error; err != nil {
 		return nil, false

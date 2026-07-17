@@ -119,6 +119,7 @@ func MaterializeForUpload(absPath string) (localPath string, cleanup func(), err
 	if absPath == "" {
 		return "", nil, fmt.Errorf("empty path")
 	}
+	absPath = GetAbsolutePath(absPath)
 
 	// 1. File is still on local disk.
 	if info, statErr := os.Stat(absPath); statErr == nil {

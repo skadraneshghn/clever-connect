@@ -176,11 +176,7 @@ func (m *TorrentManager) archiveTorrentFileInline(infoHash, saveDir, filePath st
 	if saveDir == "" {
 		saveDir = "./data/manager/downloads"
 	}
-	absSaveDir, err := filepath.Abs(saveDir)
-	if err != nil {
-		absSaveDir = saveDir
-	}
-	torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, filePath))
+	torrentFilePath := filecore.GetAbsolutePath(filepath.Join(saveDir, filePath))
 
 	info, err := os.Stat(torrentFilePath)
 	if err != nil || info.IsDir() {
@@ -272,12 +268,7 @@ func RunTorrentS3MoveJob(ctx context.Context, job *models.SchedulerJob, logFn fu
 		payload.SaveDirectory = "./data/manager/downloads"
 	}
 
-	absSaveDir, err := filepath.Abs(payload.SaveDirectory)
-	if err != nil {
-		absSaveDir = payload.SaveDirectory
-	}
-
-	torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, payload.FilePath))
+	torrentFilePath := filecore.GetAbsolutePath(filepath.Join(payload.SaveDirectory, payload.FilePath))
 
 	logFn("INFO", fmt.Sprintf("torrent_s3_move: verifying file: %s", torrentFilePath))
 

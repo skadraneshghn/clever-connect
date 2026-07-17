@@ -56,9 +56,7 @@ func NewFileHandler(cfg *config.Config) *FileHandler {
 
 // securePath guarantees that no user can bypass the sandbox rootDir boundary
 func (h *FileHandler) securePath(requestedPath string) (string, error) {
-	// Ensure absolute root format in local context
-	cleanRel := filepath.Clean("/" + requestedPath)
-	fullPath := filepath.Clean(filepath.Join(h.rootDir, cleanRel))
+	fullPath := filecore.GetAbsolutePath(requestedPath)
 
 	// Guard against directory traversal attacks
 	if !strings.HasPrefix(fullPath, h.rootDir) {

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"clever-connect/internal/filecore"
 	"clever-connect/internal/logger"
 
 	"github.com/gotd/td/telegram"
@@ -72,8 +73,7 @@ func init() {
 
 // securePath ensures path stays within the file manager sandbox.
 func securePath(requestedPath string) (string, error) {
-	cleanRel := filepath.Clean("/" + requestedPath)
-	fullPath := filepath.Clean(filepath.Join(fileManagerRoot, cleanRel))
+	fullPath := filecore.GetAbsolutePath(requestedPath)
 
 	if !strings.HasPrefix(fullPath, fileManagerRoot) {
 		return "", os.ErrPermission
