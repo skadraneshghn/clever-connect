@@ -156,6 +156,29 @@ func RunTelegramUploadJob(ctx context.Context, job *models.SchedulerJob, logFn f
 	// torrent_hash for torrent-originated uploads whose local copy was removed.
 	readPath, cleanup, err := filecore.MaterializeForUploadWithTorrent(safePath, payload.InfoHash)
 	if err != nil {
+		// Torrent-originated uploads carry the originating info_hash. When the
+		// file is temporarily unavailable (not on the ephemeral disk and not yet
+		// in S3) because the torrent is still re-downloading after a container
+		// restart wiped the disk, do NOT burn the retry budget or fail
+		// permanently. The inline S3 archiver (updateStats per-file hook)
+		// re-archives the file the instant it re-completes and chains a fresh
+		// telegram_upload job. Ending this job as a terminal failure (instead of
+		// retrying or completing) lets that fresh job through the
+		// createTelegramUploadJob idempotency guard, which otherwise skips when a
+		// non-terminal telegram_upload job already exists for the same path.
+		//
+		// Manual uploads (no info_hash) intentionally fall through: they rely on
+		// the scheduler retry instead, which preserves their target chat_id and
+		// succeeds the moment the file reappears on disk or in S3.
+		if payload.InfoHash != "" && torrentJobIsDownloading(payload.InfoHash) {
+			logFn("INFO", fmt.Sprintf(
+				"File not available for upload yet — torrent is re-downloading after a container restart "+
+					"(ephemeral disk was wiped). Deferring to the inline S3 archiver, which will re-archive the file "+
+					"and queue a fresh upload once it re-completes; this job will not retry (path=%s).",
+				safePath))
+			job.RetryCount = 9999 // sentinel: terminal failure so the inline archiver can re-chain
+			return fmt.Errorf("file not available for upload yet — torrent re-downloading (deferred to inline archiver): %w", err)
+		}
 		return fmt.Errorf("file not available for upload: %w", err)
 	}
 	if cleanup != nil {
@@ -536,6 +559,26 @@ func RunTelegramUploadJob(ctx context.Context, job *models.SchedulerJob, logFn f
 	}
 
 	return nil
+}
+
+// torrentJobIsDownloading reports whether the torrent for the given info hash
+// is still actively downloading/seeding on this container. After a Clever Cloud
+// container restart the ephemeral download disk is wiped, but the torrent
+// manager re-adds non-paused torrents which re-download their files. This lets
+// the Telegram upload defer (instead of failing permanently) when the file is
+// temporarily absent, mirroring the torrent_s3_move handler's defer logic in
+// internal/torrent/pipeline.go. It uses a direct DB lookup to avoid importing
+// the torrent package (keeping the import graph one-way: scheduler → torrent,
+// scheduler → telegram; telegram does NOT import torrent).
+func torrentJobIsDownloading(infoHash string) bool {
+	if infoHash == "" {
+		return false
+	}
+	var tj models.TorrentJob
+	if err := db.DB.Where("info_hash = ?", infoHash).First(&tj).Error; err != nil {
+		return false
+	}
+	return tj.Status == "downloading" || tj.Status == "seeding"
 }
 
 // resolveInputPeer queries dialogs to resolve chat ID with AccessHash if required.

@@ -601,6 +601,15 @@ func (s *Scheduler) executeJob(job *models.SchedulerJob, ctx context.Context, ca
 		execErr = handler(ctx, job, logFn)
 	}
 
+	// Capture the context's terminal state BEFORE the cleanup cancel() below.
+	// cancel() flips a normally-completed (or even timed-out) context into
+	// context.Canceled, which would misclassify every ordinary job error as a
+	// user cancellation — and, worse, make the retry branch unreachable so no
+	// failing job ever retried. Reading ctx.Err() first preserves the true
+	// cause: Canceled (user/shutdown), DeadlineExceeded (timeout), or nil
+	// (normal completion → real error → eligible for retry).
+	ctxErr := ctx.Err()
+
 	// Cleanup
 	cancel()
 	s.mu.Lock()
@@ -619,7 +628,7 @@ func (s *Scheduler) executeJob(job *models.SchedulerJob, ctx context.Context, ca
 
 	if execErr != nil {
 		// ── Determine whether this was a cancellation, timeout, or real failure ──
-		switch ctx.Err() {
+		switch ctxErr {
 		case context.Canceled:
 			// Cancelled by user or scheduler shutdown
 			msg := "Job was cancelled by user"
