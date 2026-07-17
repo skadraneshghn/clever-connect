@@ -187,7 +187,7 @@ func (m *TorrentManager) archiveTorrentFileInline(infoHash, saveDir, filePath st
 		if reg, tier, found := findArchivedRegistry(torrentFilePath, infoHash); found {
 			logger.Info("Torrent", "Inline archive: file already in S3 — chaining Telegram",
 				"info_hash", infoHash, "file", filePath, "match", tier, "s3_key", reg.S3Key)
-			chainTelegramUploadDirect(torrentFilePath, chatID)
+			chainTelegramUploadDirect(torrentFilePath, chatID, infoHash)
 			return
 		}
 		logger.Warn("Torrent", "Inline archive: file missing from disk and not in S3 — submitting scheduler fallback",
@@ -227,7 +227,7 @@ func (m *TorrentManager) archiveTorrentFileInline(infoHash, saveDir, filePath st
 
 	// Chain the downstream Telegram upload. MaterializeForUpload streams the
 	// authoritative copy from S3 (the local file is now a zeroed sparse stub).
-	chainTelegramUploadDirect(torrentFilePath, chatID)
+	chainTelegramUploadDirect(torrentFilePath, chatID, infoHash)
 }
 
 // RunTorrentS3MoveJob is the scheduler handler registered as "torrent_s3_move".
@@ -284,7 +284,7 @@ func RunTorrentS3MoveJob(ctx context.Context, job *models.SchedulerJob, logFn fu
 		// to recover a file that is no longer on the ephemeral disk.
 		if reg, tier, found := findArchivedRegistry(torrentFilePath, payload.InfoHash); found {
 			logFn("INFO", fmt.Sprintf("File already archived in S3 (%s, s3_key=%s) — chaining Telegram", tier, reg.S3Key))
-			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
+			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID, payload.InfoHash)
 		}
 
 		// File not on disk and not in any S3 registry entry. Before declaring
@@ -332,12 +332,12 @@ func RunTorrentS3MoveJob(ctx context.Context, job *models.SchedulerJob, logFn fu
 		var reg models.FileRegistry
 		if db.DB.Where("torrent_hash = ? AND s3_key != ''", payload.InfoHash).First(&reg).Error == nil {
 			logFn("INFO", fmt.Sprintf("S3 key confirmed via torrent_hash (%s) — chaining Telegram upload", reg.S3Key))
-			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
+			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID, payload.InfoHash)
 		}
 		// Try basename match — leecher may have archived the file under a different path.
 		if db.DB.Where("file_path LIKE ? AND s3_key != ''", "%/"+filepath.Base(torrentFilePath)).First(&reg).Error == nil {
 			logFn("INFO", fmt.Sprintf("S3 key found via filename match (%s) — chaining Telegram upload", reg.S3Key))
-			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
+			return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID, payload.InfoHash)
 		}
 		// Sparse stub but no S3 key found anywhere — previous upload failed mid-way.
 		// Allow the scheduler to retry (do NOT set RetryCount sentinel here because
@@ -369,13 +369,19 @@ func RunTorrentS3MoveJob(ctx context.Context, job *models.SchedulerJob, logFn fu
 	db.DB.Model(job).Update("progress", 85)
 
 	// ── 5. Chain downstream Telegram upload ──────────────────────────────────
-	return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID)
+	return chainTelegramUpload(job, logFn, torrentFilePath, payload.ChatID, payload.InfoHash)
 }
 
 // createTelegramUploadJob inserts a telegram_upload scheduler job into the DB
 // and returns it. It is shared by the inline torrent archiver and the
 // torrent_s3_move scheduler handler so the Telegram chain is identical in both
 // paths.
+//
+// infoHash is the originating torrent's info hash; it is stored in the job
+// payload so RunTelegramUploadJob can recover the S3 key by torrent_hash when
+// the local copy was removed (ephemeral-disk wipe) and the registry record lives
+// under a different path (checksum dedup / re-download). Pass "" for non-torrent
+// uploads.
 //
 // Idempotency: if a non-terminal telegram_upload job already exists for the
 // same file path it returns (nil, nil) so callers skip the duplicate. This
@@ -385,10 +391,11 @@ func RunTorrentS3MoveJob(ctx context.Context, job *models.SchedulerJob, logFn fu
 // It deliberately does NOT import the scheduler package to keep the import
 // graph clean (scheduler already imports torrent for this file). The wakeup
 // signal is not needed: the queue scanner's 2-second ticker picks up the job.
-func createTelegramUploadJob(filePath string, chatID int64, priority int) (*models.SchedulerJob, error) {
+func createTelegramUploadJob(filePath string, chatID int64, priority int, infoHash string) (*models.SchedulerJob, error) {
 	type tgPayload struct {
 		FilePath string `json:"file_path"`
 		ChatID   int64  `json:"chat_id"`
+		InfoHash string `json:"info_hash,omitempty"`
 	}
 
 	// Idempotency — match on the file_path JSON fragment in the payload.
@@ -404,7 +411,7 @@ func createTelegramUploadJob(filePath string, chatID int64, priority int) (*mode
 		return nil, nil // already queued/running — skip duplicate
 	}
 
-	payloadBytes, err := json.Marshal(tgPayload{FilePath: filePath, ChatID: chatID})
+	payloadBytes, err := json.Marshal(tgPayload{FilePath: filePath, ChatID: chatID, InfoHash: infoHash})
 	if err != nil {
 		return nil, err
 	}
@@ -434,9 +441,10 @@ func createTelegramUploadJob(filePath string, chatID int64, priority int) (*mode
 // chainTelegramUpload queues a downstream telegram_upload job for the given
 // file and reports the outcome via the scheduler logFn. The torrent_s3_move job
 // is marked complete regardless — the file is already safe in S3, so a
-// Telegram failure is non-fatal.
-func chainTelegramUpload(job *models.SchedulerJob, logFn func(string, string), filePath string, chatID int64) error {
-	tgJob, err := createTelegramUploadJob(filePath, chatID, job.Priority)
+// Telegram failure is non-fatal. infoHash is forwarded into the telegram job
+// payload so the upload can recover the S3 key by torrent_hash.
+func chainTelegramUpload(job *models.SchedulerJob, logFn func(string, string), filePath string, chatID int64, infoHash string) error {
+	tgJob, err := createTelegramUploadJob(filePath, chatID, job.Priority, infoHash)
 	if err != nil {
 		logFn("WARN", fmt.Sprintf("telegram_upload job submission failed: %v — file is safe in S3", err))
 		db.DB.Model(job).Update("progress", 100)
@@ -454,9 +462,10 @@ func chainTelegramUpload(job *models.SchedulerJob, logFn func(string, string), f
 
 // chainTelegramUploadDirect is the inline-path variant of chainTelegramUpload:
 // it has no parent scheduler job and no logFn callback, logging directly via
-// the structured logger. Used by archiveTorrentFileInline.
-func chainTelegramUploadDirect(filePath string, chatID int64) {
-	tgJob, err := createTelegramUploadJob(filePath, chatID, 5)
+// the structured logger. Used by archiveTorrentFileInline. infoHash is
+// forwarded into the telegram job payload for S3-key recovery by torrent_hash.
+func chainTelegramUploadDirect(filePath string, chatID int64, infoHash string) {
+	tgJob, err := createTelegramUploadJob(filePath, chatID, 5, infoHash)
 	if err != nil {
 		logger.Warn("Torrent", "Inline: telegram_upload job submission failed — file is safe in S3",
 			"file", filePath, "error", err)

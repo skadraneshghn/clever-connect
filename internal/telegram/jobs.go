@@ -37,6 +37,12 @@ const (
 type TelegramUploadPayload struct {
 	FilePath string `json:"file_path"`
 	ChatID   int64  `json:"chat_id"`
+	// InfoHash is the torrent info hash when this upload was chained from the
+	// torrent → S3 → Telegram pipeline. It lets MaterializeForUploadWithTorrent
+	// recover the S3 key by torrent_hash when the local copy was removed and the
+	// registry record lives under a different path (checksum dedup / re-download).
+	// Empty for non-torrent (manual / leecher) uploads.
+	InfoHash string `json:"info_hash,omitempty"`
 }
 
 // uploadProgress tracks the multi-connection upload progress and throttles Telegram updates.
@@ -146,7 +152,9 @@ func RunTelegramUploadJob(ctx context.Context, job *models.SchedulerJob, logFn f
 	// Materialize a local-readable copy of the file. When the leecher archived
 	// the file to S3 and removed the local copy (stateless), this streams it
 	// back from object storage into a temp file. cleanup removes that temp file.
-	readPath, cleanup, err := filecore.MaterializeForUpload(safePath)
+	// The torrent info hash (when present) enables precise S3-key recovery by
+	// torrent_hash for torrent-originated uploads whose local copy was removed.
+	readPath, cleanup, err := filecore.MaterializeForUploadWithTorrent(safePath, payload.InfoHash)
 	if err != nil {
 		return fmt.Errorf("file not available for upload: %w", err)
 	}
