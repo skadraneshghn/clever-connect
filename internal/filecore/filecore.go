@@ -356,8 +356,21 @@ func RegisterAndArchiveToS3(absPath, optURL, optETag string, optTgFileID int64, 
 	}
 
 	if findErr == nil {
-		// Duplicate content already registered. Make sure it is archived in S3.
-		if reg.S3Key == "" {
+		// Duplicate content already registered. Make sure it is archived in S3
+		// AND that the object physically exists. The DB record may carry an
+		// s3_key whose underlying object was later deleted from the bucket
+		// (lifecycle rule, manual cleanup); in that case the local file (which
+		// RegisterAndArchiveToS3 requires to be present) is re-uploaded so S3
+		// and the registry are consistent again.
+		needUpload := reg.S3Key == ""
+		if !needUpload {
+			if !S3ObjectExists(reg.S3Key) {
+				needUpload = true
+				logger.Warn("FileCore", "Registry S3 key present but object missing physically — re-uploading",
+					"checksum", checksum, "s3_key", reg.S3Key, "path", absPath)
+			}
+		}
+		if needUpload {
 			ctx, cancel := context.WithTimeout(context.Background(), archiveUploadCtxTimeout)
 			_, upErr := UploadFileToS3(ctx, s3Key, mimeType, absPath)
 			cancel()

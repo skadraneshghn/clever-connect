@@ -1254,3 +1254,154 @@ func (h *FileHandler) MoveToS3(c *gin.Context) {
 		"job_id":  job.ID,
 	})
 }
+
+// FileInfoResponse describes where a file manager entry physically lives.
+// The file explorer shows this on the file info card so an admin can tell at a
+// glance whether a file is really on the local disk, is a zeroed sparse stub
+// (torrent archived to S3), lives only in S3 object storage, is still being
+// downloaded by an active torrent, or is missing entirely.
+type FileInfoResponse struct {
+	// DiskPath is the real, absolute filesystem path the entry maps to inside
+	// the sandbox (e.g. "/app/data/manager/downloads/movie.mp4"). This is the
+	// "actual and real physical file path on disk" the UI displays.
+	DiskPath string `json:"disk_path"`
+	// RelativePath is the path relative to the file-manager root (sandbox view).
+	RelativePath string `json:"relative_path"`
+	IsDir        bool   `json:"is_dir"`
+
+	// Local disk presence (physically verified with os.Stat).
+	OnDisk     bool   `json:"on_disk"`
+	DiskSize   int64  `json:"disk_size"`
+	ModTime    string `json:"mod_time"`
+	SparseStub bool   `json:"is_sparse_stub"` // on disk but data blocks are zero (punched)
+
+	// S3 object storage presence (physically verified with HeadObject).
+	S3Key     string `json:"s3_key"`
+	S3Present bool   `json:"s3_present"`
+
+	// Active torrent provenance, when the file belongs to a torrent being
+	// downloaded/seeded on this container.
+	Torrent *struct {
+		InfoHash      string  `json:"info_hash"`
+		Name          string  `json:"name"`
+		Length        int64   `json:"length"`
+		BytesDone     int64   `json:"bytes_completed"`
+		Progress      float64 `json:"progress"`
+		Downloading   bool    `json:"downloading"`
+	} `json:"torrent,omitempty"`
+
+	// Source is a human-readable label of the authoritative location:
+	// "local-disk", "sparse-stub", "s3", "torrent", "missing".
+	Source string `json:"source"`
+}
+
+// FileInfo handles GET /api/files/info
+//
+// It detects and returns the real physical location of a file-manager entry:
+// the absolute disk path, whether the file physically exists on local disk
+// (os.Stat), whether it is a zeroed sparse stub, whether it physically exists in
+// S3 (HeadObject — never trusts the database record alone), and whether it is
+// part of an active torrent. This powers the "physical file path" field on the
+// file explorer's info card.
+func (h *FileHandler) FileInfo(c *gin.Context) {
+	if h.proxyToServer(c, c.Request.Method, c.Request.URL.Path) {
+		return
+	}
+
+	reqPath := c.DefaultQuery("path", "")
+	safePath, err := h.securePath(reqPath)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	rel, relErr := filepath.Rel(h.rootDir, safePath)
+	if relErr != nil {
+		rel = filepath.Base(safePath)
+	}
+	rel = "/" + filepath.ToSlash(filepath.Clean("/"+rel))
+
+	resp := FileInfoResponse{
+		DiskPath:      safePath,
+		RelativePath:  rel,
+		S3Key:         "",
+		S3Present:     false,
+		Source:        "missing",
+	}
+
+	// 1. Physical local-disk presence.
+	if info, statErr := os.Stat(safePath); statErr == nil {
+		resp.IsDir = info.IsDir()
+		resp.OnDisk = true
+		resp.DiskSize = info.Size()
+		resp.ModTime = info.ModTime().UTC().Format(time.RFC3339)
+		if !info.IsDir() && info.Size() > 0 {
+			resp.SparseStub = filecore.IsSparseStubFile(safePath)
+		}
+	}
+
+	// 2. Registry record + physical S3 presence (HeadObject, not DB trust).
+	if reg, ok := filecore.LookupRegistryByPath(safePath); ok {
+		resp.S3Key = reg.S3Key
+		if reg.S3Key != "" && filecore.IsS3Enabled() {
+			resp.S3Present = filecore.S3ObjectExists(reg.S3Key)
+		}
+	}
+
+	// 3. Active torrent provenance.
+	if tFile, found := h.findActiveTorrentFile(safePath); found && tFile.Length() > 0 {
+		done := tFile.BytesCompleted()
+		progress := 0.0
+		if tFile.Length() > 0 {
+			progress = (float64(done) / float64(tFile.Length())) * 100.0
+		}
+		resp.Torrent = &struct {
+			InfoHash    string  `json:"info_hash"`
+			Name        string  `json:"name"`
+			Length      int64   `json:"length"`
+			BytesDone   int64   `json:"bytes_completed"`
+			Progress    float64 `json:"progress"`
+			Downloading bool    `json:"downloading"`
+		}{
+			Length:      tFile.Length(),
+			BytesDone:   done,
+			Progress:    progress,
+			Downloading: done < tFile.Length(),
+		}
+		// Resolve the info hash + name from the matching torrent.
+		if torrent.Manager != nil {
+			for _, t := range torrent.Manager.Client().Torrents() {
+				for _, f := range t.Files() {
+					if f.Path() == tFile.Path() && f.Length() == tFile.Length() {
+						resp.Torrent.InfoHash = t.InfoHash().HexString()
+						resp.Torrent.Name = t.Name()
+						break
+					}
+				}
+				if resp.Torrent.InfoHash != "" {
+					break
+				}
+			}
+		}
+	}
+
+	// 4. Authoritative source label.
+	switch {
+	case resp.IsDir:
+		resp.Source = "local-disk"
+	case resp.OnDisk && !resp.SparseStub:
+		resp.Source = "local-disk"
+	case resp.OnDisk && resp.SparseStub && resp.S3Present:
+		resp.Source = "sparse-stub"
+	case resp.OnDisk && resp.SparseStub:
+		resp.Source = "sparse-stub"
+	case resp.S3Present:
+		resp.Source = "s3"
+	case resp.Torrent != nil:
+		resp.Source = "torrent"
+	default:
+		resp.Source = "missing"
+	}
+
+	c.JSON(http.StatusOK, resp)
+}

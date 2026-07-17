@@ -2,6 +2,7 @@ package filecore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,26 @@ import (
 	"clever-connect/internal/logger"
 	"clever-connect/internal/models"
 )
+
+// errS3ObjectMissing is returned by materializeFromS3 when the registry record
+// claims an S3 key but the object does NOT physically exist in the bucket
+// (deleted by a lifecycle rule, manual cleanup, or never uploaded). Callers
+// detect it with errors.Is to fall back to local disk or alternate keys
+// instead of failing the whole upload.
+var errS3ObjectMissing = errors.New("S3 object does not exist physically (registry record is stale)")
+
+// S3ObjectExists performs a cheap HeadObject to verify an object is physically
+// present in the bucket. It returns false when S3 is disabled, the key is empty,
+// or the object is absent/unreachable. Use this to avoid trusting a stale DB
+// record whose underlying object was deleted.
+func S3ObjectExists(key string) bool {
+	if !IsS3Enabled() || key == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return objectExists(ctx, key)
+}
 
 // StreamS3Object streams an object from S3 straight to an http.ResponseWriter
 // with full HTTP Range (206 Partial Content) passthrough — enabling instant
@@ -115,33 +136,40 @@ func MaterializeForUpload(absPath string) (localPath string, cleanup func(), err
 //
 // Lookup strategy (strictly ordered, no fall-through between mismatched branches):
 //
+//  Every S3 tier is physically verified with a HeadObject before the object is
+//  streamed. A registry record can advertise an s3_key whose underlying object
+//  was later deleted from the bucket (lifecycle rule, manual cleanup); such a
+//  stale record is skipped and the resolver falls through to local disk or the
+//  next recovery tier instead of failing the upload.
+//
 //  1. File still exists on local disk:
-//     - If it is registered by exact path AND archived in S3 → stream from S3
-//       (S3 is authoritative; the local copy may be a punched sparse stub).
+//     - If it is registered by exact path AND its S3 object physically exists
+//       → stream from S3 (S3 is authoritative; the local copy may be a sparse stub).
 //     - If it is a torrent sparse stub (first 4 KiB all zero, torrentHash != "")
 //       it is zeroed on disk after archiving — do NOT upload it; fall through to
 //       the S3 recovery tiers so the real content is streamed from object storage.
 //     - Otherwise the local copy is authoritative → returned as-is.
 //
-//  2a. Registry record found by exact file_path AND s3_key is set
-//     → stream from S3 into a temp file.
+//  2a. Registry record found by exact file_path AND s3_key is set AND the
+//     object physically exists → stream from S3 into a temp file. If the object
+//     is missing, fall through (the DB record is stale).
 //
 //  2b. Registry record found by exact file_path BUT s3_key is EMPTY
 //     → S3 upload for this file has not yet completed (or previously failed) and
 //     the file is not on disk either. Return an actionable, retryable error
 //     immediately; do NOT fall through to basename guessing (spurious S3 404).
 //
-//  3.  No registry record by exact file_path.
-//     Resolve an S3 key through alternate lookups, in order:
+//  3.  No usable exact-path record.
+//     Resolve an S3 key through alternate lookups, in order (each physically verified):
 //       a. torrent_hash match (precise, when torrentHash is provided),
 //       b. file_path basename LIKE match (content archived under a different
 //          path — checksum dedup, leecher flow, or re-download),
 //       c. basename is itself the S3 key or the BLAKE3 checksum (stateless
 //          leecher flow that queued the Telegram job with a hash-derived name).
-//     Any hit → stream from S3.
+//     Any hit with a present object → stream from S3.
 //
 //  4.  Last resort: basename looks like a hex-encoded key → fetch directly
-//     from S3 without a registry record (orphaned reference).
+//     from S3 without a registry record (orphaned reference), verified.
 //
 //  5.  File present on disk (non-sparse) → return local copy.
 //  6.  Nothing found → actionable error.
@@ -169,14 +197,22 @@ func MaterializeForUploadWithTorrent(absPath, torrentHash string) (localPath str
 	// detect the stub and fall through to the S3 recovery tiers instead. The
 	// torrentHash guard keeps the behaviour unchanged for plain manual uploads
 	// (which never produce sparse stubs).
-	sparseStub := onDisk && torrentHash != "" && IsS3Enabled() && isSparseStubFile(absPath)
+	sparseStub := onDisk && torrentHash != "" && IsS3Enabled() && IsSparseStubFile(absPath)
 
 	// 2. Exact-path registry record.
 	reg, regOK := LookupRegistryByPath(absPath)
 	if regOK && IsS3Stored(reg) {
-		// 2a. S3 key is set — stream from object storage (S3 is authoritative;
-		// the local copy may be a sparse stub or already removed).
-		return materializeFromS3(reg.S3Key, absPath)
+		// 2a. S3 key is set — verify the object physically exists, then stream.
+		// A registry record can claim an s3_key whose object was later deleted
+		// from the bucket; if so, fall through to local disk / alternate keys
+		// rather than failing the upload on a stale DB record.
+		if p, c, ok, e := tryS3(reg.S3Key, absPath); e != nil {
+			return "", nil, e
+		} else if ok {
+			return p, c, nil
+		}
+		logger.Warn("FileCore", "S3 object missing despite registry record — falling back",
+			"path", absPath, "s3_key", reg.S3Key)
 	}
 
 	// Local copy is authoritative when it is real content on disk (not a
@@ -187,58 +223,77 @@ func MaterializeForUploadWithTorrent(absPath, torrentHash string) (localPath str
 	}
 
 	// From here the local file is either absent OR a torrent sparse stub.
-	if regOK {
-		// 2b. Record found by exact path but no S3 key, and the file is not
-		// usable from disk. The S3 upload is still in progress or failed.
-		// Return a retryable error — do NOT fall through to basename guessing
-		// (which would make a spurious S3 request that always 404s).
+	// 2b only applies when the exact-path record has NO s3_key at all (the
+	// upload is pending). If the record had an s3_key but the object was
+	// physically missing, we already fell through above and now try alternate
+	// recovery instead of looping on "retry later".
+	if regOK && !IsS3Stored(reg) {
 		return "", nil, fmt.Errorf(
 			"file registered but S3 upload not yet complete for %s — retry later", absPath)
 	}
 
-	// 3. No exact-path record. Resolve an S3 key through alternate lookups so
-	//    content archived under a different path (checksum dedup / leecher /
-	//    re-download after disk wipe) is still recoverable for the upload.
+	// 3. No exact-path record (or its S3 object was missing). Resolve an S3
+	//    key through alternate lookups so content archived under a different
+	//    path (checksum dedup / leecher / re-download after disk wipe) is still
+	//    recoverable for the upload. Each candidate is physically verified.
 	if s3Key, tier, found := lookupAlternateS3Key(absPath, torrentHash); found {
-		logger.Info("FileCore", "Materialized file from S3 via alternate lookup",
+		if p, c, ok, e := tryS3(s3Key, absPath); e != nil {
+			return "", nil, e
+		} else if ok {
+			logger.Info("FileCore", "Materialized file from S3 via alternate lookup",
+				"tier", tier, "path", absPath, "s3_key", s3Key)
+			return p, c, nil
+		}
+		logger.Warn("FileCore", "Alternate S3 key also physically missing — continuing",
 			"tier", tier, "path", absPath, "s3_key", s3Key)
-		return materializeFromS3(s3Key, absPath)
 	}
 
 	// 3c. Basename is itself the S3 key or the BLAKE3 checksum — handles the
 	//     stateless-leecher flow where the Telegram job was queued with a
-	//     hash-derived filename (e.g. /downloads/<checksum>).
+	//     hash-derived filename (e.g. /downloads/<checksum>). Verified physically.
 	basename := filepath.Base(absPath)
 	if basename != "" && basename != "." {
 		var candidate models.FileRegistry
 		if e := db.DB.Where("s3_key = ?", basename).First(&candidate).Error; e == nil && candidate.S3Key != "" {
-			logger.Info("FileCore", "Materialized via s3_key basename match",
-				"basename", basename, "s3_key", candidate.S3Key)
-			return materializeFromS3(candidate.S3Key, absPath)
+			if p, c, ok, e2 := tryS3(candidate.S3Key, absPath); e2 != nil {
+				return "", nil, e2
+			} else if ok {
+				logger.Info("FileCore", "Materialized via s3_key basename match",
+					"basename", basename, "s3_key", candidate.S3Key)
+				return p, c, nil
+			}
 		}
 		if e := db.DB.Where("checksum = ?", basename).First(&candidate).Error; e == nil && candidate.S3Key != "" {
-			logger.Info("FileCore", "Materialized via checksum basename match",
-				"basename", basename, "s3_key", candidate.S3Key)
-			return materializeFromS3(candidate.S3Key, absPath)
+			if p, c, ok, e2 := tryS3(candidate.S3Key, absPath); e2 != nil {
+				return "", nil, e2
+			} else if ok {
+				logger.Info("FileCore", "Materialized via checksum basename match",
+					"basename", basename, "s3_key", candidate.S3Key)
+				return p, c, nil
+			}
 		}
 	}
 
-	// 4. Last resort: basename looks like a hex-encoded S3 key — fetch
-	//    directly from object storage (orphaned reference with no DB record).
+	// 4. Last resort: basename looks like a hex-encoded S3 key — fetch directly
+	//    from object storage (orphaned reference with no DB record). Verified.
 	if IsS3Enabled() && isHexKey(basename) {
-		logger.Warn("FileCore", "Materializing from S3 by raw key (no registry record)",
-			"key", basename, "path", absPath)
-		return materializeFromS3(basename, absPath)
+		if p, c, ok, e := tryS3(basename, absPath); e != nil {
+			return "", nil, e
+		} else if ok {
+			logger.Warn("FileCore", "Materializing from S3 by raw key (no registry record)",
+				"key", basename, "path", absPath)
+			return p, c, nil
+		}
 	}
 
 	// 5. A torrent sparse stub on disk with no recoverable S3 key anywhere —
-	//    the S3 archive likely failed. Best effort: return the local stub so
-	//    the caller can decide (preserves prior on-disk behaviour).
+	//    the S3 archive likely failed (or the object was deleted). Best effort:
+	//    return the local stub so the caller can decide (prior on-disk behaviour).
 	if onDisk {
 		return absPath, func() {}, nil
 	}
 
-	// 6. Genuinely unrecoverable: not on disk and not in any S3 registry entry.
+	// 6. Genuinely unrecoverable: not on disk and not physically in any S3 key.
 	return "", nil, fmt.Errorf("file not found locally and not archived in S3: %s", absPath)
 }
 
@@ -272,11 +327,11 @@ func lookupAlternateS3Key(absPath, torrentHash string) (s3Key, tier string, foun
 	return "", "", false
 }
 
-// isSparseStubFile reports whether the first 4 KiB of the file are all zeroes,
+// IsSparseStubFile reports whether the first 4 KiB of the file are all zeroes,
 // a reliable heuristic for detecting a punchHole sparse stub left by the torrent
 // pipeline after it archived the file to S3. Returns false on any read error or
 // for a zero-length file (safe: those are never torrent data stubs).
-func isSparseStubFile(path string) bool {
+func IsSparseStubFile(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
@@ -304,7 +359,18 @@ func isSparseStubFile(path string) bool {
 // materializeFromS3 streams an S3 object identified by key into a temp file
 // whose extension is inferred from the reference path. Returns the temp path
 // and a cleanup function the caller must call when done.
+//
+// It first verifies the object physically exists in the bucket with a
+// HeadObject. A registry record may advertise an s3_key that was later deleted
+// from S3 (lifecycle rule, manual cleanup); without this check the system would
+// trust the database and stream a non-existent object. When the object is
+// missing it returns the errS3ObjectMissing sentinel so callers can fall back
+// to local disk or an alternate S3 key instead of hard-failing.
 func materializeFromS3(s3Key, refPath string) (string, func(), error) {
+	if !S3ObjectExists(s3Key) {
+		return "", nil, fmt.Errorf("%w: %s", errS3ObjectMissing, s3Key)
+	}
+
 	ext := filepath.Ext(refPath)
 	tmp, err := os.CreateTemp("", "s3-upload-*"+ext)
 	if err != nil {
@@ -337,6 +403,27 @@ func materializeFromS3(s3Key, refPath string) (string, func(), error) {
 	logger.Info("FileCore", "Materialized file from S3 for upload",
 		"key", s3Key, "temp", tmpPath)
 	return tmpPath, cleanup, nil
+}
+
+// tryS3 attempts to materialize an S3 object and reports whether the object
+// was physically present. It is a thin wrapper around materializeFromS3 used by
+// the multi-tier resolver so a stale (deleted) S3 object does not abort the
+// whole upload — instead the caller falls through to the next recovery tier or
+// to the local disk copy.
+//
+// Returns:
+//   - (path, cleanup, true, nil)  on success.
+//   - (nil, nil, false, nil)      when the object is physically missing (fall through).
+//   - (nil, nil, false, err)      on a real transport/IO error (propagate).
+func tryS3(s3Key, refPath string) (string, func(), bool, error) {
+	p, c, err := materializeFromS3(s3Key, refPath)
+	if err == nil {
+		return p, c, true, nil
+	}
+	if errors.Is(err, errS3ObjectMissing) {
+		return "", nil, false, nil
+	}
+	return "", nil, false, err
 }
 
 // isHexKey reports whether s looks like a lowercase hex-encoded hash that
