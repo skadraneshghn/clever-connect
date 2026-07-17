@@ -162,48 +162,10 @@ func getDiskInfo(path string) (total uint64, free uint64, used uint64) {
 }
 
 func (h *FileHandler) findActiveTorrentFile(absolutePath string) (*anacrolixTorrent.File, bool) {
-	if torrent.Manager == nil || torrent.Manager.Client() == nil {
+	if torrent.Manager == nil {
 		return nil, false
 	}
-
-	cleanPath := filepath.Clean(absolutePath)
-
-	// Fetch all jobs to know their save directories
-	var jobs []models.TorrentJob
-	if err := db.DB.Find(&jobs).Error; err != nil {
-		return nil, false
-	}
-
-	jobMap := make(map[string]string) // infoHash -> saveDir
-	for _, job := range jobs {
-		jobMap[job.InfoHash] = job.SaveDirectory
-	}
-
-	for _, t := range torrent.Manager.Client().Torrents() {
-		infoHash := t.InfoHash().HexString()
-		saveDir, ok := jobMap[infoHash]
-		if !ok {
-			saveDir = "./data/manager/downloads"
-		}
-		absSaveDir, err := filepath.Abs(saveDir)
-		if err != nil {
-			absSaveDir = saveDir
-		}
-
-		select {
-		case <-t.GotInfo():
-			files := t.Files()
-			for i := range files {
-				torrentFilePath := filepath.Clean(filepath.Join(absSaveDir, files[i].Path()))
-				if torrentFilePath == cleanPath {
-					return files[i], true
-				}
-			}
-		default:
-			// Info not resolved yet
-		}
-	}
-	return nil, false
+	return torrent.Manager.FindActiveTorrentFile(absolutePath)
 }
 
 // mergeS3VirtualFiles injects S3-backed FileRegistry records into a directory

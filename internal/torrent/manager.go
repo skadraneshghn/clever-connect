@@ -750,3 +750,46 @@ func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, infoHash, saveDi
 			"info_hash", infoHash)
 	}
 }
+
+// FindActiveTorrentFile searches all active torrents for a file with the given absolute path.
+func (m *TorrentManager) FindActiveTorrentFile(absolutePath string) (*torrent.File, bool) {
+	if m == nil || m.Client() == nil {
+		return nil, false
+	}
+
+	cleanPath := filecore.GetAbsolutePath(absolutePath)
+
+	// Fetch all jobs to know their save directories
+	var jobs []models.TorrentJob
+	if err := db.DB.Find(&jobs).Error; err != nil {
+		return nil, false
+	}
+
+	jobMap := make(map[string]string) // infoHash -> saveDir
+	for _, job := range jobs {
+		jobMap[job.InfoHash] = job.SaveDirectory
+	}
+
+	for _, t := range m.Client().Torrents() {
+		infoHash := t.InfoHash().HexString()
+		saveDir, ok := jobMap[infoHash]
+		if !ok {
+			saveDir = "./data/manager/downloads"
+		}
+		absSaveDir := filecore.GetAbsolutePath(saveDir)
+
+		select {
+		case <-t.GotInfo():
+			files := t.Files()
+			for i := range files {
+				torrentFilePath := filecore.GetAbsolutePath(filepath.Join(absSaveDir, files[i].Path()))
+				if torrentFilePath == cleanPath {
+					return files[i], true
+				}
+			}
+		default:
+			// Info not resolved yet
+		}
+	}
+	return nil, false
+}

@@ -879,6 +879,20 @@ func (s *Scheduler) registerBuiltinJobs() {
 		var filePaths []string
 		var alreadyArchived int
 		for _, p := range payload.Paths {
+			p = filecore.GetAbsolutePath(p)
+
+			// If the file is currently downloading/active in the torrent client,
+			// let the inline stats completion hook archive it to S3 instead of this job.
+			if torrent.Manager != nil {
+				if tFile, found := torrent.Manager.FindActiveTorrentFile(p); found {
+					if tFile.BytesCompleted() < tFile.Length() {
+						logFn("INFO", fmt.Sprintf("File is still downloading/active in torrent client — inline archiver will handle S3 move upon completion: %s", filepath.Base(p)))
+						alreadyArchived++
+						continue
+					}
+				}
+			}
+
 			info, err := os.Stat(p)
 			if err != nil {
 				// Path missing from disk — try S3 registry before skipping.
