@@ -1,22 +1,34 @@
 package torrent
 
-// pipeline.go — Stateful Torrent → S3 → Telegram scheduler pipeline
+// pipeline.go — Torrent → S3 → Telegram archive pipeline
 //
-// Design rationale:
+// Primary path (ephemeral-disk safe): archiveTorrentFileInline uploads each
+// completed torrent file to S3 SYNCHRONOUSLY, in a bounded goroutine, the
+// instant it finishes downloading — BEFORE the container's ephemeral disk can
+// be wiped by a recycle/restart. It then punches the local blocks (sparse stub
+// so anacrolix does not re-request pieces) and chains the Telegram upload.
 //
+// Fallback path: RunTorrentS3MoveJob is the "torrent_s3_move" scheduler handler
+// (registered by scheduler.Init). It runs only when the inline archiver submits
+// a fallback (S3 upload failed / file missing), or for jobs left queued across
+// a restart. It is recovery-first: it defers when the torrent is still
+// re-downloading (instead of permanently failing like the old decoupled design).
+//
+// Design notes:
 //  - QueueTorrentS3MoveJob is a function-pointer bridge (nil until set by
 //    scheduler.Init). This avoids a circular import between torrent ↔ scheduler
 //    and is the same pattern used for telegram.QueueUploadJob.
-//
-//  - RunTorrentS3MoveJob is the real handler registered as "torrent_s3_move"
-//    in the scheduler's built-in job registry. It lives here (in the torrent
-//    package) and is imported by scheduler/engine.go. The import direction is:
+//  - RunTorrentS3MoveJob lives here (in the torrent package) and is imported by
+//    scheduler/engine.go. The import direction is:
 //      scheduler → torrent (safe; torrent does NOT import scheduler)
 //
 // Two-level idempotency:
 //  1. In-memory registeredFiles map (fast path, session-scoped). The caller sets
-//     this before launching the submission goroutine.
-//  2. DB COUNT query (slow path) — prevents duplicate jobs after a restart.
+//     this before launching the archiver goroutine.
+//  2. DB COUNT query (slow path) inside submitTorrentS3MoveJob — prevents
+//     duplicate fallback jobs after a restart.
+//  Telegram chaining is also deduped by createTelegramUploadJob so the inline
+//  path and a recovering scheduler job never double-upload to Telegram.
 
 import (
 	"context"
@@ -223,9 +235,24 @@ func (m *TorrentManager) archiveTorrentFileInline(infoHash, saveDir, filePath st
 }
 
 // RunTorrentS3MoveJob is the scheduler handler registered as "torrent_s3_move".
-// It is invoked by the scheduler worker pool — never by torrent goroutines directly.
+// It is invoked by the scheduler worker pool — never by torrent goroutines
+// directly. It is now the FALLBACK / crash-recovery path: the primary path is
+// the inline synchronous archiver archiveTorrentFileInline, which uploads each
+// file to S3 the instant it completes. This job runs only when the inline
+// archiver explicitly submits a fallback (because its S3 upload failed or the
+// file was missing), or for jobs left queued across a container restart.
 //
-// Pipeline:
+// Recovery-first logic:
+//  - If the file is on disk → upload to S3, punch the local blocks, chain
+//    Telegram (the normal fallback upload).
+//  - If the file is missing but already in the S3 registry (exact path /
+//    torrent hash / basename) → just chain Telegram.
+//  - If the file is missing and not in S3, but the torrent is still
+//    re-downloading after a restart → defer (success) so the inline archiver
+//    handles the re-download; do not burn the retry budget.
+//  - Otherwise (torrent paused/gone) → permanent failure.
+//
+// Pipeline (normal fallback upload, file present):
 //  1. Parse payload & validate file on disk.
 //  2. Upload to S3 via filecore.RegisterAndArchiveToS3 (keepSparse=true so
 //     anacrolix does not re-request pieces for the missing file).
