@@ -120,10 +120,20 @@ func MaterializeForUpload(absPath string) (localPath string, cleanup func(), err
 		return "", nil, fmt.Errorf("empty path")
 	}
 
-	// 1. File is still on local disk — serve it directly.
+	// 1. File is still on local disk.
 	if info, statErr := os.Stat(absPath); statErr == nil {
 		if info.IsDir() {
 			return "", nil, fmt.Errorf("target is a directory: %s", absPath)
+		}
+		// If the file is registered AND archived in S3, the local copy is no
+		// longer authoritative: the torrent pipeline turns it into a sparse
+		// stub (logical size preserved, data blocks freed by punchHole) right
+		// after archiving, so reading it back would yield zeroes and a Telegram
+		// upload would send an empty file. Stream the real content from object
+		// storage instead. Files not yet archived (no S3 key) are still served
+		// straight from local disk — the fast path.
+		if reg, ok := LookupRegistryByPath(absPath); ok && IsS3Stored(reg) {
+			return materializeFromS3(reg.S3Key, absPath)
 		}
 		return absPath, func() {}, nil
 	}

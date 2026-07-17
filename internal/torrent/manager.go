@@ -110,6 +110,21 @@ func Init() error {
 		return fmt.Errorf("failed to create torrent metadata directory: %w", err)
 	}
 
+	// Warn when running on Clever Cloud's ephemeral filesystem: the download
+	// directory must survive container recycles, otherwise files are wiped
+	// before they can be archived to S3. The inline S3 archiver (active by
+	// default when S3 is configured) pushes each file to object storage the
+	// instant it completes — the primary protection against disk loss. A
+	// persistent FS-bucket mount at the download path is the recommended
+	// defence-in-depth.
+	if os.Getenv("CLEVER_CLOUD_APP_ID") != "" || os.Getenv("CC_APP_ID") != "" {
+		absSave, _ := filepath.Abs(saveDir)
+		logger.Warn("Torrent", "Running on Clever Cloud with an ephemeral download directory — "+
+			"enable S3 (CELLAR_ADDON_*) so the inline archiver persists files before disk recycle, "+
+			"or mount a persistent FS-bucket at the download path",
+			"save_dir", absSave)
+	}
+
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.DataDir = saveDir
 	cfg.NoUpload = !dbCfg.EnableUpload
@@ -385,26 +400,29 @@ func (m *TorrentManager) updateStats(persistDB bool) {
 				} else {
 					job.Status = "downloading"
 
-					// Per-file pipeline: as each individual torrent file finishes
-					// downloading, submit a torrent_s3_move scheduler job so the
-					// enterprise job engine handles S3 upload → disk punch →
-					// Telegram upload in a persistent, retryable, crash-safe way.
-					// The in-memory registeredFiles map guards against duplicate
-					// submissions within a session; DB idempotency inside
-					// submitTorrentS3MoveJob handles restarts.
-					if filecore.IsS3Enabled() {
-						for _, f := range t.Files() {
-							if f.Length() > 0 && f.BytesCompleted() >= f.Length() {
-								fileKey := infoHash + ":" + f.Path()
-								if !m.registeredFiles[fileKey] {
-									m.registeredFiles[fileKey] = true
-									// Run in a goroutine: DB idempotency check must not
-									// block the stats loop while holding the mutex.
-									go submitTorrentS3MoveJob(m, job.InfoHash, job.SaveDirectory, f.Path(), 0)
-								}
+				// Per-file pipeline: as each individual torrent file finishes
+				// downloading, launch the inline synchronous S3 archiver so the
+				// file is pushed to object storage the instant it completes —
+				// BEFORE Clever Cloud can recycle the container and wipe the
+				// ephemeral download disk. The archiver uploads → punches the
+				// local blocks → chains the Telegram upload, and falls back to
+				// a retryable scheduler job only on failure. The in-memory
+				// registeredFiles map guards against duplicate submissions
+				// within a session.
+				if filecore.IsS3Enabled() {
+					for _, f := range t.Files() {
+						if f.Length() > 0 && f.BytesCompleted() >= f.Length() {
+							fileKey := infoHash + ":" + f.Path()
+							if !m.registeredFiles[fileKey] {
+								m.registeredFiles[fileKey] = true
+								// Bounded by archiveSem; never holds the
+								// manager mutex, so it cannot deadlock the stats
+								// loop that is currently holding it.
+								go m.archiveTorrentFileInline(job.InfoHash, job.SaveDirectory, f.Path(), 0)
 							}
 						}
 					}
+				}
 				}
 			}
 			db.DB.Save(&job)
@@ -628,18 +646,20 @@ func (m *TorrentManager) ApplyFilePriorities(t *torrent.Torrent, selectedFilesJS
 	}
 }
 
-// registerTorrentFile has been replaced by the stateful scheduler pipeline.
-// Per-file S3 archiving is now handled by the "torrent_s3_move" scheduler job
-// type (see pipeline.go: RunTorrentS3MoveJob). Jobs are submitted via the
-// QueueTorrentS3MoveJob callback bridge registered in scheduler.Init(), which
-// makes every step crash-safe, retryable, and visible in the scheduler UI.
+// registerTorrentFile has been replaced by the inline S3 archive pipeline.
+// Per-file S3 archiving is now handled synchronously at completion time by
+// archiveTorrentFileInline (see pipeline.go), which uploads to S3 → punchHole
+// → chains the Telegram upload. The decoupled "torrent_s3_move" scheduler job
+// (RunTorrentS3MoveJob) is kept only as a crash-recovery / retry fallback.
 
 // onTorrentCompleted is triggered when a torrent is fully downloaded.
 //
-// It iterates all torrent files and, for any file not yet submitted to the
-// scheduler pipeline (not in registeredFiles), submits a torrent_s3_move job
-// via submitTorrentS3MoveJob. The job handles: S3 upload → punchHole → Telegram
-// upload chain, with full retry and crash-recovery support.
+// It iterates all torrent files and, for any file not yet archived (not in
+// registeredFiles), launches the inline synchronous S3 archiver via
+// archiveTorrentFileInline. The archiver uploads the file to S3 the instant it
+// completes — BEFORE the ephemeral disk can be wiped by a container recycle —
+// then punches the local blocks and chains the Telegram upload. It falls back
+// to a retryable torrent_s3_move scheduler job only on upload failure.
 //
 // Files already handled by the per-file hook in updateStats() (registeredFiles
 // guard already set) are skipped to prevent duplicate submissions.
@@ -698,10 +718,10 @@ func (m *TorrentManager) onTorrentCompleted(t *torrent.Torrent, infoHash, saveDi
 		}
 
 		if s3Enabled {
-			// Submit a scheduler job for each unarchived file.
-			// submitTorrentS3MoveJob runs the DB idempotency check in a
-			// goroutine so it never blocks here.
-			go submitTorrentS3MoveJob(m, infoHash, saveDir, f.Path(), 0)
+			// Inline synchronous S3 archive — see archiveTorrentFileInline.
+			// Uploads the file to object storage before the ephemeral disk can
+			// be wiped, then punches the local blocks and chains Telegram.
+			go m.archiveTorrentFileInline(infoHash, saveDir, f.Path(), 0)
 		} else {
 			// S3 disabled — register locally (original behaviour).
 			logger.Info("Torrent", "Registering completed torrent file in database (S3 disabled)",
