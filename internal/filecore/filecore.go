@@ -90,9 +90,13 @@ func GetAbsolutePath(rawPath string) string {
 		return filepath.Clean(filepath.Join(absBase, rel))
 	}
 
-	// If no marker is found, but the path is already absolute, return it cleaned.
-	// This supports arbitrary absolute paths (e.g. system temp directories in unit tests).
-	if filepath.IsAbs(rawPath) {
+	// If no marker is found, but the path starts with the absolute base of the sandbox,
+	// or the system temporary directory (e.g. for unit tests), return it cleaned.
+	// This guards against treating relative-to-sandbox Unix absolute paths (like "/" or "/downloads")
+	// as system-level roots.
+	normalizedAbsBase := filepath.ToSlash(absBase)
+	normalizedTempDir := filepath.ToSlash(os.TempDir())
+	if strings.HasPrefix(normalized, normalizedAbsBase) || strings.HasPrefix(normalized, normalizedTempDir) {
 		return filepath.Clean(rawPath)
 	}
 
